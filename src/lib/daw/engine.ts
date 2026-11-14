@@ -981,7 +981,7 @@ export class AudioEngine {
       scheduleStop(at: number) {
         // Quick Sampler's one-shot mode plays through even when the MIDI key
         // is released. Loop mode follows MIDI note-off and fades cleanly.
-        if (mode === "loop" || noteOffControlled) stopAt(at, 0.045);
+        if (mode === "loop") stopAt(at, 0.045);
       },
       kill() {
         stopAt(ctx.currentTime, 0.005);
@@ -1795,16 +1795,20 @@ export class AudioEngine {
     }
     let quickSamplerTailSec = 0;
     for (const track of project.tracks) {
-      if (!track.sampleBufferId || (track.samplePlaybackMode ?? "one-shot") !== "one-shot") continue;
-      const stored = this.bufferCache.get(track.sampleBufferId);
-      if (!stored) continue;
-      const sampleDuration = stored.channels[0]?.length
-        ? stored.channels[0].length / stored.sampleRate
-        : 0;
-      const root = clamp(track.sampleRootPitch ?? 60, 0, 127);
+      if (track.type !== "midi") continue;
       for (const region of track.regions) {
         if (region.type !== "midi") continue;
         for (const note of region.notes ?? []) {
+          const zone = selectSamplerZone(track.sampleZones, note.pitch, note.velocity);
+          const sampleId = zone?.bufferId ?? track.sampleBufferId;
+          const mode = zone?.playbackMode ?? track.samplePlaybackMode ?? "one-shot";
+          if (!sampleId || mode !== "one-shot") continue;
+          const stored = this.bufferCache.get(sampleId);
+          if (!stored) continue;
+          const sampleDuration = stored.channels[0]?.length
+            ? stored.channels[0].length / stored.sampleRate
+            : 0;
+          const root = clamp(zone?.rootPitch ?? track.sampleRootPitch ?? 60, 0, 127);
           const rate = clamp(Math.pow(2, (note.pitch - root) / 12), 0.25, 4);
           quickSamplerTailSec = Math.max(quickSamplerTailSec, sampleDuration / rate);
         }
