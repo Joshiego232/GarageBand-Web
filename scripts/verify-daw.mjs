@@ -24,6 +24,7 @@ try {
     "src/lib/daw/routing.ts",
     "src/lib/daw/sampler.ts",
     "src/lib/daw/morph-synth.ts",
+    "src/lib/daw/pitch-correction.ts",
     "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
@@ -72,6 +73,9 @@ try {
   );
   const morphSynth = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/morph-synth.js")).href
+  );
+  const pitchCorrection = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/pitch-correction.js")).href
   );
   const midiControl = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/midi-control.js")).href
@@ -340,6 +344,71 @@ try {
     "Harmonics control does not increase upper partial energy",
   );
 
+  // Verify monophonic pitch detection, key snapping and non-destructive pitch correction.
+  const pitchSampleRate = 44100;
+  const vocalSine = new Float32Array(pitchSampleRate);
+  for (let i = 0; i < vocalSine.length; i++) {
+    vocalSine[i] = Math.sin((2 * Math.PI * 440 * i) / pitchSampleRate) * 0.4;
+  }
+  const detectedVoice = pitchCorrection.detectMonophonicPitchSegments(
+    [vocalSine],
+    pitchSampleRate,
+    0,
+    1,
+  );
+  expect(detectedVoice.length > 0, "Flex Pitch did not detect a steady A4 tone");
+  expect(
+    detectedVoice.some((segment) => Math.abs(segment.detectedMidi - 69) <= 1),
+    "Flex Pitch identified the wrong MIDI pitch for a 440 Hz tone",
+  );
+  const snappedPitch = pitchCorrection.snapMidiPitchToScale(70, 0, "major");
+  expect(
+    [0, 2, 4, 5, 7, 9, 11].includes(((snappedPitch % 12) + 12) % 12),
+    "Pitch snapping returned a note outside the requested major key",
+  );
+  const correctionSegment = {
+    id: "test-vocal-note",
+    startSec: 0.1,
+    endSec: 0.9,
+    detectedPitch: 69,
+    detectedMidi: 69,
+    targetMidi: 72,
+    confidence: 0.98,
+  };
+  const correctedVocal = pitchCorrection.applyMonophonicPitchCorrection(
+    [vocalSine],
+    pitchSampleRate,
+    0,
+    1,
+    [correctionSegment],
+    1,
+  );
+  expect(
+    correctedVocal[0]?.length === vocalSine.length,
+    "Flex Pitch changed the duration of the corrected audio range",
+  );
+  expect(
+    correctedVocal[0]?.every(Number.isFinite),
+    "Flex Pitch generated non-finite audio samples",
+  );
+  expect(
+    correctedVocal[0]?.some((sample, index) => Math.abs(sample - vocalSine[index]) > 0.001),
+    "Flex Pitch did not modify the selected note audio",
+  );
+  expect(
+    vocalSine[5000] === Math.sin((2 * Math.PI * 440 * 5000) / pitchSampleRate) * 0.4,
+    "Flex Pitch mutated the original source audio",
+  );
+  expect(
+    pitchCorrection.detectMonophonicPitchSegments(
+      [new Float32Array(pitchSampleRate)],
+      pitchSampleRate,
+      0,
+      1,
+    ).length === 0,
+    "Flex Pitch detected a note in silence",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -509,7 +578,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
