@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Headphones, Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { Drum, Headphones, Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
