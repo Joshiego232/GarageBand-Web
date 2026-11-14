@@ -42,13 +42,13 @@ export function getVcaMultiplier(track: Track, tracks: Track[]): number {
 }
 
 export function getEffectiveTrackGain(track: Track, tracks: Track[]): number {
-  if (track.role === "vca") return 0;
+  if (track.role === "vca" || track.role === "folder") return 0;
   return Math.min(1.5625, Math.max(0, track.volume * getVcaMultiplier(track, tracks)));
 }
 
 /** Solo logic follows VCA assignments and Aux routing while respecting mute states. */
 export function isTrackAudible(track: Track, tracks: Track[]): boolean {
-  if (track.role === "vca" || track.mute) return false;
+  if (track.role === "vca" || track.role === "folder" || track.mute) return false;
   const vca = track.vcaId
     ? tracks.find((item) => item.id === track.vcaId && item.role === "vca")
     : undefined;
