@@ -902,7 +902,7 @@ export class AudioEngine {
     const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
     if (!track || track.type !== "midi") return;
     if (this.openInputNotes.has(pitch)) return;
-    const voice = playNote(ctx, this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination, track.instrument, pitch, velocity / 127, ctx.currentTime, 3600, track.params);
+    const voice = playNote(ctx, this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination, track.instrument, pitch, velocity / 127, ctx.currentTime, 3600, track.params, true);
     const startTick = this.playing ? this.currentTick() : this.stoppedAtTick ?? 0;
     this.openInputNotes.set(pitch, { voice, startTick, velocity });
   }
