@@ -40,7 +40,7 @@ export function MixerPanel() {
   const createVca = useDAW((state) => state.createVca);
   const createTrackStack = useDAW((state) => state.createTrackStack);
   const removeTrackStack = useDAW((state) => state.removeTrackStack);
-  const tracks = project.tracks;
+  const tracks = project.tracks.filter((track) => track.role !== "folder");
   const selectedTrack = tracks.find((track) => track.id === selectedTrackId) ?? null;
   const buses = tracks.filter((track) => track.role === "aux");
   const vcas = tracks.filter((track) => track.role === "vca");
