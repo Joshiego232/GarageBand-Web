@@ -11,7 +11,7 @@ import { Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
-import { uid, type KnobDef, type SamplerZone } from "@/lib/daw/types";
+import { uid, type KnobDef, type SamplerZone, type Track } from "@/lib/daw/types";
 import { Knob } from "@/components/daw/controls/knob";
 import { TrackIcon } from "./track-icon";
 import { VisualEQ } from "./visual-eq";
@@ -191,8 +191,86 @@ export function SmartControls() {
         )}
       </div>
       )}
+      {view === "sound" && <SpatialControls track={track} />}
     </div>
   );
+}
+
+
+function SpatialControls({ track }: { track: Track }) {
+  const updateTrack = useDAW((state) => state.updateTrack);
+  const commit = useDAW((state) => state.commit);
+  const enabled = track.spatialEnabled === true;
+  const x = track.spatialX ?? 0;
+  const y = track.spatialY ?? 0;
+  const z = track.spatialZ ?? -1;
+
+  const update = (patch: Partial<Track>) => updateTrack(track.id, patch, false);
+
+  return (
+    <section className="w-full max-w-2xl mx-4 rounded-lg border border-[#60a5fa]/25 bg-[#60a5fa]/[0.05] p-3 flex flex-col gap-3">
+      <div className="flex items-center gap-3">
+        <div className="size-9 shrink-0 rounded-lg bg-[#60a5fa]/10 border border-[#60a5fa]/20 flex items-center justify-center">
+          <HeadphonesIcon />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold text-zinc-200">Binaural 3D Position</p>
+          <p className="text-[9px] text-zinc-500">HRTF headphone spatialization · stereo output</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={() => {
+            commit();
+            update({ spatialEnabled: !enabled });
+          }}
+          className={`relative h-6 w-11 rounded-full border transition-colors ${enabled ? "bg-[#60a5fa]/30 border-[#60a5fa]/60" : "bg-[#303036] border-black/40"}`}
+        >
+          <span className={`absolute top-0.5 size-4 rounded-full bg-zinc-100 shadow transition-transform ${enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+        </button>
+      </div>
+
+      {enabled ? (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {([
+            ["X · Left / Right", "spatialX", x],
+            ["Y · Down / Up", "spatialY", y],
+            ["Z · Front / Back", "spatialZ", z],
+          ] as const).map(([label, key, value]) => (
+            <label key={key} className="rounded border border-black/30 bg-[#19191d] px-2.5 py-2 flex flex-col gap-1.5">
+              <span className="flex items-center justify-between text-[9px] text-zinc-500">
+                <span>{label}</span>
+                <span className="font-mono text-zinc-300">{value.toFixed(1)} m</span>
+              </span>
+              <input
+                type="range"
+                min={-5}
+                max={5}
+                step={0.1}
+                value={value}
+                onPointerDown={commit}
+                onChange={(event) => update({ [key]: Number(event.target.value) })}
+                aria-label={label}
+                className="w-full accent-[#60a5fa]"
+              />
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[9px] text-zinc-600">
+          Turn this on to place the channel in a 3D headphone field. Ordinary stereo pan remains active while binaural mode is off.
+        </p>
+      )}
+      <p className="text-[9px] leading-relaxed text-zinc-600">
+        Uses the browser's HRTF PannerNode to render a binaural stereo impression. Headphones are recommended. This is not Dolby Atmos, multichannel speaker routing, or head tracking.
+      </p>
+    </section>
+  );
+}
+
+function HeadphonesIcon() {
+  return <span className="text-[17px] leading-none text-[#93c5fd]" aria-hidden="true">◖◗</span>;
 }
 
 
