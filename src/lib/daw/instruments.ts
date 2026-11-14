@@ -1464,9 +1464,24 @@ export function playNote(
 ): VoiceHandle {
   const freq = midiToFreq(pitch);
   const safeVelocity = clamp(velocity, 0.02, 1);
-  if (patchId === "grand-piano" || patchId === "bright-piano" || patchId === "string-ensemble") {
-    const sampled = playSampledNote(ctx, dest, patchId, pitch, safeVelocity, when, dur, params);
-    if (sampled) return sampled;
+  const patch = PATCHES[patchId];
+  if (patch?.sampled) {
+    const sampled = playSampledNote(
+      ctx,
+      dest,
+      patch,
+      pitch,
+      safeVelocity,
+      when,
+      dur,
+      params
+    );
+    // Sample-backed patches deliberately do not fall back to an unrelated
+    // oscillator sound while their real samples are loading or unavailable.
+    return sampled ?? {
+      scheduleStop() { /* sample is not ready yet */ },
+      kill() { /* sample is not ready yet */ },
+    };
   }
   const vc: VoiceCtx = { ctx, dest, freq, vel: safeVelocity, when, dur, p: params };
   switch (patchId) {
