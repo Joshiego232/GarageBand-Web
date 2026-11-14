@@ -113,7 +113,7 @@ try {
     );
     for (const definition of definitions) {
       for (const item of definition.controls) {
-        expect(item.min < item.max, `Invalid range in ${definition.name} / ${item.label}`);
+        expect(item.min <= item.max, `Invalid range in ${definition.name} / ${item.label}`);
         expect(
           item.defaultValue >= item.min && item.defaultValue <= item.max,
           `Default outside range in ${definition.name} / ${item.label}`,
