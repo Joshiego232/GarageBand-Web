@@ -144,7 +144,7 @@ export interface Patch {
   knobs: KnobDef[];
   /** Sound source used by the sampled-instrument engine. */
   sampled?: {
-    engine: "soundfont" | "splendid-piano" | "drum-machine";
+    engine: "soundfont" | "splendid-piano" | "electric-piano" | "drum-machine";
     instrument: string;
     kit?: "MusyngKite" | "FluidR3_GM";
     loop?: boolean;
