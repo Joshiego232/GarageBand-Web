@@ -6,6 +6,7 @@ export interface DetectedPitchSegment {
   detectedMidi: number;
   targetMidi: number;
   confidence: number;
+  pitchCurve: { timeSec: number; pitch: number }[];
 }
 
 interface PitchFrame {
@@ -157,6 +158,7 @@ export function detectMonophonicPitchSegments(
         detectedMidi,
         targetMidi: detectedMidi,
         confidence,
+        pitchCurve: group.map((frame) => ({ timeSec: frame.time, pitch: frame.pitch })),
       });
     }
     group = [];
@@ -180,13 +182,34 @@ function interpolateSample(data: Float32Array, position: number): number {
   return a + (b - a) * fraction;
 }
 
+function pitchAtTime(
+  curve: { timeSec: number; pitch: number }[],
+  timeSec: number,
+  fallback: number
+): number {
+  if (!curve.length) return fallback;
+  if (timeSec <= curve[0].timeSec) return curve[0].pitch;
+  const last = curve[curve.length - 1];
+  if (timeSec >= last.timeSec) return last.pitch;
+  for (let i = 1; i < curve.length; i++) {
+    const right = curve[i];
+    const left = curve[i - 1];
+    if (timeSec <= right.timeSec) {
+      const span = Math.max(1e-6, right.timeSec - left.timeSec);
+      const blend = (timeSec - left.timeSec) / span;
+      return left.pitch + (right.pitch - left.pitch) * blend;
+    }
+  }
+  return fallback;
+}
+
 function granularPitchShift(
   input: Float32Array,
   sampleRate: number,
-  semitones: number
+  segment: DetectedPitchSegment,
+  strength: number,
+  vibratoPreservation: number
 ): Float32Array {
-  if (Math.abs(semitones) < 0.04 || input.length < 128) return input.slice();
-  const ratio = Math.pow(2, semitones / 12);
   const grainSize = Math.min(input.length, Math.max(128, Math.round(sampleRate * 0.045)));
   const hop = Math.max(32, Math.floor(grainSize / 2));
   const sum = new Float64Array(input.length);
@@ -194,6 +217,27 @@ function granularPitchShift(
 
   for (let grainStart = 0; grainStart < input.length; grainStart += hop) {
     const grainLength = Math.min(grainSize, input.length - grainStart);
+    const grainTime = segment.startSec + (grainStart + grainLength / 2) / sampleRate;
+    const localPitch = pitchAtTime(segment.pitchCurve, grainTime, segment.detectedPitch);
+    const vibratoDeviation = localPitch - segment.detectedPitch;
+    // Preservation 1 keeps the source pitch contour; 0 flattens it towards the
+    // target note. The note's average pitch is always moved to the target.
+    const semitones = (
+      segment.targetMidi -
+      segment.detectedPitch -
+      vibratoDeviation * (1 - vibratoPreservation)
+    ) * strength;
+    if (Math.abs(semitones) < 0.04) {
+      for (let index = 0; index < grainLength; index++) {
+        const outputIndex = grainStart + index;
+        const phase = grainSize <= 1 ? 0 : index / (grainSize - 1);
+        const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
+        sum[outputIndex] += input[outputIndex] * window;
+        weights[outputIndex] += window;
+      }
+      continue;
+    }
+    const ratio = Math.pow(2, semitones / 12);
     for (let index = 0; index < grainLength; index++) {
       const outputIndex = grainStart + index;
       const sourcePosition = grainStart + index * ratio;
@@ -230,12 +274,14 @@ export function applyMonophonicPitchCorrection(
   startSec: number,
   lengthSec: number,
   segments: DetectedPitchSegment[],
-  strength = 1
+  strength = 1,
+  vibratoPreservation = 1
 ): Float32Array[] {
   const totalFrames = Math.min(...channels.map((channel) => channel.length));
   const startFrame = Math.max(0, Math.min(totalFrames, Math.floor(startSec * sampleRate)));
   const endFrame = Math.max(startFrame, Math.min(totalFrames, Math.ceil((startSec + lengthSec) * sampleRate)));
   const amount = Math.max(0, Math.min(1, strength));
+  const vibratoAmount = Math.max(0, Math.min(1, vibratoPreservation));
 
   return channels.map((channel) => {
     const output = channel.slice(startFrame, endFrame);
@@ -244,8 +290,13 @@ export function applyMonophonicPitchCorrection(
       const localEnd = Math.min(output.length, Math.ceil(segment.endSec * sampleRate));
       if (localEnd - localStart < 128) continue;
       const source = output.slice(localStart, localEnd);
-      const shift = (segment.targetMidi - segment.detectedPitch) * amount;
-      const corrected = granularPitchShift(source, sampleRate, shift);
+      const corrected = granularPitchShift(
+        source,
+        sampleRate,
+        segment,
+        amount,
+        vibratoAmount
+      );
       output.set(corrected, localStart);
     }
     return output;
