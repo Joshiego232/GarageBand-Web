@@ -462,9 +462,6 @@ function LCD() {
           </PopoverContent>
         </Popover>
       </div>
-      {midiSurfaceOpen && (
-        <MidiControlSurface onClose={() => setMidiSurfaceOpen(false)} />
-      )}
     </div>
   );
 }
@@ -658,6 +655,9 @@ export function TopBar() {
           className="hidden sm:block shrink-0"
         />
       </div>
+      {midiSurfaceOpen && (
+        <MidiControlSurface onClose={() => setMidiSurfaceOpen(false)} />
+      )}
     </div>
   );
 }
