@@ -366,6 +366,7 @@ try {
     [0, 2, 4, 5, 7, 9, 11].includes(((snappedPitch % 12) + 12) % 12),
     "Pitch snapping returned a note outside the requested major key",
   );
+  const originalSourceSample = vocalSine[5000];
   const correctionSegment = {
     id: "test-vocal-note",
     startSec: 0.1,
@@ -396,7 +397,7 @@ try {
     "Flex Pitch did not modify the selected note audio",
   );
   expect(
-    vocalSine[5000] === Math.sin((2 * Math.PI * 440 * 5000) / pitchSampleRate) * 0.4,
+    vocalSine[5000] === originalSourceSample,
     "Flex Pitch mutated the original source audio",
   );
   expect(
