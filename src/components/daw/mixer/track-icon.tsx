@@ -18,6 +18,9 @@ import {
   Grid3x3,
   Gamepad2,
   Mic,
+  Folder,
+  AudioLines,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 
@@ -33,6 +36,9 @@ const TRACK_ICONS: Record<string, LucideIcon> = {
   "grid-3x3": Grid3x3,
   "gamepad-2": Gamepad2,
   mic: Mic,
+  folder: Folder,
+  "audio-lines": AudioLines,
+  "sliders-horizontal": SlidersHorizontal,
 };
 
 export function TrackIcon({
