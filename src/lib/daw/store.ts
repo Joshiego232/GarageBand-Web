@@ -228,6 +228,8 @@ export const useDAW = create<DAWState>((set, get) => ({
         stackId: track.stackId ?? null,
         parentTrackId: track.parentTrackId ?? null,
         collapsed: track.collapsed ?? false,
+        sampleZones: track.sampleZones ?? [],
+        sampleDrumKit: track.sampleDrumKit ?? false,
       })),
     };
     set({
