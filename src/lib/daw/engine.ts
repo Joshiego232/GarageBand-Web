@@ -1238,15 +1238,48 @@ export class AudioEngine {
     };
 
     if (track.sampleBufferId || (track.sampleZones ?? []).length) {
-      const selectedZone = selectSamplerZone(track.sampleZones, pitch, velocity);
-      const sampleId = selectedZone?.bufferId ?? track.sampleBufferId;
-      if (!sampleId) {
-        this.openInputNotes.delete(pitch);
-        return;
-      }
-      void this.ensureBufferLoaded(sampleId)
-        .then((buffer) => {
-          if (!buffer) throw new Error("Sampler audio could not be loaded");
+      const prepareLiveSampler = async () => {
+        // MIDI effects can transpose a key or turn it into a chord. Load every
+        // zone on the instrument so every transformed output note is ready.
+        // If the user edits the zone map during download, reload the latest map
+        // before allowing the pressed key to sound.
+        let currentTrack = track;
+        for (;;) {
+          const sampleIds = [...new Set([
+            currentTrack.sampleBufferId,
+            ...(currentTrack.sampleZones ?? []).map((zone) => zone.bufferId),
+          ].filter((id): id is string => !!id))];
+          if (!sampleIds.length) throw new Error("No sample is assigned to this sampler");
+
+          const buffers = await Promise.all(
+            sampleIds.map((sampleId) => this.ensureBufferLoaded(sampleId))
+          );
+          if (buffers.some((buffer) => !buffer)) {
+            throw new Error("One or more sampler sources could not be loaded");
+          }
+
+          const latestTrack = useDAW.getState().project.tracks.find(
+            (item) => item.id === track.id
+          );
+          if (!latestTrack || latestTrack.type !== "midi" || latestTrack.instrument !== track.instrument) {
+            return false;
+          }
+          const latestSampleIds = [...new Set([
+            latestTrack.sampleBufferId,
+            ...(latestTrack.sampleZones ?? []).map((zone) => zone.bufferId),
+          ].filter((id): id is string => !!id))];
+          const loadedIds = new Set(sampleIds);
+          if (latestSampleIds.every((id) => loadedIds.has(id))) return true;
+          currentTrack = latestTrack;
+        }
+      };
+
+      void prepareLiveSampler()
+        .then((ready) => {
+          if (!ready) {
+            this.openInputNotes.delete(pitch);
+            return;
+          }
           playLiveVoices();
         })
         .catch((error: unknown) => {
