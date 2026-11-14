@@ -123,11 +123,7 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
         const current = useDAW.getState().project.midiCCMappings ?? [];
         const next = current.filter(
           (item) =>
-            !(
-              item.deviceId === mapping.deviceId &&
-              item.target === mapping.target &&
-              item.trackId === mapping.trackId
-            )
+            !(item.deviceId === mapping.deviceId && item.cc === mapping.cc)
         );
         setMidiCCMappings([...next, mapping]);
         setLearningTarget(null);
