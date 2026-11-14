@@ -31,12 +31,25 @@ interface TrackNodes {
   eqLow: BiquadFilterNode;
   eqMid: BiquadFilterNode;
   eqHigh: BiquadFilterNode;
+  deEsser: BiquadFilterNode;
+  presence: BiquadFilterNode;
+  gate: DynamicsCompressorNode;
   comp: DynamicsCompressorNode;
+  saturation: WaveShaperNode;
   gain: GainNode;
   panner: StereoPannerNode;
   analyser: AnalyserNode;
   reverbSend: GainNode;
   delaySend: GainNode;
+  chorusDelay: DelayNode;
+  chorusSend: GainNode;
+  chorusLfo: OscillatorNode;
+  chorusDepth: GainNode;
+  flangerDelay: DelayNode;
+  flangerSend: GainNode;
+  flangerFeedback: GainNode;
+  flangerLfo: OscillatorNode;
+  flangerDepth: GainNode;
 }
 
 interface MasterNodes {
@@ -126,8 +139,29 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   eqMid.type = "peaking";
   const eqHigh = ctx.createBiquadFilter();
   eqHigh.type = "highshelf";
+
+  const deEsser = ctx.createBiquadFilter();
+  deEsser.type = "peaking";
+  deEsser.frequency.value = 6800;
+  deEsser.Q.value = 2;
+  const presence = ctx.createBiquadFilter();
+  presence.type = "peaking";
+  presence.frequency.value = 3200;
+  presence.Q.value = 0.8;
+
+  const gate = ctx.createDynamicsCompressor();
+  gate.threshold.value = 0;
+  gate.ratio.value = 1;
+  gate.knee.value = 0;
+  gate.attack.value = 0.004;
+  gate.release.value = 0.12;
+
   const comp = ctx.createDynamicsCompressor();
   setComp(comp, false);
+  const saturation = ctx.createWaveShaper();
+  saturation.curve = new Float32Array([-1, 1]);
+  saturation.oversample = "4x";
+
   const gain = ctx.createGain();
   const panner = ctx.createStereoPanner();
   const analyser = ctx.createAnalyser();
@@ -137,19 +171,163 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   const delaySend = ctx.createGain();
   delaySend.gain.value = 0;
 
-  input.connect(eqLow).connect(eqMid).connect(eqHigh).connect(comp);
-  comp.connect(gain).connect(panner).connect(analyser).connect(master.input);
+  const chorusDelay = ctx.createDelay(0.08);
+  chorusDelay.delayTime.value = 0.02;
+  const chorusSend = ctx.createGain();
+  chorusSend.gain.value = 0;
+  const chorusLfo = ctx.createOscillator();
+  chorusLfo.frequency.value = 0.7;
+  const chorusDepth = ctx.createGain();
+  chorusDepth.gain.value = 0.003;
+  chorusLfo.connect(chorusDepth).connect(chorusDelay.delayTime);
+  chorusLfo.start();
+
+  const flangerDelay = ctx.createDelay(0.03);
+  flangerDelay.delayTime.value = 0.004;
+  const flangerSend = ctx.createGain();
+  flangerSend.gain.value = 0;
+  const flangerFeedback = ctx.createGain();
+  flangerFeedback.gain.value = 0;
+  const flangerLfo = ctx.createOscillator();
+  flangerLfo.frequency.value = 0.25;
+  const flangerDepth = ctx.createGain();
+  flangerDepth.gain.value = 0.0015;
+  flangerLfo.connect(flangerDepth).connect(flangerDelay.delayTime);
+  flangerLfo.start();
+
+  input
+    .connect(eqLow)
+    .connect(eqMid)
+    .connect(eqHigh)
+    .connect(deEsser)
+    .connect(presence)
+    .connect(gate)
+    .connect(comp)
+    .connect(saturation)
+    .connect(gain)
+    .connect(panner)
+    .connect(analyser)
+    .connect(master.input);
+
   panner.connect(reverbSend).connect(master.reverbConv);
   panner.connect(delaySend).connect(master.delay);
-  return { input, eqLow, eqMid, eqHigh, comp, gain, panner, analyser, reverbSend, delaySend };
+
+  // Chorus and flanger are parallel, tempo-independent insert sends.
+  panner.connect(chorusDelay);
+  chorusDelay.connect(chorusSend).connect(analyser);
+
+  panner.connect(flangerDelay);
+  flangerDelay.connect(flangerSend).connect(analyser);
+  flangerDelay.connect(flangerFeedback).connect(flangerDelay);
+
+  return {
+    input, eqLow, eqMid, eqHigh, deEsser, presence, gate, comp, saturation,
+    gain, panner, analyser, reverbSend, delaySend, chorusDelay, chorusSend,
+    chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
+    flangerLfo, flangerDepth,
+  };
 }
 
-function setComp(comp: DynamicsCompressorNode, on: boolean) {
-  comp.threshold.value = on ? -18 : 0;
-  comp.ratio.value = on ? 2.5 : 1;
+function setComp(
+  comp: DynamicsCompressorNode,
+  on: boolean,
+  threshold = -18,
+  ratio = 2.5
+) {
+  comp.threshold.value = on ? threshold : 0;
+  comp.ratio.value = on ? ratio : 1;
   comp.knee.value = on ? 6 : 0;
   comp.attack.value = 0.006;
   comp.release.value = 0.18;
+}
+
+function activeAudioPlugin(track: Track, id: string) {
+  return (track.audioPlugins ?? []).find((plugin) => plugin.pluginId === id) ?? null;
+}
+
+function applyTrackAudioPlugins(tn: TrackNodes, track: Track, tempo: number) {
+  const get = (id: string) => activeAudioPlugin(track, id);
+  const active = (id: string) => !!get(id)?.enabled;
+  const eqPlugin = get("eq");
+  const eqEnabled = eqPlugin ? eqPlugin.enabled : true;
+  const eq = track.eq;
+
+  tn.eqLow.frequency.value = eq.lowFreq;
+  tn.eqLow.gain.value = eqEnabled ? eq.lowGain : 0;
+  tn.eqMid.frequency.value = eq.midFreq;
+  tn.eqMid.Q.value = eq.midQ;
+  tn.eqMid.gain.value = eqEnabled ? eq.midGain : 0;
+  tn.eqHigh.frequency.value = eq.highFreq;
+  tn.eqHigh.gain.value = eqEnabled ? eq.highGain : 0;
+
+  const compressor = get("compressor");
+  setComp(
+    tn.comp,
+    track.compressor || !!compressor?.enabled,
+    compressor?.params.threshold ?? -18,
+    compressor?.params.ratio ?? 2.5
+  );
+
+  const gate = get("noise-gate");
+  tn.gate.threshold.value = gate?.enabled ? gate.params.threshold ?? -48 : 0;
+  tn.gate.ratio.value = gate?.enabled ? 20 : 1;
+  tn.gate.knee.value = gate?.enabled ? 0 : 0;
+  tn.gate.attack.value = 0.004;
+  tn.gate.release.value = 0.12;
+
+  const deEsser = get("de-esser");
+  tn.deEsser.frequency.value = deEsser?.params.frequency ?? 6800;
+  tn.deEsser.gain.value = deEsser?.enabled
+    ? -(deEsser.params.reduction ?? 5)
+    : 0;
+  const presence = get("presence");
+  tn.presence.frequency.value = presence?.params.frequency ?? 3200;
+  tn.presence.gain.value = presence?.enabled ? presence.params.gain ?? 2 : 0;
+
+  const saturation = get("saturation");
+  const drive = saturation?.enabled ? Math.max(0, saturation.params.drive ?? 0.28) : 0;
+  const curve = new Float32Array(1024);
+  const amount = drive * 6;
+  const normalizer = amount > 0 ? Math.tanh(amount) : 1;
+  for (let i = 0; i < curve.length; i++) {
+    const x = (i / (curve.length - 1)) * 2 - 1;
+    curve[i] = amount > 0 ? Math.tanh(x * amount) / normalizer : x;
+  }
+  tn.saturation.curve = curve;
+
+  const chorus = get("chorus");
+  if (chorus?.enabled) {
+    tn.chorusLfo.frequency.value = chorus.params.rate ?? 0.7;
+    tn.chorusDepth.gain.value = 0.001 + (chorus.params.depth ?? 0.45) * 0.006;
+    tn.chorusDelay.delayTime.value = 0.02;
+    tn.chorusSend.gain.value = 0.28;
+  } else {
+    tn.chorusSend.gain.value = 0;
+  }
+
+  const flanger = get("flanger");
+  if (flanger?.enabled) {
+    tn.flangerLfo.frequency.value = flanger.params.rate ?? 0.25;
+    tn.flangerDepth.gain.value = 0.0003 + (flanger.params.feedback ?? 0.35) * 0.002;
+    tn.flangerDelay.delayTime.value = 0.004;
+    tn.flangerFeedback.gain.value = Math.min(0.85, flanger.params.feedback ?? 0.35);
+    tn.flangerSend.gain.value = 0.24;
+  } else {
+    tn.flangerSend.gain.value = 0;
+    tn.flangerFeedback.gain.value = 0;
+  }
+
+  const reverb = get("reverb");
+  const delay = get("delay");
+  tn.reverbSend.gain.value = reverb
+    ? (reverb.enabled ? clamp(reverb.params.amount ?? 0.28, 0, 1) : 0)
+    : clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
+  tn.delaySend.gain.value = delay
+    ? (delay.enabled ? clamp(delay.params.amount ?? 0.22, 0, 1) : 0)
+    : clamp((track.params.delay ?? 0) * 0.9, 0, 1);
+
+  // Keep the delay bus tempo-locked even when the selected effect is bypassed.
+  void tempo;
 }
 
 export class AudioEngine {
