@@ -284,6 +284,10 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
   const patch = PATCHES[instrument];
   return {
     id: partial.id ?? uid(),
+    role: partial.role ?? "track",
+    outputBusId: partial.outputBusId ?? null,
+    vcaId: partial.vcaId ?? null,
+    stackId: partial.stackId ?? null,
     name: partial.name ?? patch?.name ?? "Audio",
     type: partial.type,
     icon: partial.icon ?? (partial.type === "audio" ? "mic" : patch?.icon ?? "piano"),
@@ -318,6 +322,9 @@ export function emptyProject(name = "My Song"): Project {
     metronome: false,
     masterVolume: 0.9,
     tracks: [],
+    stacks: [],
+    alternatives: [],
+    screensets: [],
   };
 }
 
