@@ -329,6 +329,7 @@ export function emptyProject(name = "My Song"): Project {
     metronome: false,
     masterVolume: 0.9,
     audioOutputDeviceId: null,
+    midiCCMappings: [],
     tracks: [],
     stacks: [],
     alternatives: [],
