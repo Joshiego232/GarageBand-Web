@@ -43,15 +43,6 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
   const selectedTrack = project.tracks.find((track) => track.id === selectedTrackId) ?? null;
   const selectedInput = access?.inputs.get(selectedInputId);
 
-  const refreshInputs = () => {
-    if (!access) return;
-    const next = Array.from(access.inputs.values());
-    setInputs(next);
-    if (!next.some((input) => input.id === selectedInputId)) {
-      setSelectedInputId(next[0]?.id ?? "");
-    }
-  };
-
   const connectMidi = async () => {
     const nav = navigator as Navigator & {
       requestMIDIAccess?: () => Promise<MidiAccessLike>;
@@ -82,7 +73,13 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (!access) return;
-    const onStateChange = () => refreshInputs();
+    const onStateChange = () => {
+      const next = Array.from(access.inputs.values());
+      setInputs(next);
+      if (!next.some((input) => input.id === selectedInputId)) {
+        setSelectedInputId(next[0]?.id ?? "");
+      }
+    };
     access.onstatechange = onStateChange;
     return () => {
       access.onstatechange = null;
@@ -96,7 +93,6 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
     const handleMessage = (event: { data: Uint8Array }) => {
       const statusByte = event.data[0] ?? 0;
       const command = statusByte & 0xf0;
-      const channel = statusByte & 0x0f;
       const data1 = event.data[1] ?? 0;
       const data2 = event.data[2] ?? 0;
 
