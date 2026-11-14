@@ -589,17 +589,22 @@ export class AudioEngine {
         if (durTicks <= 0) continue;
         const when = timeAt(absStart);
         const dur = tickToSec(durTicks, project.tempo);
+        const noteStart = Math.max(when, (this.ctx as AudioContext).currentTime);
         const voice = playNote(
           this.ctx as AudioContext,
           tn.input,
           track.instrument,
           n.pitch,
           n.velocity / 127,
-          Math.max(when, (this.ctx as AudioContext).currentTime),
+          noteStart,
           dur,
           track.params
         );
-        this.voices.push({ handle: voice, until: when + dur + 6 });
+        // All sustained instruments must receive MIDI note-off at the end of
+        // the note. Without this, pads, strings, organs and leads can sustain
+        // until transport stop even though the region/note has already ended.
+        voice.scheduleStop(noteStart + dur);
+        this.voices.push({ handle: voice, until: noteStart + dur + 6 });
       }
     }
   }
@@ -969,7 +974,20 @@ export class AudioEngine {
               if (absStart >= regionEnd) continue;
               const durTicks = Math.min(n.length, regionEnd - absStart);
               if (durTicks <= 0) continue;
-              playNote(offline, tn.input, track.instrument, n.pitch, n.velocity / 127, timeAt(absStart), tickToSec(durTicks, project.tempo), track.params);
+              const noteStart = timeAt(absStart);
+              const noteDuration = tickToSec(durTicks, project.tempo);
+              const voice = playNote(
+                offline,
+                tn.input,
+                track.instrument,
+                n.pitch,
+                n.velocity / 127,
+                noteStart,
+                noteDuration,
+                track.params
+              );
+              // Match live playback: release sustained patches at MIDI note-off.
+              voice.scheduleStop(noteStart + noteDuration);
             }
           }
         } else if (region.bufferId) {
