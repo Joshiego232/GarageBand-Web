@@ -367,6 +367,58 @@ export function AudioEditor() {
     store.updateRegion(r.id, { gain: Math.min(1.5, 0.95 / peak) });
   };
 
+  const onBakeEdits = async () => {
+    const r = region;
+    if (!r || !stored || busy) return;
+    setBusy(true);
+    try {
+      const sr = stored.sampleRate;
+      const total = stored.channels[0]?.length ?? 0;
+      const s0 = Math.max(0, Math.floor(sampleStart * sr));
+      const s1 = Math.min(total, Math.ceil((sampleStart + sampleLength) * sr));
+      if (s1 <= s0) {
+        toast.error("The selected audio range is empty");
+        return;
+      }
+
+      // Create a new PCM asset containing only this region's sample-accurate
+      // range, with the current region gain baked in. The source asset remains
+      // untouched so other regions that share it are safe.
+      const channels = stored.channels.map((channel) => {
+        const result = channel.slice(s0, s1);
+        for (let index = 0; index < result.length; index++) {
+          result[index] = (result[index] ?? 0) * gain;
+        }
+        return result;
+      });
+      const newId = `edit-${r.bufferId ?? "buf"}-${Date.now().toString(36)}`;
+      await engine.storeBuffer(newId, {
+        sampleRate: sr,
+        channels,
+        name: stored.name,
+      });
+      const store = useDAW.getState();
+      store.commit();
+      store.updateRegion(
+        r.id,
+        {
+          bufferId: newId,
+          sampleStart: 0,
+          sampleLength: (s1 - s0) / sr,
+          gain: 1,
+        },
+        false
+      );
+      setLoadTick((tick) => tick + 1);
+      toast.success("Audio edits baked into a new sample");
+    } catch (error) {
+      console.error("Bake audio edits failed", error);
+      toast.error("Could not bake these audio edits");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onReverse = async () => {
     const r = region;
     if (!r || !stored || busy) return;
@@ -632,6 +684,17 @@ export function AudioEditor() {
           >
             {busy ? <Loader2 className="size-3 animate-spin" /> : <ArrowLeftRight className="size-3" />}
             Reverse
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className={BTN}
+            onClick={onBakeEdits}
+            disabled={!stored || busy}
+            title="Destructively crop to the region boundaries and apply region gain to a new sample; shared source audio is preserved"
+          >
+            <Zap className="size-3" />
+            Bake Edits
           </Button>
           <Button
             size="sm"
