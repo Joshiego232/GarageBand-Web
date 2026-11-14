@@ -1,3 +1,5 @@
+import type { TrackPluginInstance } from "./plugins";
+
 // ============================================================
 // Core type definitions for the WebBand DAW
 // All timing is in MIDI ticks (PPQ = 960 per quarter note)
@@ -64,6 +66,8 @@ export interface Track {
   compressor: boolean;
   eq: EqSettings;
   params: Record<string, number>; // smart-control params (patch knobs + sends)
+  midiPlugins?: TrackPluginInstance[];
+  audioPlugins?: TrackPluginInstance[];
   regions: Region[];
 }
 
