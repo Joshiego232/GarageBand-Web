@@ -5,6 +5,7 @@
 // patches), Audio, or Drummer. Mounted when ui.modal === 'addTrack'.
 // ============================================================
 
+import { useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import {
   AudioWaveform,
