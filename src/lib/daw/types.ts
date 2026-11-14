@@ -50,8 +50,38 @@ export interface EqSettings {
   highFreq: number; // Hz 1500..18000
 }
 
+export type TrackRole = "track" | "aux" | "vca";
+
+export interface TrackStack {
+  id: string;
+  name: string;
+  type: "folder" | "summing";
+  trackIds: string[];
+  busTrackId?: string;
+}
+
+export interface ProjectAlternative {
+  id: string;
+  name: string;
+  snapshot: string;
+  savedAt: string;
+}
+
+export interface ScreenSet {
+  id: string;
+  name: string;
+  panels: Record<PanelKey, boolean>;
+  editorMode: EditorMode;
+  trackSize: TrackSize;
+  zoom: number;
+}
+
 export interface Track {
   id: string;
+  role?: TrackRole;
+  outputBusId?: string | null;
+  vcaId?: string | null;
+  stackId?: string | null;
   name: string;
   type: TrackType;
   icon: string; // icon key from INSTRUMENTS or 'mic' for audio
@@ -85,6 +115,9 @@ export interface Project {
   metronome: boolean;
   masterVolume: number; // 0..1.25
   tracks: Track[];
+  stacks?: TrackStack[];
+  alternatives?: ProjectAlternative[];
+  screensets?: ScreenSet[];
 }
 
 // ---------- UI state ----------
