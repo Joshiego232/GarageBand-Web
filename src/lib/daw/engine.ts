@@ -189,6 +189,7 @@ export class AudioEngine {
   private bufferCache = new Map<string, StoredBuffer>();
   private pendingLoads = new Set<string>();
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
+  private auditionDest: GainNode | null = null;
 
   // loop preview
   private preview: {
@@ -249,7 +250,10 @@ export class AudioEngine {
         tn = buildTrack(ctx, m);
         this.tracks.set(track.id, tn);
       }
-      if (track.type === "midi") void warmSampledPatch(ctx, tn.input, track.instrument);
+      if (track.type === "midi") {
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) void warmSampledPatch(ctx, tn.input, patch);
+      }
       const eq = track.eq;
       tn.eqLow.frequency.value = eq.lowFreq;
       tn.eqLow.gain.value = eq.lowGain;
@@ -748,12 +752,28 @@ export class AudioEngine {
     if (!this.master) return;
     const st = useDAW.getState();
     const p = params ?? st.project.tracks.find((t) => t.instrument === patchId)?.params ?? {};
-    const g = ctx.createGain();
-    g.gain.value = 1;
-    g.connect(this.master.input);
-    const v = playNote(ctx, g, patchId, pitch, velocity / 127, ctx.currentTime, 0.5, p);
-    this.voices.push({ handle: v, until: ctx.currentTime + 6 });
-    setTimeout(() => { try { g.disconnect(); } catch { /* noop */ } }, 6000);
+
+    if (!this.auditionDest) {
+      this.auditionDest = ctx.createGain();
+      this.auditionDest.gain.value = 1;
+      this.auditionDest.connect(this.master.input);
+    }
+
+    const dest = this.auditionDest;
+    const play = () => {
+      const when = ctx.currentTime;
+      const duration = 0.5;
+      const voice = playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p);
+      voice.scheduleStop(when + duration);
+      this.voices.push({ handle: voice, until: when + 6 });
+    };
+
+    const patch = PATCHES[patchId];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, dest, patch).then(play);
+      return;
+    }
+    play();
   }
 
   // ---------------- loop preview ----------------
@@ -807,6 +827,7 @@ export class AudioEngine {
         const when = base + n.start;
         if (when < ctx.currentTime || when >= horizon) continue;
         const v = playNote(ctx, pv.dest, pv.patchId, n.pitch, n.velocity / 127, when, n.len, params);
+        v.scheduleStop(when + n.len);
         this.voices.push({ handle: v, until: when + n.len + 4 });
       }
     }
