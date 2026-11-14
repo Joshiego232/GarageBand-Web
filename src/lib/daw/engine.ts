@@ -1176,7 +1176,7 @@ export class AudioEngine {
       if (track.type === "midi") {
         // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
         const patch = PATCHES[track.instrument];
-        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch);
+        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch, true);
       }
 
       for (const region of track.regions) {
