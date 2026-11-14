@@ -162,6 +162,7 @@ const initialUI: UIState = {
     editor: false,
     keyboard: false,
     help: false,
+    liveLoops: false,
   },
   editorMode: "smart",
   editorRegionId: null,
