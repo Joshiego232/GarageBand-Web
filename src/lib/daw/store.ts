@@ -258,7 +258,10 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
   },
 
-  setMasterVolume: (v) => set({ project: { ...get().project, masterVolume: clamp(v, 0, 1.25) } }),
+  setAudioOutputDevice: (deviceId) => set({
+    project: { ...get().project, audioOutputDeviceId: deviceId },
+  }),
+    setMasterVolume: (v) => set({ project: { ...get().project, masterVolume: clamp(v, 0, 1.25) } }),
 
   setCountIn: (on) => set({ project: { ...get().project, countIn: on } }),
 
