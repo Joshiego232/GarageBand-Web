@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AudioWaveform,
   Music2,
@@ -27,6 +27,8 @@ export function LiveLoopsPanel() {
   const setUI = useDAW((state) => state.setUI);
   const [activeByTrack, setActiveByTrack] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => () => engine.stopLiveLoops(), []);
 
   const tracks = project.tracks.filter(
     (track) => (track.role ?? "track") === "track" && track.type !== undefined
