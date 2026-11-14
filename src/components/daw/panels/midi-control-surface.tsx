@@ -8,20 +8,22 @@ import { engine } from "@/lib/daw/engine";
 import { uid, type MidiCCMapping, type MidiCCTarget } from "@/lib/daw/types";
 import { midiCCToValue, midiCCTargetLabel } from "@/lib/daw/midi-control";
 
-interface MidiInputPortLike {
+interface MidiInputPortLike extends EventTarget {
   id: string;
   name?: string;
   manufacturer?: string;
   state?: string;
-  onmidimessage: ((event: { data: Uint8Array }) => void) | null;
 }
 
-interface MidiAccessLike {
+interface MidiAccessLike extends EventTarget {
   inputs: {
     get(id: string): MidiInputPortLike | undefined;
     values(): IterableIterator<MidiInputPortLike>;
   };
-  onstatechange: (() => void) | null;
+}
+
+interface MidiMessageEventLike extends Event {
+  data: Uint8Array;
 }
 
 interface LearningTarget {
@@ -80,9 +82,9 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
         setSelectedInputId(next[0]?.id ?? "");
       }
     };
-    access.onstatechange = onStateChange;
+    access.addEventListener("statechange", onStateChange);
     return () => {
-      access.onstatechange = null;
+      access.removeEventListener("statechange", onStateChange);
     };
   }, [access, selectedInputId]);
 
@@ -154,9 +156,10 @@ export function MidiControlSurface({ onClose }: { onClose: () => void }) {
       }
     };
 
-    selectedInput.onmidimessage = handleMessage;
+    const onMidiMessage: EventListener = (event) => handleMessage(event as MidiMessageEventLike);
+    selectedInput.addEventListener("midimessage", onMidiMessage);
     return () => {
-      selectedInput.onmidimessage = null;
+      selectedInput.removeEventListener("midimessage", onMidiMessage);
       for (const pitch of activeNotes) engine.noteOff(pitch);
     };
   }, [selectedInput, learningTarget]);
