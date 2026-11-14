@@ -111,6 +111,11 @@ export interface Track {
   sampleZones?: SamplerZone[];
   volume: number; // 0..1.25 (1 = 0 dB)
   pan: number; // -1..1
+  /** Enable HRTF binaural 3D panning for stereo headphone playback. */
+  spatialEnabled?: boolean;
+  spatialX?: number; // metres, -5..5
+  spatialY?: number; // metres, -5..5
+  spatialZ?: number; // metres, -5..5 (negative is in front of listener)
   mute: boolean;
   solo: boolean;
   armed: boolean;
