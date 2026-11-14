@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowLeftRight, Loader2, Play, Repeat, Scissors, Zap } from "lucide-react";
+import { ArrowLeftRight, Layers3, Loader2, Play, Repeat, Scissors, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
@@ -14,7 +14,7 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
-import { clamp, formatBarsBeats, gainToDb, secToTick } from "@/lib/daw/utils";
+import { barTicks, clamp, formatBarsBeats, gainToDb, secToTick, tickToSec } from "@/lib/daw/utils";
 import { uid } from "@/lib/daw/types";
 import { toast } from "sonner";
 import { findActiveRegion } from "./piano-roll";
@@ -40,6 +40,14 @@ export function AudioEditor() {
     findActiveRegion(s.project, s.ui.editorRegionId, s.ui.selectedRegionIds, s.ui.selectedTrackId)?.region ?? null
   );
   const timeSig = useDAW((s) => s.project.timeSig);
+  const tempo = useDAW((s) => s.project.tempo);
+  const track = useDAW((s) =>
+    findActiveRegion(s.project, s.ui.editorRegionId, s.ui.selectedRegionIds, s.ui.selectedTrackId)?.track ?? null
+  );
+  const createAudioComp = useDAW((s) => s.createAudioComp);
+
+  const [showComping, setShowComping] = useState(false);
+  const [compSourceByBar, setCompSourceByBar] = useState<Record<number, string>>({});
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [fadeHover, setFadeHover] = useState<"in" | "out" | null>(null);
@@ -69,6 +77,65 @@ export function AudioEditor() {
   const gain = region?.gain ?? 1;
   const looped = region?.looped ?? false;
   const maxFadeMs = Math.max(0, Math.round((sampleLength / 2) * 1000));
+  const takeCandidates = useMemo(() => {
+    if (!track || !region || region.type !== "audio") return [];
+    const regionEnd = region.start + region.length;
+    return track.regions
+      .filter((item) =>
+        item.type === "audio" &&
+        item.id !== region.id &&
+        item.start < regionEnd &&
+        item.start + item.length > region.start
+      )
+      .sort((a, b) => a.start - b.start);
+  }, [track, region]);
+
+  const compSources = region && region.type === "audio"
+    ? [region, ...takeCandidates]
+    : [];
+  const compBarTicks = barTicks(timeSig);
+  const compBarCount = region?.type === "audio"
+    ? Math.min(16, Math.max(1, Math.ceil(region.length / compBarTicks)))
+    : 0;
+
+  const commitQuickComp = () => {
+    if (!region || region.type !== "audio" || !track || compSources.length < 2) return;
+    const takeIds = compSources.map((take) => take.id);
+    const secPerTick = 60 / tempo / 960;
+    const segments = Array.from({ length: compBarCount }, (_, index) => {
+      const offsetTicks = index * compBarTicks;
+      const lengthTicks = Math.min(compBarTicks, region.length - offsetTicks);
+      const chosenId = compSourceByBar[index] ?? region.id;
+      const source = compSources.find((take) => take.id === chosenId) ?? region;
+      const sourceOffsetSec = Math.max(0, (region.start + offsetTicks - source.start) * secPerTick);
+      const sourceLength = source.sampleLength ?? sampleLength;
+      const availableSec = Math.max(0, sourceLength - sourceOffsetSec);
+      const segmentDuration = Math.min(tickToSec(lengthTicks, tempo), availableSec);
+      return {
+        ...source,
+        id: uid(),
+        name: `${region.name} Comp ${index + 1}`,
+        trackId: track.id,
+        start: region.start + offsetTicks,
+        length: Math.max(1, Math.round(segmentDuration / secPerTick)),
+        looped: false,
+        coreLength: undefined,
+        sampleStart: (source.sampleStart ?? 0) + sourceOffsetSec,
+        sampleLength: segmentDuration,
+        fadeIn: source.fadeIn ?? 0.005,
+        fadeOut: source.fadeOut ?? 0.01,
+      };
+    }).filter((segment) => segment.sampleLength > 0.01);
+
+    if (!segments.length) {
+      toast.error("No usable audio segments were found in these takes");
+      return;
+    }
+    createAudioComp(track.id, takeIds, segments);
+    setShowComping(false);
+    setCompSourceByBar({});
+    toast.success(`Created a ${segments.length}-section comp from ${compSources.length} takes`);
+  };
 
   // ---------- PCM loading ----------
 
@@ -623,6 +690,62 @@ export function AudioEditor() {
             />
           </label>
         </div>
+
+        {takeCandidates.length > 0 && (
+          <div className="flex flex-col gap-2 rounded border border-[#8c75c8]/35 bg-[#8c75c8]/[0.07] p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[9px] uppercase tracking-wider text-[#bba8ed]">Quick Swipe Comp</span>
+              <span className="text-[9px] text-zinc-500">{takeCandidates.length + 1} takes</span>
+            </div>
+            <p className="text-[9px] leading-snug text-zinc-500">
+              Choose the take used for each bar, then commit the comp. Other overlapping takes on this track will be removed from the arrangement.
+            </p>
+            {showComping ? (
+              <>
+                <div className="max-h-36 overflow-y-auto space-y-1">
+                  {Array.from({ length: compBarCount }, (_, index) => (
+                    <label key={index} className="flex items-center gap-2">
+                      <span className="w-12 shrink-0 text-[9px] text-zinc-500">Bar {index + 1}</span>
+                      <select
+                        value={compSourceByBar[index] ?? region?.id ?? ""}
+                        onChange={(event) => setCompSourceByBar((current) => ({
+                          ...current,
+                          [index]: event.target.value,
+                        }))}
+                        className="h-7 min-w-0 flex-1 rounded border border-black/50 bg-[#232327] px-1.5 text-[9px] text-zinc-200"
+                      >
+                        {compSources.map((take, takeIndex) => (
+                          <option key={take.id} value={take.id}>
+                            {takeIndex === 0 ? `Current · ${take.name}` : `Take ${takeIndex + 1} · ${take.name}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button size="sm" variant="secondary" className={BTN} onClick={() => setShowComping(false)}>Cancel</Button>
+                  <Button size="sm" variant="secondary" className={BTN_ACTIVE} onClick={commitQuickComp}>
+                    <Layers3 className="size-3" /> Create Comp
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="secondary"
+                className={BTN}
+                onClick={() => {
+                  setCompSourceByBar({});
+                  setShowComping(true);
+                }}
+                title="Choose the best take for each bar"
+              >
+                <Layers3 className="size-3" /> Choose Comp Phrases
+              </Button>
+            )}
+          </div>
+        )}
 
         <div className="flex flex-col gap-1 rounded border border-black/40 bg-[#19191c] p-2">
           <div className="flex items-center justify-between">
