@@ -1388,16 +1388,19 @@ export class AudioEngine {
     const ctx = this.ensure();
     const project = useDAW.getState().project;
     this.sync(project);
+    await this.prepareLiveClipAssets(clips, project, ctx);
     const launchTime = ctx.currentTime + 0.1;
     this.liveGridStartTime = launchTime;
     await this.addLiveClips(clips, launchTime, project, ctx);
   }
 
   async launchLiveClip(trackId: string, regionId: string): Promise<void> {
-    this.stopLiveClip(trackId);
     const ctx = this.ensure();
     const project = useDAW.getState().project;
     this.sync(project);
+    const refs = [{ trackId, regionId }];
+    await this.prepareLiveClipAssets(refs, project, ctx);
+    this.stopLiveClip(trackId);
     const barSeconds = tickToSec(barTicks(project.timeSig), project.tempo);
     if (this.liveGridStartTime <= 0 || ctx.currentTime < this.liveGridStartTime) {
       this.liveGridStartTime = ctx.currentTime + 0.05;
@@ -1405,7 +1408,37 @@ export class AudioEngine {
     const elapsed = Math.max(0, ctx.currentTime - this.liveGridStartTime);
     const launchTime =
       this.liveGridStartTime + (Math.floor(elapsed / barSeconds) + 1) * barSeconds;
-    await this.addLiveClips([{ trackId, regionId }], launchTime, project, ctx);
+    await this.addLiveClips(refs, launchTime, project, ctx);
+  }
+
+  private async prepareLiveClipAssets(
+    clips: LiveClipRef[],
+    project: Project,
+    ctx: AudioContext
+  ) {
+    const loads = clips.map(async (ref) => {
+      const track = project.tracks.find((item) => item.id === ref.trackId);
+      const region = track?.regions.find((item) => item.id === ref.regionId);
+      if (!track || !region) return;
+
+      if (region.type === "audio" && region.bufferId) {
+        const stored = await this.ensureBufferLoaded(region.bufferId);
+        if (!stored) throw new Error(`Could not load audio clip ${region.name}`);
+        return;
+      }
+
+      if (region.type !== "midi") return;
+      if (track.sampleBufferId) {
+        const stored = await this.ensureBufferLoaded(track.sampleBufferId);
+        if (!stored) throw new Error(`Could not load Quick Sampler for ${track.name}`);
+        return;
+      }
+
+      const patch = PATCHES[track.instrument];
+      const nodes = this.tracks.get(track.id);
+      if (patch?.sampled && nodes) await warmSampledPatch(ctx, nodes.input, patch);
+    });
+    await Promise.all(loads);
   }
 
   private async addLiveClips(
