@@ -3,6 +3,7 @@
 // are used for the expanded library.
 import {
   DrumMachine,
+  ElectricPiano,
   SampleLoader,
   SplendidGrandPiano,
   Soundfont,
@@ -102,6 +103,14 @@ export function warmSampledPatch(
           notes: PIANO_SAMPLE_NOTES,
           velocityRange: [1, 127],
         },
+      }) as unknown as SampledPlayer;
+      break;
+    case "electric-piano":
+      player = ElectricPiano(ctx, {
+        instrument: source.instrument,
+        destination: dest,
+        loader,
+        volume: 96,
       }) as unknown as SampledPlayer;
       break;
     case "drum-machine":
