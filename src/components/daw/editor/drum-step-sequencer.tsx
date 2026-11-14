@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { ChevronLeft, ChevronRight, Drum } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
@@ -27,27 +27,33 @@ export function DrumStepSequencer() {
   const timeSig = useDAW((s) => s.project.timeSig);
   const addNote = useDAW((s) => s.addNote);
   const removeNotes = useDAW((s) => s.removeNotes);
-  const [barIndex, setBarIndex] = useState(0);
-  useEffect(() => setBarIndex(0), [region?.id]);
+  const [barSelection, setBarSelection] = useState<{ regionId: string | null; index: number }>({
+    regionId: null,
+    index: 0,
+  });
+  const barIndex = barSelection.regionId === region?.id ? barSelection.index : 0;
+  const setBarIndex = (index: number) =>
+    setBarSelection({ regionId: region?.id ?? null, index });
 
   const ticksPerBar = barTicks(timeSig);
   const stepTicks = ticksPerBar / 16;
   const bars = Math.max(1, Math.ceil((region?.length ?? ticksPerBar) / ticksPerBar));
   const notes = region?.notes ?? [];
-  const active = useMemo(() => {
-    const result = new Map<string, Note>();
-    const rawOffset = barIndex * ticksPerBar;
-    const offset = region?.looped && region.coreLength ? rawOffset % region.coreLength : rawOffset;
-    for (const voice of VOICES) {
-      for (const note of notes) {
-        if (note.pitch === voice.pitch && Math.abs(note.start - offset - Math.round((note.start - offset) / stepTicks) * stepTicks) < 12) {
-          const step = Math.round((note.start - offset) / stepTicks);
-          if (step >= 0 && step < 16) result.set(`${voice.pitch}:${step}`, note);
-        }
+  const active = new Map<string, Note>();
+  const rawOffset = barIndex * ticksPerBar;
+  const offset = region?.looped && region.coreLength ? rawOffset % region.coreLength : rawOffset;
+  for (const voice of VOICES) {
+    for (const note of notes) {
+      if (
+        note.pitch === voice.pitch &&
+        Math.abs(note.start - offset - Math.round((note.start - offset) / stepTicks) * stepTicks) < 12
+      ) {
+        const step = Math.round((note.start - offset) / stepTicks);
+        if (step >= 0 && step < 16) active.set(`${voice.pitch}:${step}`, note);
       }
     }
-    return result;
-  }, [notes, barIndex, ticksPerBar, stepTicks, region?.looped, region?.coreLength]);
+  }
+
 
   if (!region || !track || region.type !== "midi") {
     return <div className="flex-1 grid place-items-center text-xs text-zinc-600">Select a MIDI drum region to edit its steps</div>;
