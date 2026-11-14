@@ -35,6 +35,7 @@ export interface Region {
   bufferId?: string; // IndexedDB key for PCM data
   sampleStart?: number; // seconds into the buffer
   sampleLength?: number; // seconds of audio content
+  playbackRate?: number; // varispeed: 0.5..2, changes pitch and duration together
   gain?: number; // linear playback gain
   fadeIn?: number; // seconds
   fadeOut?: number; // seconds
