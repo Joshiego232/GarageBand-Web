@@ -51,6 +51,7 @@ interface DAWState {
   setKey: (tonic: number, mode: "major" | "minor") => void;
   setCycle: (on: boolean, start?: number, end?: number) => void;
   setMasterVolume: (v: number) => void;
+  setAudioOutputDevice: (deviceId: string | null) => void;
   setCountIn: (on: boolean) => void;
   setMetronome: (on: boolean) => void;
 
@@ -216,6 +217,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       stacks: p.stacks ?? [],
       alternatives: p.alternatives ?? [],
       screensets: p.screensets ?? [],
+      audioOutputDeviceId: p.audioOutputDeviceId ?? null,
       tracks: p.tracks.map((track) => ({
         ...track,
         role: track.role ?? "track",
