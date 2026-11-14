@@ -23,6 +23,7 @@ try {
     "src/lib/daw/plugins.ts",
     "src/lib/daw/routing.ts",
     "src/lib/daw/sampler.ts",
+    "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
     "src/lib/daw/sampled-instruments.ts",
@@ -67,6 +68,9 @@ try {
   );
   const sampler = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/sampler.js")).href
+  );
+  const midiControl = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/midi-control.js")).href
   );
   const { useDAW } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/store.js")).href
@@ -269,6 +273,30 @@ try {
     "Loop sample mode should release on MIDI note-off",
   );
 
+  // Verify hardware MIDI CC scaling and pan endpoints.
+  expect(
+    midiControl.midiCCToValue("master-volume", 0) === 0,
+    "MIDI CC zero did not map to zero master volume",
+  );
+  expect(
+    midiControl.midiCCToValue("master-volume", 127) === 1.25,
+    "MIDI CC full scale did not map to the DAW master-volume range",
+  );
+  expect(
+    midiControl.midiCCToValue("track-pan", 0) === -1 &&
+      midiControl.midiCCToValue("track-pan", 127) === 1,
+    "MIDI CC pan endpoints were not mapped to hard left and right",
+  );
+  expect(
+    midiControl.midiCCToValue("track-volume", -20) === 0 &&
+      midiControl.midiCCToValue("track-volume", 200) === 1.25,
+    "Out-of-range MIDI CC values were not safely clamped",
+  );
+  expect(
+    midiControl.midiCCTargetLabel("track-pan") === "Track Pan",
+    "MIDI CC target label is incorrect",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -438,7 +466,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior and solo checks passed.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
