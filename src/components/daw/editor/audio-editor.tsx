@@ -14,6 +14,7 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
+import { detectTransientCuts } from "@/lib/daw/audio-slicing";
 import { barTicks, clamp, formatBarsBeats, gainToDb, noteName, secToTick, tickToSec } from "@/lib/daw/utils";
 import { PPQ, uid } from "@/lib/daw/types";
 import {
@@ -68,6 +69,7 @@ export function AudioEditor() {
   const [fadeDrag, setFadeDrag] = useState<"in" | "out" | null>(null);
   const [busy, setBusy] = useState(false);
   const [silenceThreshold, setSilenceThreshold] = useState(-48);
+  const [sliceSensitivity, setSliceSensitivity] = useState(-18);
   const [loadTick, setLoadTick] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -543,6 +545,73 @@ export function AudioEditor() {
     }
   };
 
+  const onSliceAtTransients = () => {
+    const r = region;
+    if (!r || !stored || busy) return;
+    setBusy(true);
+    try {
+      const cuts = detectTransientCuts(
+        stored.channels,
+        stored.sampleRate,
+        sampleStart,
+        sampleLength,
+        sliceSensitivity
+      );
+      if (!cuts.length) {
+        toast.warning("No clear transients found. Try a lower sensitivity value or use a sharper recording.");
+        return;
+      }
+
+      const boundaries = [0, ...cuts, sampleLength];
+      const usableBoundaries = boundaries.filter((value, index) =>
+        index === 0 ||
+        index === boundaries.length - 1 ||
+        boundaries[index + 1] - value >= 0.07
+      );
+      if (usableBoundaries.length < 3) {
+        toast.warning("Not enough separate transients were found to create useful slices");
+        return;
+      }
+
+      const project = useDAW.getState().project;
+      const rate = clamp(r.playbackRate ?? 1, 0.5, 2);
+      const segments = usableBoundaries.slice(0, -1).map((offsetSec, index) => {
+        const endSec = usableBoundaries[index + 1];
+        const sliceDuration = endSec - offsetSec;
+        const startTick = Math.round(secToTick(offsetSec / rate, project.tempo));
+        const endTick = Math.round(secToTick(endSec / rate, project.tempo));
+        const isFirst = index === 0;
+        const isLast = index === usableBoundaries.length - 2;
+        return {
+          ...r,
+          id: uid(),
+          name: `${r.name} Slice ${index + 1}`,
+          start: r.start + startTick,
+          length: Math.max(1, endTick - startTick),
+          looped: false,
+          coreLength: undefined,
+          sampleStart: sampleStart + offsetSec,
+          sampleLength: sliceDuration,
+          fadeIn: isFirst ? r.fadeIn ?? 0 : 0.004,
+          fadeOut: isLast ? r.fadeOut ?? 0 : 0.006,
+        };
+      }).filter((segment) => segment.sampleLength >= 0.04);
+
+      if (segments.length < 2) {
+        toast.warning("Not enough usable transients were found to create separate slices");
+        return;
+      }
+
+      useDAW.getState().replaceRegionWithSegments(r.id, segments);
+      toast.success(`Slicing created ${segments.length} separate audio regions`);
+    } catch (error) {
+      console.error("Transient slicing failed", error);
+      toast.error("Could not slice this audio region");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onStripSilence = () => {
     const r = region;
     if (!r || !stored || busy) return;
@@ -1000,6 +1069,37 @@ export function AudioEditor() {
             )}
           </div>
         )}
+
+        <div className="flex flex-col gap-2 rounded border border-[#d6a85f]/25 bg-[#d6a85f]/[0.04] p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] uppercase tracking-wider text-[#d8b779]">Transient Slicing</span>
+            <span className="text-[9px] font-mono text-zinc-400 tabular-nums">{sliceSensitivity} dB</span>
+          </div>
+          <input
+            type="range"
+            min={-36}
+            max={-6}
+            step={1}
+            value={sliceSensitivity}
+            onChange={(event) => setSliceSensitivity(Number(event.target.value))}
+            aria-label="Transient detection sensitivity"
+            className="w-full h-1.5 accent-[#d6a85f]"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            className={BTN}
+            onClick={onSliceAtTransients}
+            disabled={!stored || busy}
+            title="Detect transient attacks and split the audio into separate regions"
+          >
+            {busy ? <Loader2 className="size-3 animate-spin" /> : <Scissors className="size-3" />}
+            Slice at Transients
+          </Button>
+          <p className="text-[8px] text-zinc-600">
+            Creates separate regions using the original audio source. Move and rearrange slices on the timeline.
+          </p>
+        </div>
 
         <div className="flex flex-col gap-1 rounded border border-black/40 bg-[#19191c] p-2">
           <div className="flex items-center justify-between">
