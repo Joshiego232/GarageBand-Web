@@ -375,6 +375,11 @@ try {
     detectedMidi: 69,
     targetMidi: 72,
     confidence: 0.98,
+    pitchCurve: [
+      { timeSec: 0.1, pitch: 69 },
+      { timeSec: 0.5, pitch: 69.2 },
+      { timeSec: 0.9, pitch: 69 },
+    ],
   };
   const correctedVocal = pitchCorrection.applyMonophonicPitchCorrection(
     [vocalSine],
