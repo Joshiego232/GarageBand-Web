@@ -14,7 +14,9 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
-import { clamp, formatBarsBeats, gainToDb } from "@/lib/daw/utils";
+import { clamp, formatBarsBeats, gainToDb, secToTick } from "@/lib/daw/utils";
+import { uid } from "@/lib/daw/types";
+import { toast } from "sonner";
 import { findActiveRegion } from "./piano-roll";
 
 const HANDLE_R = 4.5;
@@ -43,6 +45,7 @@ export function AudioEditor() {
   const [fadeHover, setFadeHover] = useState<"in" | "out" | null>(null);
   const [fadeDrag, setFadeDrag] = useState<"in" | "out" | null>(null);
   const [busy, setBusy] = useState(false);
+  const [silenceThreshold, setSilenceThreshold] = useState(-48);
   const [loadTick, setLoadTick] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -390,6 +393,94 @@ export function AudioEditor() {
     }
   };
 
+  const onStripSilence = () => {
+    const r = region;
+    if (!r || !stored || busy) return;
+    setBusy(true);
+    try {
+      const sr = stored.sampleRate;
+      const total = stored.channels[0]?.length ?? 0;
+      const startFrame = Math.max(0, Math.floor(sampleStart * sr));
+      const endFrame = Math.min(total, Math.ceil((sampleStart + sampleLength) * sr));
+      if (endFrame <= startFrame) return;
+
+      const windowFrames = Math.max(128, Math.floor(sr * 0.01));
+      const threshold = Math.pow(10, silenceThreshold / 20);
+      const activeWindows: { start: number; end: number }[] = [];
+
+      for (let frame = startFrame; frame < endFrame; frame += windowFrames) {
+        const end = Math.min(endFrame, frame + windowFrames);
+        let sumSquares = 0;
+        let sampleCount = 0;
+        for (const channel of stored.channels) {
+          for (let i = frame; i < end; i += 2) {
+            const sample = channel[i] ?? 0;
+            sumSquares += sample * sample;
+            sampleCount++;
+          }
+        }
+        const rms = sampleCount ? Math.sqrt(sumSquares / sampleCount) : 0;
+        if (rms >= threshold) activeWindows.push({ start: frame, end });
+      }
+
+      if (!activeWindows.length) {
+        toast.error("No audio found above this silence threshold");
+        return;
+      }
+
+      // Merge brief dips so breaths and natural note decays are not chopped up.
+      const minGapFrames = Math.floor(sr * 0.16);
+      const minActiveFrames = Math.floor(sr * 0.075);
+      const ranges: { start: number; end: number }[] = [];
+      for (const window of activeWindows) {
+        const previous = ranges[ranges.length - 1];
+        if (previous && window.start - previous.end <= minGapFrames) {
+          previous.end = window.end;
+        } else {
+          ranges.push({ ...window });
+        }
+      }
+
+      const usefulRanges = ranges.filter((range) => range.end - range.start >= minActiveFrames);
+      if (!usefulRanges.length) {
+        toast.error("The selected threshold removed all audio");
+        return;
+      }
+
+      const project = useDAW.getState().project;
+      const sourceStart = r.sampleStart ?? 0;
+      const segments = usefulRanges.map((range, index) => {
+        const offsetSec = (range.start - startFrame) / sr;
+        const durationSec = (range.end - range.start) / sr;
+        const startTick = Math.round(secToTick(offsetSec, project.tempo));
+        const lengthTicks = Math.max(1, Math.round(secToTick(durationSec, project.tempo)));
+        const isFirst = index === 0;
+        const isLast = index === usefulRanges.length - 1;
+        return {
+          ...r,
+          id: uid(),
+          name: usefulRanges.length > 1 ? `${r.name} ${index + 1}` : r.name,
+          start: r.start + startTick,
+          length: lengthTicks,
+          looped: false,
+          coreLength: undefined,
+          sampleStart: sourceStart + offsetSec,
+          sampleLength: durationSec,
+          fadeIn: isFirst ? r.fadeIn ?? 0 : 0.008,
+          fadeOut: isLast ? r.fadeOut ?? 0 : 0.008,
+        };
+      });
+
+      useDAW.getState().replaceRegionWithSegments(r.id, segments);
+      toast.success(`Strip Silence created ${segments.length} audio region${segments.length === 1 ? "" : "s"}`);
+    } catch (error) {
+      console.error("Strip Silence failed", error);
+      toast.error("Could not strip silence from this region");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onToggleLoop = () => {
     const r = region;
     if (!r) return;
@@ -479,6 +570,34 @@ export function AudioEditor() {
               aria-label="Fade out milliseconds"
             />
           </label>
+        </div>
+
+        <div className="flex flex-col gap-1 rounded border border-black/40 bg-[#19191c] p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[9px] uppercase tracking-wider text-zinc-500">Strip Silence</span>
+            <span className="text-[9px] font-mono text-zinc-400 tabular-nums">{silenceThreshold} dB</span>
+          </div>
+          <input
+            type="range"
+            min={-72}
+            max={-24}
+            step={1}
+            value={silenceThreshold}
+            onChange={(event) => setSilenceThreshold(Number(event.target.value))}
+            aria-label="Strip silence threshold in decibels"
+            className="w-full h-1.5 accent-[#a4c66d]"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            className={BTN}
+            onClick={onStripSilence}
+            disabled={!stored || busy}
+            title="Split the recording around quiet sections while preserving the source audio"
+          >
+            {busy ? <Loader2 className="size-3 animate-spin" /> : <Scissors className="size-3" />}
+            Strip Silence
+          </Button>
         </div>
 
         <div className="grid grid-cols-2 gap-1.5">
