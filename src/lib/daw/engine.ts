@@ -1371,6 +1371,13 @@ export class AudioEngine {
     return Array.from(this.liveClips.keys());
   }
 
+  getLiveClipRefs(): LiveClipRef[] {
+    return Array.from(this.liveClips.values()).map((clip) => ({
+      trackId: clip.kind === "midi" ? clip.track.id : clip.trackId,
+      regionId: clip.regionId,
+    }));
+  }
+
   isLiveClipActive(trackId: string, regionId: string): boolean {
     const active = this.liveClips.get(trackId);
     return !!active && active.regionId === regionId;
@@ -1382,6 +1389,7 @@ export class AudioEngine {
     const project = useDAW.getState().project;
     this.sync(project);
     const launchTime = ctx.currentTime + 0.1;
+    this.liveGridStartTime = launchTime;
     await this.addLiveClips(clips, launchTime, project, ctx);
   }
 
