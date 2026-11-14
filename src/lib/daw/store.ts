@@ -552,7 +552,12 @@ export const useDAW = create<DAWState>((set, get) => ({
       });
 
     const firstMemberIndex = tracks.findIndex((track) => uniqueIds.includes(track.id));
-    tracks.splice(Math.max(0, firstMemberIndex), 0, folder);
+    const insertIndex = tracks
+      .slice(0, Math.max(0, firstMemberIndex))
+      .filter((track) => !uniqueIds.includes(track.id)).length;
+    const selectedMembers = tracks.filter((track) => uniqueIds.includes(track.id));
+    tracks = tracks.filter((track) => !uniqueIds.includes(track.id));
+    tracks.splice(insertIndex, 0, folder, ...selectedMembers);
     if (busTrack) tracks.push(busTrack);
 
     set({
