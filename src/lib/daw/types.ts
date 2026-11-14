@@ -78,6 +78,18 @@ export interface ScreenSet {
   zoom: number;
 }
 
+export interface SamplerZone {
+  id: string;
+  bufferId: string;
+  name: string;
+  rootPitch: number;
+  lowKey: number;
+  highKey: number;
+  velocityLow: number;
+  velocityHigh: number;
+  playbackMode: "one-shot" | "loop";
+}
+
 export interface Track {
   id: string;
   role?: TrackRole;
@@ -96,6 +108,7 @@ export interface Track {
   sampleRootPitch?: number;
   samplePlaybackMode?: "one-shot" | "loop";
   sampleName?: string;
+  sampleZones?: SamplerZone[];
   volume: number; // 0..1.25 (1 = 0 dB)
   pan: number; // -1..1
   mute: boolean;
