@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useCallback, useState } from "react";
-import { Mic, SlidersHorizontal } from "lucide-react";
+import { Mic, Play, SlidersHorizontal } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
 import type { KnobDef } from "@/lib/daw/types";
@@ -15,6 +15,7 @@ import { Knob } from "@/components/daw/controls/knob";
 import { TrackIcon } from "./track-icon";
 import { VisualEQ } from "./visual-eq";
 import { PluginRack } from "./plugin-rack";
+import { engine } from "@/lib/daw/engine";
 
 /** Unit-aware readout formatting for patch knobs. */
 function knobFormat(unit?: string): ((v: number) => string) | undefined {
@@ -64,8 +65,16 @@ export function SmartControls() {
   }
 
   const patch = track.type === "midi" ? PATCHES[track.instrument] : undefined;
-  const displayName = track.type === "midi" ? (patch?.name ?? track.name) : track.name;
-  const category = track.type === "midi" ? (patch?.category ?? "Instrument") : "Audio";
+  const displayName = track.sampleBufferId
+    ? track.sampleName ?? track.name
+    : track.type === "midi"
+      ? (patch?.name ?? track.name)
+      : track.name;
+  const category = track.sampleBufferId
+    ? "Quick Sampler"
+    : track.type === "midi"
+      ? (patch?.category ?? "Instrument")
+      : "Audio";
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-[#1d1d20]">
@@ -127,61 +136,136 @@ export function SmartControls() {
       ) : (
       /* knob grid */
       <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] flex flex-wrap items-center justify-center gap-x-6 gap-y-2 py-3">
-        {track.type === "midi"
-          ? (patch?.knobs ?? []).map((k: KnobDef) => (
-              <Knob
-                key={k.id}
-                size={52}
-                label={k.label}
-                min={k.min}
-                max={k.max}
-                value={track.params[k.id] ?? k.def}
-                curve={k.curve}
-                unit={k.unit}
-                format={knobFormat(k.unit)}
-                onChange={(v) => setParam(track.id, k.id, v)}
-                onCommitStart={commit}
-              />
-            ))
-          : (
-            <>
-              <Knob
-                size={52}
-                label="Low"
-                min={-12}
-                max={12}
-                value={track.eq.lowGain}
-                color="#e08e3c"
-                format={EQ_GAIN_FORMAT}
-                onChange={(v) => setEqGain(track.id, "lowGain", v)}
-                onCommitStart={commit}
-              />
-              <Knob
-                size={52}
-                label="Mid"
-                min={-12}
-                max={12}
-                value={track.eq.midGain}
-                color="#ffb648"
-                format={EQ_GAIN_FORMAT}
-                onChange={(v) => setEqGain(track.id, "midGain", v)}
-                onCommitStart={commit}
-              />
-              <Knob
-                size={52}
-                label="High"
-                min={-12}
-                max={12}
-                value={track.eq.highGain}
-                color="#e8e8ec"
-                format={EQ_GAIN_FORMAT}
-                onChange={(v) => setEqGain(track.id, "highGain", v)}
-                onCommitStart={commit}
-              />
-            </>
-          )}
+        {track.sampleBufferId ? (
+          <QuickSamplerControls track={track} />
+        ) : track.type === "midi" ? (
+          (patch?.knobs ?? []).map((k: KnobDef) => (
+            <Knob
+              key={k.id}
+              size={52}
+              label={k.label}
+              min={k.min}
+              max={k.max}
+              value={track.params[k.id] ?? k.def}
+              curve={k.curve}
+              unit={k.unit}
+              format={knobFormat(k.unit)}
+              onChange={(v) => setParam(track.id, k.id, v)}
+              onCommitStart={commit}
+            />
+          ))
+        ) : (
+          <>
+            <Knob
+              size={52}
+              label="Low"
+              min={-12}
+              max={12}
+              value={track.eq.lowGain}
+              color="#e08e3c"
+              format={EQ_GAIN_FORMAT}
+              onChange={(v) => setEqGain(track.id, "lowGain", v)}
+              onCommitStart={commit}
+            />
+            <Knob
+              size={52}
+              label="Mid"
+              min={-12}
+              max={12}
+              value={track.eq.midGain}
+              color="#ffb648"
+              format={EQ_GAIN_FORMAT}
+              onChange={(v) => setEqGain(track.id, "midGain", v)}
+              onCommitStart={commit}
+            />
+            <Knob
+              size={52}
+              label="High"
+              min={-12}
+              max={12}
+              value={track.eq.highGain}
+              color="#e8e8ec"
+              format={EQ_GAIN_FORMAT}
+              onChange={(v) => setEqGain(track.id, "highGain", v)}
+              onCommitStart={commit}
+            />
+          </>
+        )}
       </div>
       )}
+    </div>
+  );
+}
+
+
+function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof useDAW.getState>["project"]["tracks"][number]> }) {
+  const updateTrack = useDAW((state) => state.updateTrack);
+  const commit = useDAW((state) => state.commit);
+  const sample = track.sampleBufferId ? engine.getStoredBuffer(track.sampleBufferId) : undefined;
+  const duration = sample?.channels[0]?.length
+    ? sample.channels[0].length / sample.sampleRate
+    : 0;
+  const rootPitch = track.sampleRootPitch ?? 60;
+  const noteName = (pitch: number) => {
+    const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+    return `${names[pitch % 12]} ${Math.floor(pitch / 12) - 1}`;
+  };
+
+  return (
+    <div className="w-full max-w-3xl px-4 flex flex-col gap-4">
+      <div className="rounded-lg border border-[#4a90d9]/30 bg-[#4a90d9]/10 p-4 flex items-center gap-3">
+        <div className="size-10 rounded-lg bg-[#4a90d9]/15 text-[#9dc8f0] flex items-center justify-center shrink-0">
+          <SlidersHorizontal size={19} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] font-semibold text-zinc-100">Quick Sampler</p>
+          <p className="text-[10px] text-zinc-400 truncate">{track.sampleName ?? track.name}</p>
+          <p className="text-[9px] text-zinc-600 mt-0.5">
+            {duration > 0 ? `${duration.toFixed(2)} seconds · ${sample?.sampleRate.toLocaleString()} Hz` : "Sample will load when the track is played"}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => engine.auditionNote(track.instrument, rootPitch, 100, track.params)}
+          className="h-8 px-3 rounded-md border border-[#4a90d9]/35 bg-[#4a90d9]/15 text-[10px] text-[#b6d9fa] hover:bg-[#4a90d9]/25 inline-flex items-center gap-1.5"
+        >
+          <Play size={11} fill="currentColor" /> Preview
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="rounded-md border border-black/40 bg-[#232327] p-3 flex flex-col gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Root key</span>
+          <select
+            value={rootPitch}
+            onPointerDown={commit}
+            onChange={(event) => updateTrack(track.id, { sampleRootPitch: Number(event.target.value) }, false)}
+            className="h-8 rounded border border-black/50 bg-[#17171a] px-2 text-[11px] text-zinc-200 outline-none focus:border-[#4a90d9]/60"
+          >
+            {Array.from({ length: 49 }, (_, index) => index + 36).map((pitch) => (
+              <option key={pitch} value={pitch}>{noteName(pitch)}</option>
+            ))}
+          </select>
+          <span className="text-[9px] text-zinc-600">The imported recording is played at its original pitch on this key.</span>
+        </label>
+
+        <label className="rounded-md border border-black/40 bg-[#232327] p-3 flex flex-col gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Playback mode</span>
+          <select
+            value={track.samplePlaybackMode ?? "one-shot"}
+            onPointerDown={commit}
+            onChange={(event) => updateTrack(track.id, { samplePlaybackMode: event.target.value as "one-shot" | "loop" }, false)}
+            className="h-8 rounded border border-black/50 bg-[#17171a] px-2 text-[11px] text-zinc-200 outline-none focus:border-[#4a90d9]/60"
+          >
+            <option value="one-shot">One-shot · Play sample to the end</option>
+            <option value="loop">Loop · Hold while MIDI note is held</option>
+          </select>
+          <span className="text-[9px] text-zinc-600">Loop mode follows MIDI note length; one-shot ignores note-off.</span>
+        </label>
+      </div>
+      <p className="text-[9px] text-zinc-600">
+        This is a single-sample instrument mapped across the keyboard using pitch shifting. Multi-zone velocity layers and key-range mapping can be added as a later sampler upgrade.
+      </p>
     </div>
   );
 }
