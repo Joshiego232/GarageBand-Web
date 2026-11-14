@@ -57,6 +57,7 @@ export function AudioEditor() {
   const [showComping, setShowComping] = useState(false);
   const [compSourceByBar, setCompSourceByBar] = useState<Record<number, string>>({});
   const [pitchSegments, setPitchSegments] = useState<DetectedPitchSegment[]>([]);
+  const [pitchSegmentsRegionId, setPitchSegmentsRegionId] = useState<string | null>(null);
   const [pitchStrength, setPitchStrength] = useState(0.85);
   const [analyzingPitch, setAnalyzingPitch] = useState(false);
   const [applyingPitch, setApplyingPitch] = useState(false);
@@ -171,12 +172,6 @@ export function AudioEditor() {
     }, 300);
     return () => clearInterval(iv);
   }, [bufferId]);
-
-  useEffect(() => {
-    setPitchSegments([]);
-    setShowComping(false);
-    setCompSourceByBar({});
-  }, [region?.id, bufferId]);
 
     // ---------- sizing ----------
 
@@ -635,6 +630,8 @@ export function AudioEditor() {
     }
   };
 
+  const activePitchSegments = pitchSegmentsRegionId === region?.id ? pitchSegments : [];
+
   const onAnalyzePitch = () => {
     if (!stored || !region || analyzingPitch) return;
     setAnalyzingPitch(true);
@@ -646,6 +643,7 @@ export function AudioEditor() {
         sampleLength
       );
       setPitchSegments(detected);
+      setPitchSegmentsRegionId(region.id);
       if (!detected.length) {
         toast.warning("No stable monophonic notes were detected. Try a clear, single-note vocal recording.");
       } else {
@@ -668,7 +666,7 @@ export function AudioEditor() {
 
   const onApplyPitchCorrection = async () => {
     const r = region;
-    if (!r || !stored || !pitchSegments.length || applyingPitch) return;
+    if (!r || !stored || !activePitchSegments.length || pitchSegmentsRegionId !== r.id || applyingPitch) return;
     setApplyingPitch(true);
     try {
       const correctedChannels = applyMonophonicPitchCorrection(
@@ -676,7 +674,7 @@ export function AudioEditor() {
         stored.sampleRate,
         sampleStart,
         sampleLength,
-        pitchSegments,
+        activePitchSegments,
         pitchStrength
       );
       const newId = `flex-pitch-${uid()}`;
@@ -704,6 +702,7 @@ export function AudioEditor() {
         false
       );
       setPitchSegments([]);
+      setPitchSegmentsRegionId(null);
       setLoadTick((tick) => tick + 1);
       toast.success("Pitch-corrected audio copy created");
     } catch (error) {
@@ -827,7 +826,7 @@ export function AudioEditor() {
           <div className="flex items-center gap-2">
             <Music2 size={12} className="text-[#8fc4f1]" />
             <span className="text-[9px] uppercase tracking-wider text-[#a8cdef]">Flex Pitch · Monophonic</span>
-            <span className="ml-auto text-[8px] text-zinc-600">{pitchSegments.length} notes</span>
+            <span className="ml-auto text-[8px] text-zinc-600">{activePitchSegments.length} notes</span>
           </div>
           <p className="text-[9px] leading-snug text-zinc-500">
             Detects one voice or instrument at a time. It will not separate overlapping vocals or polyphonic chords. Pitch correction creates a new audio copy; the source file stays unchanged.
@@ -848,13 +847,13 @@ export function AudioEditor() {
               variant="secondary"
               className={BTN}
               onClick={onSnapPitchToKey}
-              disabled={!pitchSegments.length || applyingPitch}
+              disabled={!activePitchSegments.length || applyingPitch}
               title={`Snap detected notes to ${keyMode} in ${noteName(60 + keyTonic)}`}
             >
               <Wand2 className="size-3" /> Snap to Key
             </Button>
           </div>
-          {pitchSegments.length > 0 && (
+          {activePitchSegments.length > 0 && (
             <>
               <label className="flex items-center gap-2">
                 <span className="text-[9px] text-zinc-500 shrink-0">Correction</span>
@@ -871,7 +870,7 @@ export function AudioEditor() {
                 <span className="w-8 text-right font-mono text-[9px] text-zinc-300">{Math.round(pitchStrength * 100)}%</span>
               </label>
               <div className="max-h-40 overflow-y-auto space-y-1">
-                {pitchSegments.map((segment) => (
+                {activePitchSegments.map((segment) => (
                   <div key={segment.id} className="grid grid-cols-[42px_1fr_1fr] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] px-1.5 py-1">
                     <span className="text-[8px] tabular-nums text-zinc-600">
                       {segment.startSec.toFixed(1)}s
@@ -902,7 +901,10 @@ export function AudioEditor() {
                   size="sm"
                   variant="secondary"
                   className={BTN}
-                  onClick={() => setPitchSegments([])}
+                  onClick={() => {
+                    setPitchSegments([]);
+                    setPitchSegmentsRegionId(null);
+                  }}
                   disabled={applyingPitch}
                 >
                   Clear Notes
