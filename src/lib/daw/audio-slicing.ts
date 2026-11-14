@@ -48,15 +48,12 @@ export function detectTransientCuts(
     const current = rmsFrames[index];
     const previous = rmsFrames[index - 1];
     const before = rmsFrames[index - 2];
-    const next = rmsFrames[index + 1];
     const rise = current.rms - previous.rms;
     const ratio = current.rms / Math.max(1e-5, before.rms);
-    const isLocalPeak = current.rms >= next.rms;
     if (
       current.rms >= threshold &&
       rise >= maxRms * 0.035 &&
-      ratio >= 1.45 &&
-      isLocalPeak
+      ratio >= 1.45
     ) {
       const candidateFrame = Math.max(0, Math.round(current.time * sampleRate));
       const last = candidates[candidates.length - 1];
