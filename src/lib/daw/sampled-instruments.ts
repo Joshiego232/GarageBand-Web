@@ -138,6 +138,7 @@ export function warmSampledPatch(
         instrument: source.instrument,
         destination: dest,
         loader,
+        scheduler,
         volume: 96,
       }) as unknown as SampledPlayer;
       break;
@@ -149,6 +150,7 @@ export function warmSampledPatch(
         loadLoopData: source.loop ?? false,
         destination: dest,
         loader,
+        scheduler,
         volume: 96,
       }) as unknown as SampledPlayer;
       break;
