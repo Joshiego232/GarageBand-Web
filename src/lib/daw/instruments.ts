@@ -669,7 +669,7 @@ function playGuitar(v: VoiceCtx): VoiceHandle {
   const data = ksString(freq, 0.9965 + damp * 0.003, 0.35 + tone * 0.6);
   const src = ctx.createBufferSource();
   const buf = ctx.createBuffer(1, data.length, 44100);
-  buf.copyToChannel(data, 0);
+  buf.copyToChannel(new Float32Array(data), 0);
   src.buffer = buf;
   const g = ctx.createGain();
   g.gain.value = 0.55 * vel;
