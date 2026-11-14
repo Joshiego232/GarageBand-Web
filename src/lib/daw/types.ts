@@ -50,13 +50,14 @@ export interface EqSettings {
   highFreq: number; // Hz 1500..18000
 }
 
-export type TrackRole = "track" | "aux" | "vca";
+export type TrackRole = "track" | "aux" | "vca" | "folder";
 
 export interface TrackStack {
   id: string;
   name: string;
   type: "folder" | "summing";
   trackIds: string[];
+  folderTrackId: string;
   busTrackId?: string;
 }
 
@@ -82,6 +83,8 @@ export interface Track {
   outputBusId?: string | null;
   vcaId?: string | null;
   stackId?: string | null;
+  parentTrackId?: string | null;
+  collapsed?: boolean;
   name: string;
   type: TrackType;
   icon: string; // icon key from INSTRUMENTS or 'mic' for audio
