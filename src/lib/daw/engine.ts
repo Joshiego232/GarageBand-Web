@@ -988,21 +988,53 @@ export class AudioEngine {
       st.project.keyMode
     );
     const destination = this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination;
-    const voices = inputNotes.slice(0, 16).map((note) =>
-      playNote(
-        ctx,
-        destination,
-        track.instrument,
-        note.pitch,
-        note.velocity / 127,
-        ctx.currentTime,
-        3600,
-        track.params,
-        true
-      )
-    );
     const startTick = this.playing ? this.currentTick() : this.stoppedAtTick ?? 0;
-    this.openInputNotes.set(pitch, { voices, startTick, velocity });
+    const noteState = { voices: [] as VoiceHandle[], startTick, velocity };
+    this.openInputNotes.set(pitch, noteState);
+
+    const playLiveVoices = () => {
+      // A key may have been released, or the selected instrument may have
+      // changed, while its samples were downloading. Never trigger a late note.
+      if (this.openInputNotes.get(pitch) !== noteState) return;
+      const currentTrack = useDAW.getState().project.tracks.find(
+        (item) => item.id === track.id
+      );
+      if (!currentTrack || currentTrack.type !== "midi" || currentTrack.instrument !== track.instrument) {
+        this.openInputNotes.delete(pitch);
+        return;
+      }
+      const currentDestination =
+        this.tracks.get(currentTrack.id)?.input ?? this.master?.input ?? ctx.destination;
+      noteState.voices = inputNotes.slice(0, 16).map((note) =>
+        playNote(
+          ctx,
+          currentDestination,
+          currentTrack.instrument,
+          note.pitch,
+          note.velocity / 127,
+          ctx.currentTime,
+          3600,
+          currentTrack.params,
+          true
+        )
+      );
+    };
+
+    const patch = PATCHES[track.instrument];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, destination, patch)
+        .then(playLiveVoices)
+        .catch((error: unknown) => {
+          if (this.openInputNotes.get(pitch) === noteState) {
+            this.openInputNotes.delete(pitch);
+          }
+          console.error(`Could not load samples for ${track.name}.`, error);
+          toast.error(`Could not load ${patch.name} samples. Please try again.`);
+        });
+      return;
+    }
+
+    playLiveVoices();
   }
 
   noteOff(pitch: number) {
