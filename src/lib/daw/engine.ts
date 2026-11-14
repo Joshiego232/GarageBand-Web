@@ -344,7 +344,7 @@ export class AudioEngine {
   // MIDI live input + recording
   private openInputNotes = new Map<
     number,
-    { voice: VoiceHandle; startTick: number; velocity: number }
+    { voices: VoiceHandle[]; startTick: number; velocity: number }
   >();
   recordedMidi: { pitch: number; velocity: number; start: number; length: number }[] = [];
   private recordTargetTrack: string | null = null;
@@ -567,7 +567,9 @@ export class AudioEngine {
     for (const [pitch, n] of this.openInputNotes) {
       const len = Math.max(PPQ / 8, tick - n.startTick);
       this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
-      try { n.voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+      for (const voice of n.voices) {
+        try { voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+      }
     }
     this.openInputNotes.clear();
     for (const v of this.voices) v.handle.kill();
@@ -902,9 +904,41 @@ export class AudioEngine {
     const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
     if (!track || track.type !== "midi") return;
     if (this.openInputNotes.has(pitch)) return;
-    const voice = playNote(ctx, this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination, track.instrument, pitch, velocity / 127, ctx.currentTime, 3600, track.params, true);
+
+    // Apply immediate note-shaping MIDI effects to live keyboard input. Time-based
+    // processors (arpeggiator, repeater, gate and echo) are rendered on MIDI regions
+    // where the complete note length is known.
+    const livePlugins = (track.midiPlugins ?? []).filter(
+      (plugin) => !["arpeggiator", "note-repeater", "gate", "note-echo"].includes(plugin.pluginId)
+    );
+    const inputNotes = applyMidiPlugins(
+      [{
+        id: uid(),
+        pitch,
+        velocity,
+        start: 0,
+        length: PPQ * 4,
+      }],
+      livePlugins,
+      st.project.keyTonic,
+      st.project.keyMode
+    );
+    const destination = this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination;
+    const voices = inputNotes.slice(0, 16).map((note) =>
+      playNote(
+        ctx,
+        destination,
+        track.instrument,
+        note.pitch,
+        note.velocity / 127,
+        ctx.currentTime,
+        3600,
+        track.params,
+        true
+      )
+    );
     const startTick = this.playing ? this.currentTick() : this.stoppedAtTick ?? 0;
-    this.openInputNotes.set(pitch, { voice, startTick, velocity });
+    this.openInputNotes.set(pitch, { voices, startTick, velocity });
   }
 
   noteOff(pitch: number) {
@@ -915,7 +949,7 @@ export class AudioEngine {
       const len = Math.max(PPQ / 8, tick - n.startTick);
       this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
     }
-    n.voice.scheduleStop(this.ctx.currentTime);
+    for (const voice of n.voices) voice.scheduleStop(this.ctx.currentTime);
     this.openInputNotes.delete(pitch);
   }
 
