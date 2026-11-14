@@ -35,7 +35,7 @@ export function EditorPanel() {
       ? (
           editorMode === "score"
             ? "score"
-            : isDrumTrack && editorMode === "steps"
+            : editorMode === "steps"
               ? "steps"
               : "piano"
         )
@@ -50,7 +50,7 @@ export function EditorPanel() {
           { id: "smart", label: "Smart Controls" },
         ]
       : [
-          ...(isDrumTrack ? [{ id: "steps" as EditorMode, label: "Step Sequencer" }] : []),
+          { id: "steps", label: isDrumTrack ? "Drum Sequencer" : "Step Sequencer" },
           { id: "piano", label: "Piano Roll" },
           { id: "score", label: "Score" },
           { id: "smart", label: "Smart Controls" },
@@ -113,7 +113,7 @@ export function EditorPanel() {
           <SmartControls />
         ) : editorMode === "piano" && region?.type === "midi" ? (
           <PianoRoll />
-        ) : editorMode === "steps" && region?.type === "midi" && isDrumTrack ? (
+        ) : editorMode === "steps" && region?.type === "midi" ? (
           <DrumStepSequencer />
         ) : editorMode === "audio" && region?.type === "audio" ? (
           <AudioEditor />
