@@ -376,6 +376,7 @@ export class AudioEngine {
   // buffer cache
   private bufferCache = new Map<string, StoredBuffer>();
   private pendingLoads = new Set<string>();
+  private bufferLoadPromises = new Map<string, Promise<StoredBuffer | undefined>>();
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
   private auditionDest: GainNode | null = null;
   private previewTimer: ReturnType<typeof setInterval> | null = null;
@@ -454,13 +455,7 @@ export class AudioEngine {
       // prefetch audio buffers
       for (const bufferId of [track.sampleBufferId, ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
         if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
-          this.pendingLoads.add(r.bufferId);
-          loadBuffer(bufferId)
-            .then((b) => {
-              if (b) this.bufferCache.set(bufferId, b);
-            })
-            .catch(() => undefined)
-            .finally(() => this.pendingLoads.delete(bufferId));
+          void this.ensureBufferLoaded(bufferId).catch(() => undefined);
         }
       }
     }
@@ -523,16 +518,24 @@ export class AudioEngine {
   }
 
   async ensureBufferLoaded(id: string): Promise<StoredBuffer | undefined> {
-    if (this.bufferCache.has(id)) return this.bufferCache.get(id);
-    if (this.pendingLoads.has(id)) return undefined;
+    const cached = this.bufferCache.get(id);
+    if (cached) return cached;
+
+    const existing = this.bufferLoadPromises.get(id);
+    if (existing) return existing;
+
     this.pendingLoads.add(id);
-    try {
-      const b = await loadBuffer(id);
-      if (b) this.bufferCache.set(id, b);
-      return b;
-    } finally {
-      this.pendingLoads.delete(id);
-    }
+    const pending = loadBuffer(id)
+      .then((buffer) => {
+        if (buffer) this.bufferCache.set(id, buffer);
+        return buffer;
+      })
+      .finally(() => {
+        this.pendingLoads.delete(id);
+        this.bufferLoadPromises.delete(id);
+      });
+    this.bufferLoadPromises.set(id, pending);
+    return pending;
   }
 
   /** Create (and cache per-context) an AudioBuffer for playback */
@@ -1140,6 +1143,22 @@ export class AudioEngine {
       );
     };
 
+    if (track.sampleBufferId) {
+      void this.ensureBufferLoaded(track.sampleBufferId)
+        .then((buffer) => {
+          if (!buffer) throw new Error("Quick Sampler audio could not be loaded");
+          playLiveVoices();
+        })
+        .catch((error: unknown) => {
+          if (this.openInputNotes.get(pitch) === noteState) {
+            this.openInputNotes.delete(pitch);
+          }
+          console.error(`Could not load samples for ${track.name}.`, error);
+          toast.error(`Could not load ${track.sampleName ?? track.name}. Please try again.`);
+        });
+      return;
+    }
+
     const patch = PATCHES[track.instrument];
     if (patch?.sampled) {
       void warmSampledPatch(ctx, destination, patch)
@@ -1401,6 +1420,7 @@ export class AudioEngine {
     // load all audio buffers
     const bufferIds = new Set<string>();
     for (const t of project.tracks) {
+      if (t.sampleBufferId) bufferIds.add(t.sampleBufferId);
       for (const r of t.regions) if (r.bufferId) bufferIds.add(r.bufferId);
     }
     await Promise.all(Array.from(bufferIds).map((id) => this.ensureBufferLoaded(id)));
