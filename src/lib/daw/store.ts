@@ -385,7 +385,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     const targetTrack = toTrackId ? project.tracks.find((t) => t.id === toTrackId) : null;
     const tracks = project.tracks.map((t) => {
       const grabbed = t.regions.filter((r) => idSet.has(r.id));
-      if (!grabed.length) {
+      if (!grabbed.length) {
         return targetTrack && t.id === targetTrack.id
           ? t // target handled below
           : t;
