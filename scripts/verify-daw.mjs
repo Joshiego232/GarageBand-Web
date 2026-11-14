@@ -13,10 +13,6 @@ function expect(condition, message) {
   assert.ok(condition, message);
 }
 
-function close(actual, expected, message) {
-  assert.ok(Math.abs(actual - expected) < 1e-8, `${message}: expected ${expected}, received ${actual}`);
-}
-
 try {
   await writeFile(path.join(temp, "package.json"), JSON.stringify({ type: "module" }));
   await symlink(path.join(root, "node_modules"), path.join(temp, "node_modules"), "dir");
@@ -124,6 +120,14 @@ try {
         );
       }
     }
+  }
+
+  const engineSource = await readFile(path.join(root, "src/lib/daw/engine.ts"), "utf8");
+  for (const definition of dawPlugins.AUDIO_PLUGIN_DEFS) {
+    expect(
+      engineSource.includes(`get("${definition.id}")`),
+      `Audio plugin has no engine implementation: ${definition.id}`,
+    );
   }
 
   const { MIDI_PLUGIN_DEFS, applyMidiPlugins } = dawPlugins;
