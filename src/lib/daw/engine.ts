@@ -335,7 +335,7 @@ export class AudioEngine {
     let buf = perCtx.get(id);
     if (!buf) {
       buf = ctx.createBuffer(stored.channels.length, stored.channels[0].length, stored.sampleRate);
-      stored.channels.forEach((ch, i) => buf!.copyToChannel(ch, i));
+      stored.channels.forEach((ch, i) => buf!.copyToChannel(new Float32Array(ch), i));
       perCtx.set(id, buf);
     }
     return buf;
