@@ -23,6 +23,7 @@ try {
     "src/lib/daw/plugins.ts",
     "src/lib/daw/routing.ts",
     "src/lib/daw/sampler.ts",
+    "src/lib/daw/morph-synth.ts",
     "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
@@ -68,6 +69,9 @@ try {
   );
   const sampler = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/sampler.js")).href
+  );
+  const morphSynth = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/morph-synth.js")).href
   );
   const midiControl = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/midi-control.js")).href
@@ -314,6 +318,28 @@ try {
     "MIDI CC target label is incorrect",
   );
 
+  // Verify the additive spectral engine creates finite, non-silent and morphable spectra.
+  const spectrumA = morphSynth.buildMorphSpectrum(0.05, 0.9, 64);
+  const spectrumB = morphSynth.buildMorphSpectrum(0.95, 0.9, 64);
+  const lowHarmonics = morphSynth.buildMorphSpectrum(0.5, 0.15, 64);
+  const highHarmonics = morphSynth.buildMorphSpectrum(0.5, 1, 64);
+  expect(spectrumA.length === 64 && spectrumB.length === 64, "Morph Synth spectrum has an unexpected length");
+  expect(spectrumA[1] > 0 && spectrumB[1] > 0, "Morph Synth fundamental harmonic is silent");
+  expect(
+    [...spectrumA, ...spectrumB, ...lowHarmonics, ...highHarmonics].every(Number.isFinite),
+    "Morph Synth generated non-finite harmonic coefficients",
+  );
+  expect(
+    spectrumA.some((value, index) => Math.abs(value - (spectrumB[index] ?? 0)) > 1e-5),
+    "Spectral morph control does not change the harmonic structure",
+  );
+  const lowUpperEnergy = lowHarmonics.slice(12).reduce((sum, value) => sum + value * value, 0);
+  const highUpperEnergy = highHarmonics.slice(12).reduce((sum, value) => sum + value * value, 0);
+  expect(
+    highUpperEnergy > lowUpperEnergy,
+    "Harmonics control does not increase upper partial energy",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -483,7 +509,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
