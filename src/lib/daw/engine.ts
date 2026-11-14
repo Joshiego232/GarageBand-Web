@@ -963,23 +963,47 @@ export class AudioEngine {
     const dest = ctx.createGain();
     dest.gain.value = 0.9;
     dest.connect(this.master?.input ?? ctx.destination);
+    const project = useDAW.getState().project;
+    const sourceTrack = project.tracks.find((track) => track.instrument === patchId);
+    const previewNotes = applyMidiPlugins(
+      notes.map((note, index) => ({
+        id: `preview-${index}`,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        start: note.start,
+        length: note.len,
+      })),
+      sourceTrack?.midiPlugins ?? [],
+      project.keyTonic,
+      project.keyMode
+    ).map((note) => ({
+      pitch: note.pitch,
+      velocity: note.velocity,
+      start: note.start,
+      len: note.length,
+    }));
     this.preview = {
       patchId,
       params: params ?? {},
-      notes,
+      notes: previewNotes,
       periodSec,
       startTime: ctx.currentTime + 0.05,
       scheduledUntil: ctx.currentTime + 0.05,
       dest,
     };
+
+    const startScheduler = () => {
+      if (this.preview?.dest !== dest) return;
+      this.previewTick();
+      if (this.previewTimer) clearInterval(this.previewTimer);
+      this.previewTimer = setInterval(() => this.previewTick(), TICK_INTERVAL_MS);
+    };
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch).then(() => this.previewTick());
+      void warmSampledPatch(ctx, dest, patch).then(startScheduler);
     } else {
-      this.previewTick();
+      startScheduler();
     }
-    if (this.previewTimer) clearInterval(this.previewTimer);
-    this.previewTimer = setInterval(() => this.previewTick(), TICK_INTERVAL_MS);
   }
 
   stopPreview() {
@@ -1145,7 +1169,7 @@ export class AudioEngine {
     for (const track of project.tracks) {
       if (track.mute || (anySolo && !track.solo)) continue;
       const tn = buildTrack(offline, master);
-      applyTrackAudioPlugins(tn, track, project.tempo);
+      applyTrackAudioPlugins(tn, track);
       tn.gain.gain.value = clamp(track.volume, 0, 1.25);
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       trackNodes.set(track.id, tn);
