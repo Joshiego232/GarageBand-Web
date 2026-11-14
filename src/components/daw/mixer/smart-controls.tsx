@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { Headphones, Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
@@ -211,7 +211,7 @@ function SpatialControls({ track }: { track: Track }) {
     <section className="w-full max-w-2xl mx-4 rounded-lg border border-[#60a5fa]/25 bg-[#60a5fa]/[0.05] p-3 flex flex-col gap-3">
       <div className="flex items-center gap-3">
         <div className="size-9 shrink-0 rounded-lg bg-[#60a5fa]/10 border border-[#60a5fa]/20 flex items-center justify-center">
-          <HeadphonesIcon />
+          <Headphones size={17} className="text-[#93c5fd]" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-semibold text-zinc-200">Binaural 3D Position</p>
@@ -267,10 +267,6 @@ function SpatialControls({ track }: { track: Track }) {
       </p>
     </section>
   );
-}
-
-function HeadphonesIcon() {
-  return <span className="text-[17px] leading-none text-[#93c5fd]" aria-hidden="true">◖◗</span>;
 }
 
 
