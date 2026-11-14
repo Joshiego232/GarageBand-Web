@@ -22,6 +22,8 @@ try {
     "src/lib/daw/utils.ts",
     "src/lib/daw/plugins.ts",
     "src/lib/daw/routing.ts",
+    "src/lib/daw/loops.ts",
+    "src/lib/daw/store.ts",
     "src/lib/daw/sampled-instruments.ts",
     "src/lib/daw/instruments.ts",
   ];
@@ -61,6 +63,9 @@ try {
   );
   const routing = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/routing.js")).href
+  );
+  const { useDAW } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/store.js")).href
   );
   const smplr = await import("smplr");
 
@@ -104,6 +109,83 @@ try {
     expect(count === 10, `Expected 10 instruments in "${category}", found ${count}`);
   }
   expect(categories.size >= 9, `Expected at least 9 instrument families, found ${categories.size}`);
+
+  // Verify stored folder/summing stacks, VCA assignments, alternatives and screensets.
+  const daw = useDAW.getState();
+  daw.addTrack({ type: "midi", instrument: "grand-piano", name: "Stack Piano" });
+  daw.addTrack({ type: "midi", instrument: "warm-pad", name: "Stack Pad" });
+  let project = useDAW.getState().project;
+  const members = project.tracks.filter((track) => track.role === "track");
+  const memberIds = members.slice(0, 2).map((track) => track.id);
+  const stackId = useDAW.getState().createTrackStack("Worship Keys", "summing", memberIds);
+  expect(!!stackId, "Could not create a summing stack");
+  project = useDAW.getState().project;
+  const stack = project.stacks?.find((item) => item.id === stackId);
+  expect(!!stack?.folderTrackId && !!stack?.busTrackId, "Summing stack is missing its folder or Aux bus");
+  const folder = project.tracks.find((track) => track.id === stack.folderTrackId);
+  const bus = project.tracks.find((track) => track.id === stack.busTrackId);
+  expect(folder?.role === "folder", "Track stack did not create a folder parent row");
+  expect(bus?.role === "aux", "Summing stack did not create an Aux bus channel");
+  expect(
+    project.tracks.filter((track) => memberIds.includes(track.id)).every(
+      (track) => track.parentTrackId === folder.id && track.outputBusId === bus.id
+    ),
+    "Summing stack members were not grouped and routed through the Aux bus",
+  );
+  useDAW.getState().toggleTrackStack(stackId);
+  expect(
+    useDAW.getState().project.tracks.find((track) => track.id === folder.id)?.collapsed,
+    "Folder stack did not collapse",
+  );
+  useDAW.getState().removeTrackStack(stackId);
+  project = useDAW.getState().project;
+  expect(!project.tracks.some((track) => track.id === folder.id || track.id === bus.id), "Removing a stack left its folder or bus behind");
+  expect(
+    project.tracks.filter((track) => memberIds.includes(track.id)).every(
+      (track) => !track.parentTrackId && !track.stackId && !track.outputBusId
+    ),
+    "Removing a summing stack did not restore member tracks to the main output",
+  );
+
+  const vcaId = useDAW.getState().createVca("Keys VCA");
+  const targetId = memberIds[0];
+  useDAW.getState().setTrackRouting(targetId, null, vcaId);
+  expect(
+    useDAW.getState().project.tracks.find((track) => track.id === targetId)?.vcaId === vcaId,
+    "VCA assignment was not saved on the member track",
+  );
+
+  const alternativeId = useDAW.getState().saveAlternative("Clean Arrangement");
+  const originalName = useDAW.getState().project.tracks.find((track) => track.id === targetId)?.name;
+  useDAW.getState().updateTrack(targetId, { name: "Temporary Edit" });
+  useDAW.getState().loadAlternative(alternativeId);
+  expect(
+    useDAW.getState().project.tracks.find((track) => track.id === targetId)?.name === originalName,
+    "Project alternative did not restore the saved arrangement",
+  );
+
+  useDAW.getState().setUI({
+    panels: { library: false, loops: true, mixer: true, editor: true, keyboard: false, help: false },
+    editorMode: "audio",
+    trackSize: "L",
+    zoom: 88,
+  });
+  const screensetId = useDAW.getState().saveScreenset("Mix & Edit");
+  useDAW.getState().setUI({
+    panels: { library: true, loops: false, mixer: false, editor: false, keyboard: false, help: false },
+    editorMode: "smart",
+    trackSize: "S",
+    zoom: 40,
+  });
+  useDAW.getState().loadScreenset(screensetId);
+  expect(
+    useDAW.getState().ui.panels.mixer &&
+      useDAW.getState().ui.panels.editor &&
+      useDAW.getState().ui.editorMode === "audio" &&
+      useDAW.getState().ui.trackSize === "L" &&
+      useDAW.getState().ui.zoom === 88,
+    "Screenset did not restore the saved workspace layout",
+  );
 
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
@@ -274,7 +356,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, feedback protection, VCA and solo checks passed.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
