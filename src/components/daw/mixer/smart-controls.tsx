@@ -6,7 +6,7 @@
 // tracks. Rendered inside the bottom editor panel.
 // ============================================================
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Mic, Play, SlidersHorizontal } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
@@ -113,10 +113,7 @@ export function SmartControls() {
             </button>
           </div>
           {view === "sound" && track.type === "audio" && (
-            <div className="h-6 pl-1.5 pr-2 inline-flex items-center gap-1.5 rounded-md border border-black/50 bg-[#26262b]">
-              <Mic size={11} className="text-zinc-500" aria-hidden="true" />
-              <span className="text-[10px] text-zinc-400">Input: Microphone</span>
-            </div>
+            <AudioInputSelector trackId={track.id} inputDeviceId={track.inputDeviceId ?? null} />
           )}
           {view === "sound" && <VisualEQ trackId={track.id}>
             <button
@@ -267,5 +264,57 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
         This is a single-sample instrument mapped across the keyboard using pitch shifting. Multi-zone velocity layers and key-range mapping can be added as a later sampler upgrade.
       </p>
     </div>
+  );
+}
+
+
+function AudioInputSelector({
+  trackId,
+  inputDeviceId,
+}: {
+  trackId: string;
+  inputDeviceId: string | null;
+}) {
+  const updateTrack = useDAW((state) => state.updateTrack);
+  const commit = useDAW((state) => state.commit);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        if (active) setDevices(list.filter((device) => device.kind === "audioinput"));
+      } catch (error) {
+        console.warn("Could not enumerate audio input devices", error);
+      }
+    };
+    void refresh();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => {
+      active = false;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
+    };
+  }, []);
+
+  return (
+    <label className="h-6 pl-1.5 pr-1 inline-flex items-center gap-1.5 rounded-md border border-black/50 bg-[#26262b] max-w-52">
+      <Mic size={11} className="text-zinc-500 shrink-0" aria-hidden="true" />
+      <span className="text-[9px] text-zinc-500 shrink-0">Input</span>
+      <select
+        value={inputDeviceId ?? ""}
+        onPointerDown={commit}
+        onChange={(event) => updateTrack(trackId, { inputDeviceId: event.target.value || null }, false)}
+        aria-label="Audio recording input device"
+        className="min-w-0 max-w-36 bg-transparent text-[9px] text-zinc-300 outline-none"
+      >
+        <option value="">Default microphone</option>
+        {devices.map((device, index) => (
+          <option key={device.deviceId} value={device.deviceId}>
+            {device.label || `Audio input ${index + 1}`}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
