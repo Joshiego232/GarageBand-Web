@@ -25,6 +25,7 @@ try {
     "src/lib/daw/sampler.ts",
     "src/lib/daw/morph-synth.ts",
     "src/lib/daw/pitch-correction.ts",
+    "src/lib/daw/audio-slicing.ts",
     "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
@@ -76,6 +77,9 @@ try {
   );
   const pitchCorrection = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/pitch-correction.js")).href
+  );
+  const audioSlicing = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/audio-slicing.js")).href
   );
   const midiControl = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/midi-control.js")).href
@@ -415,6 +419,38 @@ try {
     "Flex Pitch detected a note in silence",
   );
 
+  // Verify transient detection finds separated percussive attacks and ignores silence.
+  const transientRate = 22050;
+  const transientAudio = new Float32Array(transientRate * 2);
+  for (const transientStart of [0.2, 0.8, 1.4]) {
+    const start = Math.floor(transientStart * transientRate);
+    const duration = Math.floor(0.14 * transientRate);
+    for (let index = 0; index < duration; index++) {
+      const envelope = Math.exp(-index / (transientRate * 0.035));
+      transientAudio[start + index] =
+        Math.sin((2 * Math.PI * 180 * index) / transientRate) * envelope * 0.8;
+    }
+  }
+  const transientCuts = audioSlicing.detectTransientCuts(
+    [transientAudio],
+    transientRate,
+    0,
+    2,
+    -18,
+    0.12,
+  );
+  expect(transientCuts.length === 3, `Expected 3 transient cuts, found ${transientCuts.length}`);
+  for (const expectedTime of [0.2, 0.8, 1.4]) {
+    expect(
+      transientCuts.some((time) => Math.abs(time - expectedTime) < 0.06),
+      `Transient slicer missed the attack near ${expectedTime}s`,
+    );
+  }
+  expect(
+    audioSlicing.detectTransientCuts([new Float32Array(transientRate)], transientRate, 0, 1).length === 0,
+    "Transient slicer created cuts in silence",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -584,7 +620,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
