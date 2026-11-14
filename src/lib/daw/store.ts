@@ -230,6 +230,15 @@ export const useDAW = create<DAWState>((set, get) => ({
         collapsed: track.collapsed ?? false,
         sampleZones: track.sampleZones ?? [],
         sampleDrumKit: track.sampleDrumKit ?? false,
+        midiPlugins: (track.midiPlugins ?? []).map((plugin) =>
+          plugin.pluginId === "velocity-humanizer"
+            ? {
+                ...plugin,
+                pluginId: "scripter",
+                script: `humanize(${plugin.params.amount ?? 8})`,
+              }
+            : plugin
+        ),
       })),
     };
     set({
