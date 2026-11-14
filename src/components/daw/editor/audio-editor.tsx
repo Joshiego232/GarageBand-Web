@@ -52,11 +52,6 @@ export function AudioEditor() {
   const gainArmRef = useRef(false);
   const fadeArmRef = useRef(false);
 
-  const regionRef = useRef(region);
-  regionRef.current = region;
-  const sizeRef = useRef(size);
-  sizeRef.current = size;
-
   const bufferId = region?.bufferId;
   // engine cache read, re-evaluated whenever a pending load completes (loadTick bump)
   const stored = useMemo(
@@ -234,28 +229,28 @@ export function AudioEditor() {
       raf = requestAnimationFrame(loop);
       const el = playheadRef.current;
       if (!el) return;
-      const r = regionRef.current;
-      if (!r || sizeRef.current.w < 2) {
+      const r = region;
+      if (!r || size.w < 2) {
         el.style.display = "none";
         return;
       }
       const local = engine.currentTick() - r.start;
       if (local >= 0 && local <= r.length) {
         el.style.display = "block";
-        el.style.transform = `translateX(${(local / r.length) * sizeRef.current.w}px)`;
+        el.style.transform = `translateX(${(local / r.length) * size.w}px)`;
       } else {
         el.style.display = "none";
       }
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [region, size.w]);
 
   // ---------- waveform pointer interactions ----------
 
   const onWavePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
-    const r = regionRef.current;
+    const r = region;
     if (!r || r.type !== "audio") return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -287,14 +282,14 @@ export function AudioEditor() {
   const onWavePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = fadeDragRef.current;
     if (d) {
-      const r = regionRef.current;
+      const r = region;
       if (!r) return;
       const dx = e.clientX - d.startClientX;
       const sec = clamp(d.startVal + (dx / d.width) * d.durSec, 0, d.durSec / 2);
       useDAW.getState().updateRegion(r.id, d.which === "in" ? { fadeIn: sec } : { fadeOut: sec }, false);
       return;
     }
-    const r = regionRef.current;
+    const r = region;
     if (!r || !stored) {
       if (fadeHover) setFadeHover(null);
       return;
@@ -319,7 +314,7 @@ export function AudioEditor() {
   // ---------- controls ----------
 
   const onGainChange = (vals: number[]) => {
-    const r = regionRef.current;
+    const r = region;
     if (!r) return;
     if (!gainArmRef.current) {
       gainArmRef.current = true;
@@ -335,7 +330,7 @@ export function AudioEditor() {
   const onFadeInput =
     (which: "in" | "out") =>
     (e: ReactChangeEvent<HTMLInputElement>) => {
-      const r = regionRef.current;
+      const r = region;
       if (!r) return;
       const v = e.target.valueAsNumber;
       if (Number.isNaN(v)) return;
@@ -354,7 +349,7 @@ export function AudioEditor() {
   };
 
   const onNormalize = () => {
-    const r = regionRef.current;
+    const r = region;
     if (!r || !stored) return;
     const sr = stored.sampleRate;
     const total = stored.channels[0]?.length ?? 0;
@@ -370,7 +365,7 @@ export function AudioEditor() {
   };
 
   const onReverse = async () => {
-    const r = regionRef.current;
+    const r = region;
     if (!r || !stored || busy) return;
     setBusy(true);
     try {
@@ -396,13 +391,13 @@ export function AudioEditor() {
   };
 
   const onToggleLoop = () => {
-    const r = regionRef.current;
+    const r = region;
     if (!r) return;
     useDAW.getState().updateRegion(r.id, { looped: !r.looped });
   };
 
   const onPlayRegion = () => {
-    const r = regionRef.current;
+    const r = region;
     if (!r) return;
     if (engine.playing) {
       engine.play(r.start);
