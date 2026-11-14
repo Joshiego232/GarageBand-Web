@@ -26,6 +26,7 @@ import { MySongsModal } from "@/components/daw/library/my-songs-modal";
 import { ComposerModal } from "@/components/daw/panels/composer-modal";
 import { StatusBar } from "@/components/daw/status-bar";
 import { CommandPalette } from "@/components/daw/panels/command-palette";
+import { LiveLoopsPanel } from "@/components/daw/panels/live-loops-panel";
 
 export default function Home() {
   const panels = useDAW((s) => s.ui.panels);
@@ -69,9 +70,9 @@ export default function Home() {
           </div>
         )}
         <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          <TimelineWorkspace />
-          {panels.editor && <EditorPanel />}
-          {panels.mixer && <MixerPanel />}
+          {panels.liveLoops ? <LiveLoopsPanel /> : <TimelineWorkspace />}
+          {!panels.liveLoops && panels.editor && <EditorPanel />}
+          {!panels.liveLoops && panels.mixer && <MixerPanel />}
         </div>
       </div>
 
