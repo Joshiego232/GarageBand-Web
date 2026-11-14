@@ -13,7 +13,7 @@ import {
 import { playNote, PATCHES, type VoiceHandle } from "./instruments";
 import { warmSampledPatch } from "./sampled-instruments";
 import { applyMidiPlugins } from "./plugins";
-import { selectSamplerZone } from "./sampler";
+import { selectSamplerZone, shouldReleaseSamplerOnNoteOff } from "./sampler";
 import { useDAW } from "./store";
 import {
   tickToSec,
@@ -981,7 +981,7 @@ export class AudioEngine {
       scheduleStop(at: number) {
         // Quick Sampler's one-shot mode plays through even when the MIDI key
         // is released. Loop mode follows MIDI note-off and fades cleanly.
-        if (mode === "loop") stopAt(at, 0.045);
+        if (shouldReleaseSamplerOnNoteOff(mode)) stopAt(at, 0.045);
       },
       kill() {
         stopAt(ctx.currentTime, 0.005);
