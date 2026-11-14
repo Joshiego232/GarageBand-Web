@@ -195,7 +195,7 @@ function TrackHeader(p: TrackHeaderProps) {
           )}
           {size !== "S" && track.role !== "folder" && track.type === "midi" && (
             <div className="text-[9px] text-zinc-500 truncate leading-tight">
-              {patch?.name ?? track.instrument}
+              {track.sampleName ?? patch?.name ?? track.instrument}
             </div>
           )}
           {size !== "S" && track.role !== "folder" && track.type === "audio" && (
