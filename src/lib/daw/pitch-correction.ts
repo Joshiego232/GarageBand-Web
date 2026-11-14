@@ -82,7 +82,6 @@ export function detectMonophonicPitchSegments(
     const rms = Math.sqrt(energy / Math.ceil(frame.length / 2));
     if (rms < 0.008) continue;
 
-    const difference = new Float64Array(maxLag + 1);
     let cumulative = 0;
     const normalized = new Float64Array(maxLag + 1);
     for (let lag = 1; lag <= maxLag; lag++) {
@@ -91,7 +90,6 @@ export function detectMonophonicPitchSegments(
         const delta = frame[i] - frame[i + lag];
         sum += delta * delta;
       }
-      difference[lag] = sum;
       cumulative += sum;
       normalized[lag] = cumulative > 1e-12 ? (sum * lag) / cumulative : 1;
     }
