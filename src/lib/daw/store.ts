@@ -52,6 +52,7 @@ interface DAWState {
   setCycle: (on: boolean, start?: number, end?: number) => void;
   setMasterVolume: (v: number) => void;
   setAudioOutputDevice: (deviceId: string | null) => void;
+  setMidiCCMappings: (mappings: Project["midiCCMappings"]) => void;
   setCountIn: (on: boolean) => void;
   setMetronome: (on: boolean) => void;
 
@@ -218,6 +219,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       alternatives: p.alternatives ?? [],
       screensets: p.screensets ?? [],
       audioOutputDeviceId: p.audioOutputDeviceId ?? null,
+      midiCCMappings: p.midiCCMappings ?? [],
       tracks: p.tracks.map((track) => ({
         ...track,
         role: track.role ?? "track",
@@ -260,6 +262,9 @@ export const useDAW = create<DAWState>((set, get) => ({
 
   setAudioOutputDevice: (deviceId) => set({
     project: { ...get().project, audioOutputDeviceId: deviceId },
+  }),
+  setMidiCCMappings: (mappings) => set({
+    project: { ...get().project, midiCCMappings: mappings ?? [] },
   }),
     setMasterVolume: (v) => set({ project: { ...get().project, masterVolume: clamp(v, 0, 1.25) } }),
 
