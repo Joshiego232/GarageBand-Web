@@ -1,6 +1,7 @@
 import type { Note } from "./types";
 import { uid, PPQ } from "./types";
 import { clamp } from "./utils";
+import { applyMidiScript } from "./midi-scripter";
 
 export interface PluginControl {
   id: string;
@@ -23,6 +24,8 @@ export interface TrackPluginInstance {
   pluginId: string;
   enabled: boolean;
   params: Record<string, number>;
+  /** Safe MIDI Scripter program; only interpreted by the MIDI command parser. */
+  script?: string;
 }
 
 const control = (
@@ -40,7 +43,7 @@ export const MIDI_PLUGIN_DEFS: PluginDefinition[] = [
   { id: "scale-lock", name: "Scale Lock", description: "Moves notes to the nearest note in the song key.", controls: [] },
   { id: "octave-doubler", name: "Octave Doubler", description: "Adds a second voice one octave above the played notes.", controls: [control("semitones", "Interval", 12, 24, 12)] },
   { id: "transposer", name: "Transposer", description: "Shifts every note by a selected number of semitones.", controls: [control("semitones", "Semitones", -24, 24, 0)] },
-  { id: "velocity-humanizer", name: "Velocity Humanizer", description: "Adds repeatable velocity variation for a more natural performance.", controls: [control("amount", "Amount", 0, 40, 8)] },
+  { id: "scripter", name: "MIDI Scripter", description: "Write safe MIDI commands to transform incoming and arranged notes.", controls: [] },
   { id: "note-repeater", name: "Note Repeater", description: "Repeats every note evenly inside its original duration.", controls: [control("repeats", "Repeats", 2, 4, 2), control("gate", "Gate", 0.2, 1, 0.82, 0.02)] },
   { id: "strummer", name: "Strummer", description: "Staggers simultaneous chord notes like a guitar or harp strum.", controls: [control("spreadTicks", "Spread", 0, 120, 36, 6)] },
   { id: "gate", name: "Gate / Staccato", description: "Shortens MIDI note lengths to create tighter articulation.", controls: [control("length", "Note Length", 0.1, 1, 0.65, 0.05)] },
@@ -73,6 +76,18 @@ export function createPluginInstance(
     params: Object.fromEntries(
       definition.controls.map((item) => [item.id, item.defaultValue])
     ),
+    ...(pluginId === "scripter"
+      ? {
+          script: [
+            "// One supported MIDI command per line. This is a safe MIDI DSL, not JavaScript.",
+            "// transpose(12)",
+            "// chord(4, 7)",
+            "// duplicate(12, 0.7)",
+            "// velocityScale(0.85)",
+            "// repeat(2, 240)",
+          ].join("\n"),
+        }
+      : {}),
   };
 }
 
@@ -143,6 +158,9 @@ export function applyMidiPlugins(
         ]);
         break;
       }
+      case "scripter":
+        notes = applyMidiScript(notes, plugin.script ?? "", tonic, mode);
+        break;
       case "velocity-humanizer": {
         const amount = Math.max(0, params.amount ?? 0);
         notes = notes.map((note) => {
