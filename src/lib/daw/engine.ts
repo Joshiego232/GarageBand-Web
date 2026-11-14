@@ -1215,6 +1215,20 @@ export class AudioEngine {
       this.voices.push({ handle: voice, until: when + 6 });
     };
 
+    const customTrack = st.project.tracks.find(
+      (track) => track.instrument === patchId && !!track.sampleBufferId
+    );
+    if (customTrack?.sampleBufferId) {
+      void this.ensureBufferLoaded(customTrack.sampleBufferId).then((buffer) => {
+        if (!buffer) throw new Error("Quick Sampler audio could not be loaded");
+        play();
+      }).catch((error: unknown) => {
+        console.error("Quick Sampler audition failed", error);
+        toast.error(`Could not load ${customTrack.sampleName ?? customTrack.name}.`);
+      });
+      return;
+    }
+
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
       void warmSampledPatch(ctx, dest, patch).then(play).catch(() => {
