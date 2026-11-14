@@ -425,6 +425,7 @@ export class AudioEngine {
 
   private unsub: (() => void) | null = null;
   private inited = false;
+  private activeOutputDeviceId: string | null | undefined = undefined;
 
   // ---------------- lifecycle ----------------
 
@@ -460,6 +461,23 @@ export class AudioEngine {
     m.volume.gain.value = clamp(project.masterVolume, 0, 1.25);
     const beat = 60 / project.tempo;
     m.delay.delayTime.value = Math.min(1.9, beat * 0.75); // dotted 8th
+    const requestedOutput = project.audioOutputDeviceId ?? null;
+    if (this.activeOutputDeviceId !== requestedOutput) {
+      this.activeOutputDeviceId = requestedOutput;
+      const contextWithSink = ctx as AudioContext & {
+        setSinkId?: (sinkId: string) => Promise<void>;
+      };
+      if (typeof contextWithSink.setSinkId === "function") {
+        void contextWithSink.setSinkId(requestedOutput ?? "").catch((error: unknown) => {
+          this.activeOutputDeviceId = undefined;
+          console.error("Could not route audio to the selected output device.", error);
+          toast.error("Could not select that audio output device. The default output is still active.");
+        });
+      } else if (requestedOutput) {
+        this.activeOutputDeviceId = undefined;
+        toast.error("This browser does not support selecting an audio output device.");
+      }
+    }
     m.click.gain.value = 0.9;
 
     const seen = new Set<string>();
@@ -728,7 +746,7 @@ export class AudioEngine {
     this.recording = true;
     this.recordedMidi = [];
     if (track?.type === "audio") {
-      this.startAudioCapture(track.id, track.inputMonitor).catch(() => {
+      this.startAudioCapture(track.id, track.inputMonitor, track.inputDeviceId).catch(() => {
         this.recording = false;
       });
     }
@@ -1613,10 +1631,15 @@ export class AudioEngine {
 
   // ---------------- audio capture ----------------
 
-  async startAudioCapture(trackId: string, monitor: boolean): Promise<void> {
+  async startAudioCapture(
+    trackId: string,
+    monitor: boolean,
+    inputDeviceId?: string | null
+  ): Promise<void> {
     const ctx = this.ensure();
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
