@@ -128,7 +128,7 @@ export interface Project {
 export type Tool = "pointer" | "pencil";
 export type SnapMode = "smart" | "bar" | "beat" | "8th" | "16th" | "off";
 export type TrackSize = "S" | "M" | "L";
-export type EditorMode = "piano" | "audio" | "steps" | "smart";
+export type EditorMode = "piano" | "audio" | "steps" | "score" | "smart";
 export type PanelKey =
   | "library"
   | "loops"
