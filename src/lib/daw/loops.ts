@@ -298,6 +298,8 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
     compressor: partial.compressor ?? false,
     eq: partial.eq ?? { lowGain: 0, lowFreq: 90, midGain: 0, midFreq: 1000, midQ: 1, highGain: 0, highFreq: 8000 },
     params: partial.params ?? defaultParams(instrument),
+    midiPlugins: partial.midiPlugins ?? [],
+    audioPlugins: partial.audioPlugins ?? [],
     regions: partial.regions ?? [],
   };
 }
