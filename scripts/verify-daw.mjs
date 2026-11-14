@@ -260,6 +260,15 @@ try {
     "Missing sample-zone lists should not select a zone",
   );
 
+  expect(
+    !sampler.shouldReleaseSamplerOnNoteOff("one-shot"),
+    "One-shot sample mode should ignore MIDI note-off",
+  );
+  expect(
+    sampler.shouldReleaseSamplerOnNoteOff("loop"),
+    "Loop sample mode should release on MIDI note-off",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -429,7 +438,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers and solo checks passed.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
