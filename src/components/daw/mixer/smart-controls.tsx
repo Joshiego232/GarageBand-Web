@@ -274,7 +274,9 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
   const updateTrack = useDAW((state) => state.updateTrack);
   const commit = useDAW((state) => state.commit);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const drumPadInputRef = useRef<HTMLInputElement>(null);
   const [importingZone, setImportingZone] = useState(false);
+  const [selectedPad, setSelectedPad] = useState(36);
   const [newZoneRoot, setNewZoneRoot] = useState(
     Math.min(108, (track.sampleRootPitch ?? 60) + 12 * ((track.sampleZones ?? []).length + 1))
   );
@@ -287,6 +289,71 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
   const noteName = (pitch: number) => {
     const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
     return `${names[pitch % 12]} ${Math.floor(pitch / 12) - 1}`;
+  };
+
+  const drumPads = [
+    "Kick", "Side Stick", "Snare", "Hand Clap",
+    "Electric Snare", "Low Tom", "Closed Hat", "Floor Tom",
+    "Pedal Hat", "Low Tom 2", "Open Hat", "Mid Tom",
+    "High-Mid Tom", "Crash Cymbal", "High Tom", "Ride Cymbal",
+  ];
+
+  const assignDrumPad = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) {
+      toast.error("Choose an audio file for this drum pad");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Drum pad samples must be 25 MB or smaller");
+      return;
+    }
+
+    setImportingZone(true);
+    try {
+      const decoded = await engine.decodeAudioFile(file);
+      const sampleDuration = decoded.channels[0]?.length
+        ? decoded.channels[0].length / decoded.sampleRate
+        : 0;
+      if (sampleDuration <= 0 || sampleDuration > 60) {
+        toast.error("Drum pad samples must be 60 seconds or shorter");
+        return;
+      }
+
+      const bufferId = `drum-pad-${uid()}`;
+      await engine.storeBuffer(bufferId, decoded);
+      const zone: SamplerZone = {
+        id: uid(),
+        bufferId,
+        name: file.name,
+        rootPitch: selectedPad,
+        lowKey: selectedPad,
+        highKey: selectedPad,
+        velocityLow: 1,
+        velocityHigh: 127,
+        playbackMode: "one-shot",
+      };
+      const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+      const otherZones = (current?.sampleZones ?? []).filter(
+        (item) => !(selectedPad >= item.lowKey && selectedPad <= item.highKey)
+      );
+      useDAW.getState().updateTrack(
+        track.id,
+        {
+          sampleDrumKit: true,
+          sampleZones: [...otherZones, zone],
+        },
+        false
+      );
+      toast.success(`Assigned ${file.name} to ${drumPads[selectedPad - 36] ?? "drum pad"}`);
+    } catch (error) {
+      console.error("Drum pad import failed", error);
+      toast.error("Could not decode that drum sample. Try WAV, MP3 or OGG.");
+    } finally {
+      setImportingZone(false);
+    }
   };
 
   const updateZone = (zoneId: string, patch: Partial<SamplerZone>) => {
@@ -416,6 +483,74 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
           </select>
           <span className="text-[9px] text-zinc-600">Base sample playback behavior.</span>
         </label>
+      </div>
+
+      <div className="rounded-lg border border-[#d9b13b]/30 bg-[#d9b13b]/[0.05] p-3 flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <Drum size={14} className="text-[#e6c16d]" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold text-zinc-200">Drum Machine Designer</p>
+            <p className="text-[9px] text-zinc-600">Load a separate one-shot sample onto each of 16 MIDI pads.</p>
+          </div>
+          <span className={track.sampleDrumKit ? "text-[8px] text-[#e6c16d]" : "text-[8px] text-zinc-600"}>
+            {track.sampleDrumKit ? "KIT MODE ON" : "KIT MODE OFF"}
+          </span>
+        </div>
+        <input
+          ref={drumPadInputRef}
+          type="file"
+          accept="audio/*"
+          className="hidden"
+          onChange={assignDrumPad}
+        />
+        <div className="grid grid-cols-4 gap-1.5">
+          {drumPads.map((padName, index) => {
+            const pitch = index + 36;
+            const zone = zones.find((item) => pitch >= item.lowKey && pitch <= item.highKey);
+            const selected = selectedPad === pitch;
+            return (
+              <button
+                key={pitch}
+                type="button"
+                onClick={() => {
+                  setSelectedPad(pitch);
+                  if (zone) engine.auditionNote(track.instrument, pitch, 110, track.params);
+                }}
+                aria-pressed={selected}
+                title={`${padName} · MIDI ${pitch}${zone ? ` · ${zone.name}` : " · Empty"}`}
+                className={`min-h-14 rounded-md border p-1.5 text-left flex flex-col justify-between transition-colors ${
+                  selected
+                    ? "border-[#e6c16d]/65 bg-[#d9b13b]/15"
+                    : zone
+                      ? "border-[#8fb44a]/35 bg-[#8fb44a]/[0.08] hover:bg-[#8fb44a]/15"
+                      : "border-black/40 bg-[#19191d] hover:bg-[#2b2b31]"
+                }`}
+              >
+                <span className="text-[8px] text-zinc-500">PAD {String(index + 1).padStart(2, "0")} · {pitch}</span>
+                <span className="text-[9px] font-medium text-zinc-200 truncate w-full">{zone?.name ?? padName}</span>
+                <span className={zone ? "text-[8px] text-[#a8cf79]" : "text-[8px] text-zinc-700"}>
+                  {zone ? "SAMPLE LOADED" : "EMPTY"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <p className="min-w-0 text-[9px] text-zinc-500 truncate">
+            Selected: {drumPads[selectedPad - 36]} · MIDI {selectedPad}
+          </p>
+          <button
+            type="button"
+            disabled={importingZone}
+            onClick={() => drumPadInputRef.current?.click()}
+            className="h-7 shrink-0 px-2 rounded border border-[#d9b13b]/40 bg-[#d9b13b]/10 text-[9px] text-[#e6c16d] hover:bg-[#d9b13b]/20 disabled:opacity-40 inline-flex items-center gap-1"
+          >
+            <Upload size={10} /> {importingZone ? "Loading…" : "Assign Sample"}
+          </button>
+        </div>
+        <p className="text-[9px] text-zinc-600">
+          Each pad is mapped to one MIDI note, uses full velocity range and plays as a one-shot. The custom kit is available in the Drum Step Sequencer.
+        </p>
       </div>
 
       <div className="rounded-lg border border-black/40 bg-[#202024] p-3 flex flex-col gap-3">
