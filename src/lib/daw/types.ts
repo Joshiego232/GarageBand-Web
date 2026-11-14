@@ -109,6 +109,7 @@ export interface Track {
   samplePlaybackMode?: "one-shot" | "loop";
   sampleName?: string;
   sampleZones?: SamplerZone[];
+  sampleDrumKit?: boolean;
   volume: number; // 0..1.25 (1 = 0 dB)
   pan: number; // -1..1
   /** Enable HRTF binaural 3D panning for stereo headphone playback. */
