@@ -12,6 +12,7 @@ import {
 } from "./types";
 import { playNote, PATCHES, type VoiceHandle } from "./instruments";
 import { warmSampledPatch } from "./sampled-instruments";
+import { applyMidiPlugins } from "./plugins";
 import { useDAW } from "./store";
 import {
   tickToSec,
@@ -578,7 +579,12 @@ export class AudioEngine {
     timeAt: (t: number) => number,
     project: Project
   ) {
-    const notes = region.notes ?? [];
+    const notes = applyMidiPlugins(
+      region.notes ?? [],
+      track.midiPlugins ?? [],
+      project.keyTonic,
+      project.keyMode
+    );
     const regionEnd = region.start + region.length;
     if (!notes.length) return;
     const period = region.looped && region.coreLength ? region.coreLength : 0;
@@ -988,16 +994,21 @@ export class AudioEngine {
       tn.delaySend.gain.value = clamp((track.params.delay ?? 0) * 0.9, 0, 1);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
-        // OfflineAudioContext is supported by smplr, so WAV bounces use the same
-        // sampled piano/string patches as live playback (with synth fallback on load failure).
-        await warmSampledPatch(offline, tn.input, track.instrument);
+        // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch);
       }
 
       for (const region of track.regions) {
         if (region.muted) { done++; continue; }
         const regionEnd = region.start + region.length;
         if (region.type === "midi") {
-          const notes = region.notes ?? [];
+          const notes = applyMidiPlugins(
+            region.notes ?? [],
+            track.midiPlugins ?? [],
+            project.keyTonic,
+            project.keyMode
+          );
           const period = region.looped && region.coreLength ? region.coreLength : 0;
           const reps = period ? Math.ceil(region.length / period) + 1 : 1;
           for (let k = 0; k < reps; k++) {
