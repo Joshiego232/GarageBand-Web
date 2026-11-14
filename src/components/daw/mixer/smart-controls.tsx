@@ -6,7 +6,7 @@
 // tracks. Rendered inside the bottom editor panel.
 // ============================================================
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Mic, SlidersHorizontal } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
@@ -14,6 +14,7 @@ import type { KnobDef } from "@/lib/daw/types";
 import { Knob } from "@/components/daw/controls/knob";
 import { TrackIcon } from "./track-icon";
 import { VisualEQ } from "./visual-eq";
+import { PluginRack } from "./plugin-rack";
 
 /** Unit-aware readout formatting for patch knobs. */
 function knobFormat(unit?: string): ((v: number) => string) | undefined {
@@ -32,6 +33,7 @@ const EQ_GAIN_FORMAT = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
 export function SmartControls() {
   const track = useDAW((s) => s.project.tracks.find((t) => t.id === s.ui.selectedTrackId) ?? null);
   const commit = useDAW((s) => s.commit);
+  const [view, setView] = useState<"sound" | "plugins">("sound");
 
   const setParam = useCallback((trackId: string, key: string, v: number) => {
     const t = useDAW.getState().project.tracks.find((x) => x.id === trackId);
@@ -83,13 +85,31 @@ export function SmartControls() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          {track.type === "audio" && (
+          <div className="h-6 p-0.5 flex items-center rounded-md border border-black/50 bg-[#26262b]">
+            <button
+              type="button"
+              onClick={() => setView("sound")}
+              aria-pressed={view === "sound"}
+              className={`h-5 px-2 rounded text-[9px] transition-colors ${view === "sound" ? "bg-[#45454d] text-zinc-100" : "text-zinc-500 hover:text-zinc-200"}`}
+            >
+              Sound
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("plugins")}
+              aria-pressed={view === "plugins"}
+              className={`h-5 px-2 rounded text-[9px] transition-colors ${view === "plugins" ? "bg-[#45454d] text-zinc-100" : "text-zinc-500 hover:text-zinc-200"}`}
+            >
+              Plugins
+            </button>
+          </div>
+          {view === "sound" && track.type === "audio" && (
             <div className="h-6 pl-1.5 pr-2 inline-flex items-center gap-1.5 rounded-md border border-black/50 bg-[#26262b]">
               <Mic size={11} className="text-zinc-500" aria-hidden="true" />
               <span className="text-[10px] text-zinc-400">Input: Microphone</span>
             </div>
           )}
-          <VisualEQ trackId={track.id}>
+          {view === "sound" && <VisualEQ trackId={track.id}>
             <button
               type="button"
               title="Visual EQ"
@@ -98,11 +118,14 @@ export function SmartControls() {
               <SlidersHorizontal size={11} className="text-[#ffb648]" aria-hidden="true" />
               Visual EQ
             </button>
-          </VisualEQ>
+          </VisualEQ>}
         </div>
       </div>
 
-      {/* knob grid */}
+      {view === "plugins" ? (
+        <PluginRack track={track} />
+      ) : (
+      /* knob grid */
       <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] flex flex-wrap items-center justify-center gap-x-6 gap-y-2 py-3">
         {track.type === "midi"
           ? (patch?.knobs ?? []).map((k: KnobDef) => (
@@ -158,6 +181,7 @@ export function SmartControls() {
             </>
           )}
       </div>
+      )}
     </div>
   );
 }
