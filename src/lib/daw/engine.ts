@@ -45,6 +45,7 @@ interface TrackNodes {
   saturation: WaveShaperNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  spatialPanner: PannerNode;
   output: GainNode;
   routingTarget: AudioNode;
   analyser: AnalyserNode;
@@ -199,6 +200,11 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
 
   const gain = ctx.createGain();
   const panner = ctx.createStereoPanner();
+  const spatialPanner = ctx.createPanner();
+  spatialPanner.panningModel = "equalpower";
+  spatialPanner.distanceModel = "inverse";
+  spatialPanner.refDistance = 1;
+  spatialPanner.rolloffFactor = 0;
   const analyser = ctx.createAnalyser();
   const output = ctx.createGain();
   analyser.fftSize = 512;
@@ -242,6 +248,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
     .connect(saturation)
     .connect(gain)
     .connect(panner)
+    .connect(spatialPanner)
     .connect(analyser)
     .connect(output);
 
@@ -252,19 +259,37 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
 
   // Chorus and flanger are parallel, tempo-independent insert sends.
   panner.connect(chorusDelay);
-  chorusDelay.connect(chorusSend).connect(analyser);
+  chorusDelay.connect(chorusSend).connect(spatialPanner);
 
   panner.connect(flangerDelay);
-  flangerDelay.connect(flangerSend).connect(analyser);
+  flangerDelay.connect(flangerSend).connect(spatialPanner);
   flangerDelay.connect(flangerFeedback).connect(flangerDelay);
 
   return {
     input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
-    gain, panner, analyser, output, routingTarget: master.input,
+    gain, panner, spatialPanner, analyser, output, routingTarget: master.input,
     reverbSend, delaySend, chorusDelay, chorusSend,
     chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
     flangerLfo, flangerDepth,
   };
+}
+
+function applyTrackSpatialPanning(tn: TrackNodes, track: Track) {
+  const enabled = track.spatialEnabled === true;
+  tn.spatialPanner.panningModel = enabled ? "HRTF" : "equalpower";
+  tn.panner.pan.value = enabled ? 0 : clamp(track.pan, -1, 1);
+
+  const x = enabled ? clamp(track.spatialX ?? 0, -5, 5) : 0;
+  const y = enabled ? clamp(track.spatialY ?? 0, -5, 5) : 0;
+  const z = enabled ? clamp(track.spatialZ ?? -1, -5, 5) : -1;
+
+  if (tn.spatialPanner.positionX && tn.spatialPanner.positionY && tn.spatialPanner.positionZ) {
+    tn.spatialPanner.positionX.value = x;
+    tn.spatialPanner.positionY.value = y;
+    tn.spatialPanner.positionZ.value = z;
+  } else {
+    tn.spatialPanner.setPosition(x, y, z);
+  }
 }
 
 function setComp(
@@ -501,7 +526,7 @@ export class AudioEngine {
       tn.gain.gain.value = isTrackAudible(track, project.tracks)
         ? getEffectiveTrackGain(track, project.tracks)
         : 0;
-      tn.panner.pan.value = clamp(track.pan, -1, 1);
+      applyTrackSpatialPanning(tn, track);
       // prefetch audio buffers
       for (const bufferId of [track.sampleBufferId, ...(track.sampleZones ?? []).map((zone) => zone.bufferId), ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
         if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
@@ -537,6 +562,7 @@ export class AudioEngine {
           try {
             tn.input.disconnect();
             tn.analyser.disconnect();
+            tn.spatialPanner.disconnect();
             tn.output.disconnect();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
@@ -1838,7 +1864,7 @@ export class AudioEngine {
       tn.gain.gain.value = isTrackAudible(track, project.tracks)
         ? getEffectiveTrackGain(track, project.tracks)
         : 0;
-      tn.panner.pan.value = clamp(track.pan, -1, 1);
+      applyTrackSpatialPanning(tn, track);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
         // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
