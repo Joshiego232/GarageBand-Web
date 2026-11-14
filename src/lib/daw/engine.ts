@@ -13,6 +13,7 @@ import {
 import { playNote, PATCHES, type VoiceHandle } from "./instruments";
 import { warmSampledPatch } from "./sampled-instruments";
 import { applyMidiPlugins } from "./plugins";
+import { selectSamplerZone } from "./sampler";
 import { useDAW } from "./store";
 import {
   tickToSec,
@@ -907,14 +908,7 @@ export class AudioEngine {
     duration: number,
     noteOffControlled = false
   ): VoiceHandle {
-    const matchingZone = (track.sampleZones ?? [])
-      .filter((zone) =>
-        pitch >= zone.lowKey &&
-        pitch <= zone.highKey &&
-        velocity * 127 >= zone.velocityLow &&
-        velocity * 127 <= zone.velocityHigh
-      )
-      .sort((a, b) => (a.highKey - a.lowKey) - (b.highKey - b.lowKey))[0];
+    const matchingZone = selectSamplerZone(track.sampleZones, pitch, velocity * 127);
     const bufferId = matchingZone?.bufferId ?? track.sampleBufferId;
     if (!bufferId) {
       if ((track.sampleZones ?? []).length) {
@@ -1218,12 +1212,7 @@ export class AudioEngine {
     };
 
     if (track.sampleBufferId || (track.sampleZones ?? []).length) {
-      const selectedZone = (track.sampleZones ?? []).find((zone) =>
-        pitch >= zone.lowKey &&
-        pitch <= zone.highKey &&
-        velocity >= zone.velocityLow &&
-        velocity <= zone.velocityHigh
-      );
+      const selectedZone = selectSamplerZone(track.sampleZones, pitch, velocity);
       const sampleId = selectedZone?.bufferId ?? track.sampleBufferId;
       if (!sampleId) {
         this.openInputNotes.delete(pitch);
@@ -1308,12 +1297,7 @@ export class AudioEngine {
         (!!track.sampleBufferId || (track.sampleZones ?? []).length > 0)
     );
     if (customTrack) {
-      const selectedZone = (customTrack.sampleZones ?? []).find((zone) =>
-        pitch >= zone.lowKey &&
-        pitch <= zone.highKey &&
-        velocity >= zone.velocityLow &&
-        velocity <= zone.velocityHigh
-      );
+      const selectedZone = selectSamplerZone(customTrack.sampleZones, pitch, velocity);
       const sampleId = selectedZone?.bufferId ?? customTrack.sampleBufferId;
       if (sampleId) {
         void this.ensureBufferLoaded(sampleId).then((buffer) => {
