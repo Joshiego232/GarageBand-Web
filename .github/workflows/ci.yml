@@ -31,6 +31,8 @@ jobs:
         run: npx prisma generate
       - name: Lint
         run: npm run lint
+      - name: DAW instrument and plugin checks
+        run: npm run test:daw
       - name: Type check
         run: npm run typecheck
       - name: Production build
