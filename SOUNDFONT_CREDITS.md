@@ -61,7 +61,7 @@ from the smpldsnds public-domain drum-machine archive:
 ## Runtime and third-party software
 
 - [smplr](https://github.com/danigb/smplr) — MIT License.
-- Samples are downloaded only when an instrument or drum kit is selected.
+- Samples are loaded on demand for instruments used by the current project.
   Browser caching is handled by the sampler and the user's browser.
 
 Instrument recordings remain subject to their upstream licenses. The project
