@@ -190,6 +190,7 @@ export class AudioEngine {
   private pendingLoads = new Set<string>();
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
   private auditionDest: GainNode | null = null;
+  private previewTimer: ReturnType<typeof setInterval> | null = null;
 
   // loop preview
   private preview: {
@@ -799,10 +800,21 @@ export class AudioEngine {
       scheduledUntil: ctx.currentTime + 0.05,
       dest,
     };
-    this.previewTick();
+    const patch = PATCHES[patchId];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, dest, patch).then(() => this.previewTick());
+    } else {
+      this.previewTick();
+    }
+    if (this.previewTimer) clearInterval(this.previewTimer);
+    this.previewTimer = setInterval(() => this.previewTick(), TICK_INTERVAL_MS);
   }
 
   stopPreview() {
+    if (this.previewTimer) {
+      clearInterval(this.previewTimer);
+      this.previewTimer = null;
+    }
     if (this.preview) {
       try { this.preview.dest.disconnect(); } catch { /* noop */ }
       this.preview = null;
@@ -825,7 +837,7 @@ export class AudioEngine {
       const base = pv.startTime + r * pv.periodSec;
       for (const n of pv.notes) {
         const when = base + n.start;
-        if (when < ctx.currentTime || when >= horizon) continue;
+        if (when < pv.scheduledUntil || when >= horizon) continue;
         const v = playNote(ctx, pv.dest, pv.patchId, n.pitch, n.velocity / 127, when, n.len, params);
         v.scheduleStop(when + n.len);
         this.voices.push({ handle: v, until: when + n.len + 4 });
