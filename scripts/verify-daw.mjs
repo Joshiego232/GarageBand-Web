@@ -22,6 +22,7 @@ try {
     "src/lib/daw/utils.ts",
     "src/lib/daw/plugins.ts",
     "src/lib/daw/routing.ts",
+    "src/lib/daw/sampler.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
     "src/lib/daw/sampled-instruments.ts",
@@ -63,6 +64,9 @@ try {
   );
   const routing = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/routing.js")).href
+  );
+  const sampler = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/sampler.js")).href
   );
   const { useDAW } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/store.js")).href
@@ -213,6 +217,47 @@ try {
       compRegions[0].bufferId === takeB.bufferId &&
       compRegions[0].sampleStart === 2,
     "Quick Swipe comp did not replace the take lanes with the selected source segment",
+  );
+
+  // Verify deterministic sample-zone key and velocity selection.
+  const zone = (id, lowKey, highKey, velocityLow = 1, velocityHigh = 127) => ({
+    id,
+    bufferId: `buffer-${id}`,
+    name: id,
+    rootPitch: 60,
+    lowKey,
+    highKey,
+    velocityLow,
+    velocityHigh,
+    playbackMode: "one-shot",
+  });
+  const wideZone = zone("wide", 48, 72);
+  const narrowZone = zone("narrow", 58, 62);
+  const softZone = zone("soft", 58, 62, 1, 63);
+  const loudZone = zone("loud", 58, 62, 64, 127);
+  expect(
+    sampler.selectSamplerZone([wideZone, narrowZone], 60, 100)?.id === "narrow",
+    "A narrow key-range sample zone did not override a wider zone",
+  );
+  expect(
+    sampler.selectSamplerZone([softZone, loudZone], 60, 63)?.id === "soft",
+    "Velocity-layer lower boundary was not inclusive",
+  );
+  expect(
+    sampler.selectSamplerZone([softZone, loudZone], 60, 64)?.id === "loud",
+    "Velocity-layer upper/lower transition was not selected correctly",
+  );
+  expect(
+    sampler.selectSamplerZone([wideZone, narrowZone], 72, 100)?.id === "wide",
+    "Key-range upper boundary did not select its zone",
+  );
+  expect(
+    sampler.selectSamplerZone([wideZone], 73, 100) === undefined,
+    "Sample zone selected a pitch outside its key range",
+  );
+  expect(
+    sampler.selectSamplerZone(undefined, 60, 100) === undefined,
+    "Missing sample-zone lists should not select a zone",
   );
 
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
@@ -384,7 +429,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping and solo checks passed.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
