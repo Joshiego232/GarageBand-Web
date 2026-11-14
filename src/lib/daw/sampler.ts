@@ -22,3 +22,10 @@ export function selectSamplerZone(
       return (a.velocityHigh - a.velocityLow) - (b.velocityHigh - b.velocityLow);
     })[0];
 }
+
+/** One-shot samples ignore MIDI note-off; looped samples release with the note. */
+export function shouldReleaseSamplerOnNoteOff(
+  playbackMode: "one-shot" | "loop"
+): boolean {
+  return playbackMode === "loop";
+}
