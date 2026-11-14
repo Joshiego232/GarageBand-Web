@@ -140,7 +140,8 @@ export type PanelKey =
   | "mixer"
   | "editor"
   | "keyboard"
-  | "help";
+  | "help"
+  | "liveLoops";
 export type ModalKind =
   | "none"
   | "newProject"
