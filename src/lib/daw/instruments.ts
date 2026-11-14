@@ -1304,6 +1304,52 @@ function drumMachinePatch(
   };
 }
 
+function morphSynthPatch(
+  id: string,
+  name: string,
+  desc: string,
+  defaults: {
+    morph: number;
+    harmonics: number;
+    cutoff: number;
+    resonance: number;
+    attack: number;
+    decay: number;
+    sustain: number;
+    release: number;
+    detune: number;
+    sub: number;
+    lfoRate: number;
+    lfoDepth: number;
+    noise: number;
+  }
+): Patch {
+  return {
+    id,
+    name,
+    category: "Alchemy Synth",
+    icon: "audio-waveform",
+    desc,
+    synthEngine: "morph-additive",
+    knobs: [
+      k("morph", "Spectral Morph", 0, 1, defaults.morph),
+      k("harmonics", "Harmonics", 0.1, 1, defaults.harmonics),
+      k("cutoff", "Filter Cutoff", 80, 16000, defaults.cutoff, { curve: "log", unit: "Hz" }),
+      k("resonance", "Resonance", 0.1, 16, defaults.resonance),
+      k("attack", "Attack", 0.001, 4, defaults.attack, { unit: "s" }),
+      k("decay", "Decay", 0.02, 5, defaults.decay, { unit: "s" }),
+      k("sustain", "Sustain", 0, 1, defaults.sustain),
+      k("release", "Release", 0.03, 8, defaults.release, { unit: "s" }),
+      k("detune", "Unison Detune", 0, 40, defaults.detune, { unit: "ct" }),
+      k("sub", "Sub Layer", 0, 1, defaults.sub),
+      k("lfoRate", "LFO Rate", 0.05, 12, defaults.lfoRate, { unit: "Hz" }),
+      k("lfoDepth", "LFO Depth", 0, 1, defaults.lfoDepth),
+      k("noise", "Noise Layer", 0, 1, defaults.noise),
+      ...SEND_KNOBS,
+    ],
+  };
+}
+
 export const PATCHES: Record<string, Patch> = {
   // Piano & Keys — ten playable sampled instruments
   "grand-piano": {
@@ -1436,6 +1482,47 @@ export const PATCHES: Record<string, Patch> = {
   "synth-drums": soundfontPatch("synth-drums", "Synth Drums", "Drums & Percussion", "synth_drum", "drum", "Sampled electronic percussion tones", { release: 0.1 }),
   "woodblock-drums": soundfontPatch("woodblock-drums", "Woodblock", "Drums & Percussion", "woodblock", "drum", "Sampled woodblock percussion", { release: 0.08 }),
   "reverse-cymbal": soundfontPatch("reverse-cymbal", "Reverse Cymbal", "Drums & Percussion", "reverse_cymbal", "drum", "Sampled reverse cymbal swell", { release: 0.08 }),
+  // Alchemy Synth — original spectral/additive morph presets, no external samples.
+  "alchemy-glass-orbit": morphSynthPatch(
+    "alchemy-glass-orbit", "Glass Orbit", "Bright inharmonic-style additive shimmer with a soft evolving filter",
+    { morph: 0.82, harmonics: 0.8, cutoff: 9200, resonance: 2.4, attack: 0.08, decay: 1.8, sustain: 0.64, release: 2.4, detune: 7, sub: 0.08, lfoRate: 0.22, lfoDepth: 0.24, noise: 0.02 }
+  ),
+  "alchemy-solar-pad": morphSynthPatch(
+    "alchemy-solar-pad", "Solar Pad", "Wide evolving pad with slow attack, a soft sub layer and gentle motion",
+    { morph: 0.48, harmonics: 0.58, cutoff: 4200, resonance: 1.2, attack: 1.4, decay: 2.8, sustain: 0.82, release: 3.8, detune: 12, sub: 0.22, lfoRate: 0.16, lfoDepth: 0.34, noise: 0.04 }
+  ),
+  "alchemy-prism-keys": morphSynthPatch(
+    "alchemy-prism-keys", "Prism Keys", "Percussive digital keys with a clear harmonic attack and short release",
+    { morph: 0.72, harmonics: 0.72, cutoff: 11200, resonance: 1.8, attack: 0.004, decay: 0.48, sustain: 0.12, release: 0.42, detune: 3, sub: 0.04, lfoRate: 3.2, lfoDepth: 0.08, noise: 0.015 }
+  ),
+  "alchemy-neon-lead": morphSynthPatch(
+    "alchemy-neon-lead", "Neon Lead", "Focused unison lead with bright upper partials and expressive filter movement",
+    { morph: 0.24, harmonics: 0.9, cutoff: 7800, resonance: 4.2, attack: 0.012, decay: 0.52, sustain: 0.76, release: 0.32, detune: 16, sub: 0.12, lfoRate: 5.1, lfoDepth: 0.14, noise: 0.01 }
+  ),
+  "alchemy-sub-motion": morphSynthPatch(
+    "alchemy-sub-motion", "Sub Motion", "Deep bass synth with a restrained harmonic edge and subtle modulation",
+    { morph: 0.12, harmonics: 0.42, cutoff: 1250, resonance: 1.1, attack: 0.006, decay: 0.34, sustain: 0.7, release: 0.22, detune: 2, sub: 0.9, lfoRate: 0.8, lfoDepth: 0.06, noise: 0 }
+  ),
+  "alchemy-crystal-bell": morphSynthPatch(
+    "alchemy-crystal-bell", "Crystal Bell", "Bell-like additive partials with a long decaying metallic tail",
+    { morph: 0.96, harmonics: 0.94, cutoff: 14800, resonance: 2.8, attack: 0.002, decay: 3.4, sustain: 0.04, release: 2.8, detune: 1.5, sub: 0, lfoRate: 0.12, lfoDepth: 0.16, noise: 0.03 }
+  ),
+  "alchemy-vapor-brass": morphSynthPatch(
+    "alchemy-vapor-brass", "Vapor Brass", "Layered synthetic brass with a rising filter envelope and mild unison",
+    { morph: 0.34, harmonics: 0.76, cutoff: 5200, resonance: 2.1, attack: 0.035, decay: 0.62, sustain: 0.72, release: 0.48, detune: 9, sub: 0.18, lfoRate: 0.32, lfoDepth: 0.08, noise: 0.035 }
+  ),
+  "alchemy-choir-flux": morphSynthPatch(
+    "alchemy-choir-flux", "Choir Flux", "Vocal-like additive pad with airy noise and slow spectral motion",
+    { morph: 0.68, harmonics: 0.52, cutoff: 3600, resonance: 1.4, attack: 0.65, decay: 1.5, sustain: 0.84, release: 3.2, detune: 6, sub: 0.08, lfoRate: 0.28, lfoDepth: 0.4, noise: 0.12 }
+  ),
+  "alchemy-spectral-dream": morphSynthPatch(
+    "alchemy-spectral-dream", "Spectral Dream", "Soft ambient texture combining evolving partials, subharmonics and filtered noise",
+    { morph: 0.9, harmonics: 0.62, cutoff: 6200, resonance: 0.9, attack: 1.9, decay: 3.4, sustain: 0.72, release: 5.5, detune: 4, sub: 0.14, lfoRate: 0.09, lfoDepth: 0.52, noise: 0.2 }
+  ),
+  "alchemy-digital-pluck": morphSynthPatch(
+    "alchemy-digital-pluck", "Digital Pluck", "Fast plucked synth tone with a bright morphing spectrum and tight bass foundation",
+    { morph: 0.58, harmonics: 0.88, cutoff: 9800, resonance: 3.1, attack: 0.002, decay: 0.26, sustain: 0.06, release: 0.3, detune: 2, sub: 0.28, lfoRate: 2.4, lfoDepth: 0.1, noise: 0.025 }
+  ),
 };
 
 export const PATCH_CATEGORIES = Array.from(
