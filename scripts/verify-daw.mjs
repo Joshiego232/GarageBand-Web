@@ -21,6 +21,7 @@ try {
     "src/lib/daw/types.ts",
     "src/lib/daw/utils.ts",
     "src/lib/daw/plugins.ts",
+    "src/lib/daw/routing.ts",
     "src/lib/daw/sampled-instruments.ts",
     "src/lib/daw/instruments.ts",
   ];
@@ -57,6 +58,9 @@ try {
   );
   const { PATCHES } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/instruments.js")).href
+  );
+  const routing = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/routing.js")).href
   );
   const smplr = await import("smplr");
 
@@ -100,6 +104,50 @@ try {
     expect(count === 10, `Expected 10 instruments in "${category}", found ${count}`);
   }
   expect(categories.size >= 9, `Expected at least 9 instrument families, found ${categories.size}`);
+
+  // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
+  const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
+  const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
+  const vca = { id: "vca-1", name: "VCA 1", role: "vca", type: "audio", volume: 0.5, mute: false, solo: false };
+  const routedTrack = {
+    id: "routed-1", name: "Keys", role: "track", type: "midi", volume: 0.8,
+    mute: false, solo: false, outputBusId: aux1.id, vcaId: vca.id,
+  };
+  const routingTracks = [routedTrack, aux1, aux2, vca];
+  expect(
+    routing.resolveOutputBus(routedTrack, routingTracks)?.id === aux1.id,
+    "Track output did not resolve to its first Aux bus",
+  );
+  expect(
+    routing.isRoutedThroughBus(routedTrack, aux2.id, routingTracks),
+    "Nested Aux route was not detected",
+  );
+  expect(
+    routing.getEffectiveTrackGain(routedTrack, routingTracks) === 0.4,
+    "VCA did not scale the member fader's effective gain without mutating it",
+  );
+  expect(routedTrack.volume === 0.8, "VCA changed the member track's stored fader level");
+
+  const mutedVca = { ...vca, mute: true };
+  expect(
+    !routing.isTrackAudible(routedTrack, [routedTrack, aux1, aux2, mutedVca]),
+    "Muting a VCA did not mute its assigned channels",
+  );
+  const soloedAux = { ...aux2, solo: true };
+  expect(
+    routing.isTrackAudible(routedTrack, [routedTrack, aux1, soloedAux, vca]),
+    "Soloing a destination Aux did not pass its routed source channel",
+  );
+  const cyclicBus = { ...aux2, outputBusId: aux1.id };
+  expect(
+    routing.resolveOutputBus(routedTrack, [routedTrack, aux1, cyclicBus, vca]) === null,
+    "A cyclic Aux route was not rejected",
+  );
+  const invalidBus = { ...routedTrack, outputBusId: "not-an-aux" };
+  expect(
+    routing.resolveOutputBus(invalidBus, [invalidBus, aux1, aux2, vca]) === null,
+    "A missing Aux destination was not rejected",
+  );
 
   // Both effect racks must contain ten unique, configured processors.
   for (const [name, definitions] of [
@@ -226,7 +274,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed behavior checks.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, feedback protection, VCA and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
