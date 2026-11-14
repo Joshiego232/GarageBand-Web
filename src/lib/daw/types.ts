@@ -101,6 +101,7 @@ export interface Track {
   solo: boolean;
   armed: boolean;
   inputMonitor: boolean; // audio input monitoring
+  inputDeviceId?: string | null;
   compressor: boolean;
   eq: EqSettings;
   params: Record<string, number>; // smart-control params (patch knobs + sends)
@@ -122,6 +123,7 @@ export interface Project {
   countIn: boolean;
   metronome: boolean;
   masterVolume: number; // 0..1.25
+  audioOutputDeviceId?: string | null;
   tracks: Track[];
   stacks?: TrackStack[];
   alternatives?: ProjectAlternative[];
