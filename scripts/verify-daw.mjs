@@ -77,11 +77,25 @@ try {
   );
   const smplr = await import("smplr");
 
-  // Catalog counts and actual upstream sample instrument IDs.
+  // Catalog counts, verified upstream sample IDs, and our original synth engine.
   const categories = new Map();
+  let sampledCount = 0;
+  const morphSynthPatches = [];
   for (const patch of Object.values(PATCHES)) {
     categories.set(patch.category, (categories.get(patch.category) ?? 0) + 1);
-    expect(patch.sampled, `Instrument is not backed by samples: ${patch.id}`);
+
+    if (patch.synthEngine === "morph-additive") {
+      expect(!patch.sampled, `Morph Synth preset should not pretend to use samples: ${patch.id}`);
+      const knobIds = new Set(patch.knobs.map((knob) => knob.id));
+      for (const id of ["morph", "harmonics", "cutoff", "resonance", "attack", "decay", "sustain", "release", "detune", "sub", "lfoRate", "lfoDepth", "noise"]) {
+        expect(knobIds.has(id), `Morph Synth preset ${patch.id} is missing control ${id}`);
+      }
+      morphSynthPatches.push(patch);
+      continue;
+    }
+
+    expect(patch.sampled, `Instrument is not backed by samples or a supported synth engine: ${patch.id}`);
+    sampledCount++;
     const source = patch.sampled;
 
     if (source.engine === "soundfont") {
@@ -117,6 +131,9 @@ try {
     expect(count === 10, `Expected 10 instruments in "${category}", found ${count}`);
   }
   expect(categories.size >= 9, `Expected at least 9 instrument families, found ${categories.size}`);
+  expect(sampledCount === 100, `Expected 100 sampled instruments, found ${sampledCount}`);
+  expect(morphSynthPatches.length === 10, `Expected 10 original Morph Synth presets, found ${morphSynthPatches.length}`);
+  expect(categories.get("Alchemy Synth") === 10, "Alchemy Synth family must contain exactly 10 presets");
 
   // Verify stored folder/summing stacks, VCA assignments, alternatives and screensets.
   const daw = useDAW.getState();
@@ -466,7 +483,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
