@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent as ReactChangeEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowLeftRight, Layers3, Loader2, Play, Repeat, Scissors, Zap } from "lucide-react";
+import { ArrowLeftRight, Layers3, Loader2, Music2, Play, Repeat, Scissors, Wand2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
@@ -14,8 +14,14 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
-import { barTicks, clamp, formatBarsBeats, gainToDb, secToTick, tickToSec } from "@/lib/daw/utils";
+import { barTicks, clamp, formatBarsBeats, gainToDb, noteName, secToTick, tickToSec } from "@/lib/daw/utils";
 import { PPQ, uid } from "@/lib/daw/types";
+import {
+  applyMonophonicPitchCorrection,
+  detectMonophonicPitchSegments,
+  snapMidiPitchToScale,
+  type DetectedPitchSegment,
+} from "@/lib/daw/pitch-correction";
 import { toast } from "sonner";
 import { findActiveRegion } from "./piano-roll";
 
@@ -41,6 +47,8 @@ export function AudioEditor() {
   );
   const timeSig = useDAW((s) => s.project.timeSig);
   const tempo = useDAW((s) => s.project.tempo);
+  const keyTonic = useDAW((s) => s.project.keyTonic);
+  const keyMode = useDAW((s) => s.project.keyMode);
   const track = useDAW((s) =>
     findActiveRegion(s.project, s.ui.editorRegionId, s.ui.selectedRegionIds, s.ui.selectedTrackId)?.track ?? null
   );
@@ -48,6 +56,10 @@ export function AudioEditor() {
 
   const [showComping, setShowComping] = useState(false);
   const [compSourceByBar, setCompSourceByBar] = useState<Record<number, string>>({});
+  const [pitchSegments, setPitchSegments] = useState<DetectedPitchSegment[]>([]);
+  const [pitchStrength, setPitchStrength] = useState(0.85);
+  const [analyzingPitch, setAnalyzingPitch] = useState(false);
+  const [applyingPitch, setApplyingPitch] = useState(false);
 
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [fadeHover, setFadeHover] = useState<"in" | "out" | null>(null);
@@ -160,7 +172,13 @@ export function AudioEditor() {
     return () => clearInterval(iv);
   }, [bufferId]);
 
-  // ---------- sizing ----------
+  useEffect(() => {
+    setPitchSegments([]);
+    setShowComping(false);
+    setCompSourceByBar({});
+  }, [region?.id, bufferId]);
+
+    // ---------- sizing ----------
 
   useEffect(() => {
     const el = containerRef.current;
@@ -617,6 +635,85 @@ export function AudioEditor() {
     }
   };
 
+  const onAnalyzePitch = () => {
+    if (!stored || !region || analyzingPitch) return;
+    setAnalyzingPitch(true);
+    try {
+      const detected = detectMonophonicPitchSegments(
+        stored.channels,
+        stored.sampleRate,
+        sampleStart,
+        sampleLength
+      );
+      setPitchSegments(detected);
+      if (!detected.length) {
+        toast.warning("No stable monophonic notes were detected. Try a clear, single-note vocal recording.");
+      } else {
+        toast.success(`Detected ${detected.length} vocal note segment${detected.length === 1 ? "" : "s"}`);
+      }
+    } catch (error) {
+      console.error("Flex Pitch analysis failed", error);
+      toast.error("Could not analyze this recording");
+    } finally {
+      setAnalyzingPitch(false);
+    }
+  };
+
+  const onSnapPitchToKey = () => {
+    setPitchSegments((current) => current.map((segment) => ({
+      ...segment,
+      targetMidi: snapMidiPitchToScale(segment.detectedPitch, keyTonic, keyMode),
+    })));
+  };
+
+  const onApplyPitchCorrection = async () => {
+    const r = region;
+    if (!r || !stored || !pitchSegments.length || applyingPitch) return;
+    setApplyingPitch(true);
+    try {
+      const correctedChannels = applyMonophonicPitchCorrection(
+        stored.channels,
+        stored.sampleRate,
+        sampleStart,
+        sampleLength,
+        pitchSegments,
+        pitchStrength
+      );
+      const newId = `flex-pitch-${uid()}`;
+      const duration = correctedChannels[0]?.length
+        ? correctedChannels[0].length / stored.sampleRate
+        : 0;
+      if (!duration || correctedChannels.some((channel) => channel.length !== correctedChannels[0].length)) {
+        throw new Error("Pitch correction returned an invalid audio range");
+      }
+      await engine.storeBuffer(newId, {
+        sampleRate: stored.sampleRate,
+        channels: correctedChannels,
+        name: `${stored.name} - Pitch Corrected`,
+      });
+      const store = useDAW.getState();
+      store.commit();
+      store.updateRegion(
+        r.id,
+        {
+          bufferId: newId,
+          sampleStart: 0,
+          sampleLength: duration,
+          playbackRate: 1,
+        },
+        false
+      );
+      setPitchSegments([]);
+      setLoadTick((tick) => tick + 1);
+      toast.success("Pitch-corrected audio copy created");
+    } catch (error) {
+      console.error("Flex Pitch correction failed", error);
+      toast.error(error instanceof Error ? error.message : "Could not apply pitch correction");
+    } finally {
+      setApplyingPitch(false);
+    }
+  };
+
   const onToggleLoop = () => {
     const r = region;
     if (!r) return;
@@ -724,6 +821,105 @@ export function AudioEditor() {
               aria-label="Fade out milliseconds"
             />
           </label>
+        </div>
+
+        <div className="flex flex-col gap-2 rounded border border-[#60a5fa]/30 bg-[#60a5fa]/[0.05] p-2">
+          <div className="flex items-center gap-2">
+            <Music2 size={12} className="text-[#8fc4f1]" />
+            <span className="text-[9px] uppercase tracking-wider text-[#a8cdef]">Flex Pitch · Monophonic</span>
+            <span className="ml-auto text-[8px] text-zinc-600">{pitchSegments.length} notes</span>
+          </div>
+          <p className="text-[9px] leading-snug text-zinc-500">
+            Detects one voice or instrument at a time. It will not separate overlapping vocals or polyphonic chords. Pitch correction creates a new audio copy; the source file stays unchanged.
+          </p>
+          <div className="grid grid-cols-2 gap-1.5">
+            <Button
+              size="sm"
+              variant="secondary"
+              className={BTN}
+              onClick={onAnalyzePitch}
+              disabled={!stored || analyzingPitch || applyingPitch}
+            >
+              {analyzingPitch ? <Loader2 className="size-3 animate-spin" /> : <Music2 className="size-3" />}
+              {analyzingPitch ? "Analyzing…" : "Analyze Voice"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className={BTN}
+              onClick={onSnapPitchToKey}
+              disabled={!pitchSegments.length || applyingPitch}
+              title={`Snap detected notes to ${keyMode} in ${noteName(60 + keyTonic)}`}
+            >
+              <Wand2 className="size-3" /> Snap to Key
+            </Button>
+          </div>
+          {pitchSegments.length > 0 && (
+            <>
+              <label className="flex items-center gap-2">
+                <span className="text-[9px] text-zinc-500 shrink-0">Correction</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={pitchStrength}
+                  onChange={(event) => setPitchStrength(Number(event.target.value))}
+                  aria-label="Pitch correction strength"
+                  className="min-w-0 flex-1 accent-[#60a5fa]"
+                />
+                <span className="w-8 text-right font-mono text-[9px] text-zinc-300">{Math.round(pitchStrength * 100)}%</span>
+              </label>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {pitchSegments.map((segment) => (
+                  <div key={segment.id} className="grid grid-cols-[42px_1fr_1fr] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] px-1.5 py-1">
+                    <span className="text-[8px] tabular-nums text-zinc-600">
+                      {segment.startSec.toFixed(1)}s
+                    </span>
+                    <span className="min-w-0 truncate text-[9px] text-zinc-300">
+                      {noteName(segment.detectedMidi)}
+                      <span className="ml-1 text-[8px] text-zinc-600">
+                        {Math.round((segment.detectedPitch - segment.detectedMidi) * 100)}¢
+                      </span>
+                    </span>
+                    <select
+                      value={segment.targetMidi}
+                      onChange={(event) => setPitchSegments((current) => current.map((item) =>
+                        item.id === segment.id ? { ...item, targetMidi: Number(event.target.value) } : item
+                      ))}
+                      aria-label={`Target pitch for detected ${noteName(segment.detectedMidi)}`}
+                      className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-[#b9dcfb]"
+                    >
+                      {Array.from({ length: 49 }, (_, index) => index + 36).map((pitch) => (
+                        <option key={pitch} value={pitch}>{noteName(pitch)}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className={BTN}
+                  onClick={() => setPitchSegments([])}
+                  disabled={applyingPitch}
+                >
+                  Clear Notes
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className={BTN_ACTIVE}
+                  onClick={() => void onApplyPitchCorrection()}
+                  disabled={applyingPitch || !stored}
+                >
+                  {applyingPitch ? <Loader2 className="size-3 animate-spin" /> : <Wand2 className="size-3" />}
+                  {applyingPitch ? "Correcting…" : "Apply Flex Pitch"}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
 
         {takeCandidates.length > 0 && (
