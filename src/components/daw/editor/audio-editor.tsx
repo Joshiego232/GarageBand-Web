@@ -75,6 +75,7 @@ export function AudioEditor() {
   const fadeIn = region?.fadeIn ?? 0;
   const fadeOut = region?.fadeOut ?? 0;
   const gain = region?.gain ?? 1;
+  const playbackRate = region?.playbackRate ?? 1;
   const looped = region?.looped ?? false;
   const maxFadeMs = Math.max(0, Math.round((sampleLength / 2) * 1000));
   const takeCandidates = useMemo(() => {
@@ -418,6 +419,22 @@ export function AudioEditor() {
     fadeArmRef.current = false;
   };
 
+  const onVarispeedChange = (values: number[]) => {
+    const r = region;
+    const nextRate = clamp(values[0] ?? 1, 0.5, 2);
+    if (!r || r.type !== "audio" || Math.abs(nextRate - playbackRate) < 0.001) return;
+    const store = useDAW.getState();
+    store.commit();
+    store.updateRegion(
+      r.id,
+      {
+        playbackRate: nextRate,
+        length: Math.max(1, Math.round(r.length * playbackRate / nextRate)),
+      },
+      false
+    );
+  };
+
   const onNormalize = () => {
     const r = region;
     if (!r || !stored) return;
@@ -658,6 +675,24 @@ export function AudioEditor() {
             onValueCommit={onGainCommit}
             aria-label="Region gain"
           />
+        </div>
+
+        <div className="flex flex-col gap-1 rounded border border-black/40 bg-[#19191c] p-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-zinc-400">Varispeed</span>
+            <span className="font-mono text-[10px] text-zinc-300">{playbackRate.toFixed(2)}×</span>
+          </div>
+          <Slider
+            min={0.5}
+            max={2}
+            step={0.01}
+            value={[playbackRate]}
+            onValueChange={onVarispeedChange}
+            aria-label="Audio varispeed"
+          />
+          <p className="text-[9px] leading-snug text-zinc-600">
+            Changes speed, pitch and region duration together. This is varispeed, not pitch-preserving Flex Time.
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-1.5">
