@@ -91,6 +91,7 @@ export function MixerPanel() {
         <span className="text-[10px] text-zinc-600">
           {tracks.length} channels · {buses.length} aux · {vcas.length} VCA
         </span>
+        <AudioOutputSelector />
         <div className="ml-auto flex items-center gap-1">
           <button type="button" onClick={addBus} className="h-7 px-2 rounded border border-[#4ca8a0]/35 bg-[#4ca8a0]/10 text-[10px] text-[#8bd4c9] hover:bg-[#4ca8a0]/20 inline-flex items-center gap-1">
             <Plus size={11} /> Aux
@@ -253,5 +254,51 @@ function MasterStrip() {
       </div>
       <span className="text-[9px] text-zinc-500 shrink-0">Stereo Out</span>
     </div>
+  );
+}
+
+
+function AudioOutputSelector() {
+  const outputDeviceId = useDAW((state) => state.project.audioOutputDeviceId ?? "");
+  const setAudioOutputDevice = useDAW((state) => state.setAudioOutputDevice);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      try {
+        const list = await navigator.mediaDevices.enumerateDevices();
+        if (active) setDevices(list.filter((device) => device.kind === "audiooutput"));
+      } catch (error) {
+        console.warn("Could not enumerate audio output devices", error);
+      }
+    };
+    void refresh();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => {
+      active = false;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
+    };
+  }, []);
+
+  return (
+    <label className="hidden md:flex h-7 items-center gap-1.5 rounded border border-black/40 bg-[#19191c] px-2">
+      <Speaker size={11} className="text-zinc-500" />
+      <span className="text-[9px] text-zinc-500">Output</span>
+      <select
+        value={outputDeviceId}
+        onChange={(event) => setAudioOutputDevice(event.target.value || null)}
+        aria-label="Master audio output device"
+        className="max-w-32 bg-transparent text-[9px] text-zinc-300 outline-none"
+      >
+        <option value="">System default</option>
+        {devices.map((device, index) => (
+          <option key={device.deviceId} value={device.deviceId}>
+            {device.label || `Audio output ${index + 1}`}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
