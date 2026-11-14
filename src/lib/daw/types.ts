@@ -221,6 +221,8 @@ export interface Patch {
   icon: string;
   desc: string;
   knobs: KnobDef[];
+  /** Original additive/wavetable synth engine used by the Morph Synth family. */
+  synthEngine?: "morph-additive";
   /** Sound source used by the sampled-instrument engine. */
   sampled?: {
     engine: "soundfont" | "splendid-piano" | "electric-piano" | "drum-machine";
