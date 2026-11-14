@@ -69,6 +69,7 @@ interface LiveMidiClipState {
   kind: "midi";
   track: Track;
   region: Region;
+  regionId: string;
   notes: Note[];
   startTime: number;
   periodTicks: number;
@@ -1520,6 +1521,7 @@ export class AudioEngine {
         kind: "midi",
         track,
         region,
+        regionId: region.id,
         notes,
         startTime: launchTime,
         periodTicks,
