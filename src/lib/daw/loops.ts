@@ -300,6 +300,7 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
     samplePlaybackMode: partial.samplePlaybackMode ?? "one-shot",
     sampleName: partial.sampleName,
     sampleZones: partial.sampleZones ?? [],
+    sampleDrumKit: partial.sampleDrumKit ?? false,
     volume: partial.volume ?? 0.9,
     pan: partial.pan ?? 0,
     mute: false,
