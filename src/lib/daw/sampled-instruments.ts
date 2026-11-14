@@ -32,6 +32,7 @@ type SampleEntry = {
   player: SampledPlayer;
   ready: boolean;
   failed: boolean;
+  readyPromise: Promise<void>;
   tone?: BiquadFilterNode;
 };
 
@@ -156,10 +157,15 @@ export function warmSampledPatch(
       break;
   }
 
-  const entry: SampleEntry = { player, ready: false, failed: false };
+  const entry: SampleEntry = {
+    player,
+    ready: false,
+    failed: false,
+    readyPromise: Promise.resolve(),
+  };
   byPatch.set(patch.id, entry);
 
-  return player.ready
+  entry.readyPromise = player.ready
     .then(() => {
       const tone = ctx.createBiquadFilter();
       tone.type = "lowpass";
@@ -171,11 +177,14 @@ export function warmSampledPatch(
     })
     .catch((error: unknown) => {
       entry.failed = true;
-      console.warn(
-        `Could not load sampled instrument ${patch.name}; playback will wait for a successful sample load.`,
+      console.error(
+        `Could not load sampled instrument ${patch.name}. Check the sample host connection and try loading the instrument again.`,
         error,
       );
+      throw error;
     });
+
+  return entry.readyPromise;
 }
 
 const DRUM_GROUPS: Record<number, string[]> = {
