@@ -47,9 +47,9 @@ try {
     const outputPath = path.join(temp, relativePath.replace(/\.ts$/, ".js"));
     await mkdir(path.dirname(outputPath), { recursive: true });
     const js = transpiled.outputText.replace(
-      /(from\\s+["']\\.\\/[^"']+)(["'])/g,
+      /(from\s+["']\.\/[^"']+)(["'])/g,
       (_match, specifier, quote) => {
-        if (/\\.js$/.test(specifier)) return specifier + quote;
+        if (/\.js$/.test(specifier)) return specifier + quote;
         return specifier + ".js" + quote;
       },
     );
