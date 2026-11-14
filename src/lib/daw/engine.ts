@@ -1820,18 +1820,20 @@ export class AudioEngine {
     master.volume.gain.value = clamp(project.masterVolume, 0, 1.25);
     master.delay.delayTime.value = Math.min(1.9, (60 / project.tempo) * 0.75);
 
-    const anySolo = project.tracks.some((t) => t.solo);
     const trackNodes = new Map<string, TrackNodes>();
     let done = 0;
     const total = project.tracks.reduce((a, t) => a + Math.max(1, t.regions.length), 1);
 
     const timeAt = (tick: number) => tickToSec(tick, project.tempo) + 0.05;
 
+
     for (const track of project.tracks) {
-      if (track.mute || (anySolo && !track.solo)) continue;
+      if (track.role === "folder" || track.role === "vca") continue;
       const tn = buildTrack(offline, master);
       applyTrackAudioPlugins(tn, track);
-      tn.gain.gain.value = clamp(track.volume, 0, 1.25);
+      tn.gain.gain.value = isTrackAudible(track, project.tracks)
+        ? getEffectiveTrackGain(track, project.tracks)
+        : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
@@ -1840,6 +1842,25 @@ export class AudioEngine {
         if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch, true);
       }
 
+    }
+
+    // Route offline channel outputs through the same Aux graph used in live playback.
+    for (const track of project.tracks) {
+      const nodes = trackNodes.get(track.id);
+      if (!nodes) continue;
+      let target: AudioNode = master.input;
+      const bus = resolveOutputBus(track, project.tracks);
+      if (bus) {
+        const busNodes = trackNodes.get(bus.id);
+        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      }
+      try { nodes.output.disconnect(); } catch { /* no previous route */ }
+      nodes.output.connect(target);
+    }
+
+    for (const track of project.tracks) {
+      const tn = trackNodes.get(track.id);
+      if (!tn) continue;
       for (const region of track.regions) {
         if (region.muted) { done++; continue; }
         const regionEnd = region.start + region.length;
@@ -1920,7 +1941,6 @@ export class AudioEngine {
         onProgress?.(0.1 + 0.7 * (done / total));
       }
     }
-
     onProgress?.(0.85);
     const rendered = await offline.startRendering();
     onProgress?.(0.98);
