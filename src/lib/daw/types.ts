@@ -129,6 +129,17 @@ export interface Track {
   regions: Region[];
 }
 
+export type MidiCCTarget = "master-volume" | "track-volume" | "track-pan";
+
+export interface MidiCCMapping {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  cc: number;
+  target: MidiCCTarget;
+  trackId?: string;
+}
+
 export interface Project {
   id?: string; // database id when saved
   name: string;
@@ -143,6 +154,7 @@ export interface Project {
   metronome: boolean;
   masterVolume: number; // 0..1.25
   audioOutputDeviceId?: string | null;
+  midiCCMappings?: MidiCCMapping[];
   tracks: Track[];
   stacks?: TrackStack[];
   alternatives?: ProjectAlternative[];
