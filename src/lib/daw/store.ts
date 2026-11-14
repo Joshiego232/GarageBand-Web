@@ -281,13 +281,38 @@ export const useDAW = create<DAWState>((set, get) => ({
   removeTrack: (id) => {
     get().commit();
     const project = get().project;
-    const tracks = project.tracks.filter((t) => t.id !== id);
+    const removed = project.tracks.find((track) => track.id === id);
+    const removedStackIds = (project.stacks ?? [])
+      .filter((stack) => stack.trackIds.includes(id))
+      .map((stack) => stack.id);
+    const removedStacks = (project.stacks ?? []).filter((stack) => removedStackIds.includes(stack.id));
+    const removedBusIds = new Set([
+      ...(removed?.role === "aux" ? [id] : []),
+      ...removedStacks.flatMap((stack) => stack.busTrackId ? [stack.busTrackId] : []),
+    ]);
+    const removedVcaId = removed?.role === "vca" ? id : null;
+    const tracks = project.tracks
+      .filter((track) => track.id !== id && !removedBusIds.has(track.id))
+      .map((track) => ({
+        ...track,
+        outputBusId: removedBusIds.has(track.outputBusId ?? "") ? null : track.outputBusId,
+        vcaId: removedVcaId && track.vcaId === removedVcaId ? null : track.vcaId,
+        stackId: removedStackIds.includes(track.stackId ?? "") ? null : track.stackId,
+      }));
+    const stacks = (project.stacks ?? [])
+      .filter((stack) => !removedStackIds.includes(stack.id))
+      .map((stack) => ({
+        ...stack,
+        trackIds: stack.trackIds.filter((trackId) => trackId !== id),
+      }));
     set({
-      project: { ...project, tracks },
+      project: { ...project, tracks, stacks },
       ui: {
         ...get().ui,
         selectedTrackId: tracks[0]?.id ?? null,
-        selectedRegionIds: get().ui.selectedRegionIds.filter((rid) => !tracks.some((t) => t.regions.some((r) => r.id === rid))),
+        selectedRegionIds: get().ui.selectedRegionIds.filter((rid) =>
+          tracks.some((track) => track.regions.some((region) => region.id === rid))
+        ),
       },
     });
   },
