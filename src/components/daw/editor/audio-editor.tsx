@@ -59,6 +59,7 @@ export function AudioEditor() {
   const [pitchSegments, setPitchSegments] = useState<DetectedPitchSegment[]>([]);
   const [pitchSegmentsRegionId, setPitchSegmentsRegionId] = useState<string | null>(null);
   const [pitchStrength, setPitchStrength] = useState(0.85);
+  const [vibratoPreservation, setVibratoPreservation] = useState(1);
   const [analyzingPitch, setAnalyzingPitch] = useState(false);
   const [applyingPitch, setApplyingPitch] = useState(false);
 
@@ -675,7 +676,8 @@ export function AudioEditor() {
         sampleStart,
         sampleLength,
         activePitchSegments,
-        pitchStrength
+        pitchStrength,
+        vibratoPreservation
       );
       const newId = `flex-pitch-${uid()}`;
       const duration = correctedChannels[0]?.length
@@ -869,6 +871,25 @@ export function AudioEditor() {
                 />
                 <span className="w-8 text-right font-mono text-[9px] text-zinc-300">{Math.round(pitchStrength * 100)}%</span>
               </label>
+              <label className="flex items-center gap-2">
+                <span className="text-[9px] text-zinc-500 shrink-0">Vibrato</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={vibratoPreservation}
+                  onChange={(event) => setVibratoPreservation(Number(event.target.value))}
+                  aria-label="Natural vibrato preservation"
+                  className="min-w-0 flex-1 accent-[#60a5fa]"
+                />
+                <span className="w-8 text-right font-mono text-[9px] text-zinc-300">
+                  {Math.round(vibratoPreservation * 100)}%
+                </span>
+              </label>
+              <p className="text-[8px] text-zinc-600">
+                100% preserves the original pitch movement; lower values smooth vibrato towards the target note.
+              </p>
               <div className="max-h-40 overflow-y-auto space-y-1">
                 {activePitchSegments.map((segment) => (
                   <div key={segment.id} className="grid grid-cols-[42px_1fr_1fr] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] px-1.5 py-1">
