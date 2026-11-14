@@ -142,7 +142,14 @@ export interface Patch {
   icon: string;
   desc: string;
   knobs: KnobDef[];
-  /** Drum patches map pitches to pieces instead of playing tonal notes */
+  /** Sound source used by the sampled-instrument engine. */
+  sampled?: {
+    engine: "soundfont" | "splendid-piano" | "drum-machine";
+    instrument: string;
+    kit?: "MusyngKite" | "FluidR3_GM";
+    loop?: boolean;
+  };
+  /** Drum patches map MIDI drum pitches to sampled kit pieces. */
   isDrum?: boolean;
 }
 
