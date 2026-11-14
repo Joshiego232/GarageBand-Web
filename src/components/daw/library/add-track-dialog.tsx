@@ -30,6 +30,8 @@ import {
 } from "@/components/ui/dialog";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
+import { engine } from "@/lib/daw/engine";
+import { uid } from "@/lib/daw/types";
 
 const PATCH_ICONS: Record<string, LucideIcon> = {
   piano: Piano,
@@ -77,6 +79,8 @@ export function AddTrackDialog() {
   const modal = useDAW((s) => s.ui.modal);
   const addTrack = useDAW((s) => s.addTrack);
   const setModal = useDAW((s) => s.setModal);
+  const sampleInputRef = useRef<HTMLInputElement>(null);
+  const [importingSample, setImportingSample] = useState(false);
 
   const open = modal === "addTrack";
 
@@ -90,6 +94,56 @@ export function AddTrackDialog() {
     addTrack({ type: "audio" });
     setModal("none");
     toast.success("Audio track added");
+  };
+
+  const importQuickSampler = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    if (!file.type.startsWith("audio/")) {
+      toast.error("Choose an audio file for Quick Sampler");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Quick Sampler files must be 25 MB or smaller");
+      return;
+    }
+
+    setImportingSample(true);
+    try {
+      const decoded = await engine.decodeAudioFile(file);
+      const duration = decoded.channels[0]?.length
+        ? decoded.channels[0].length / decoded.sampleRate
+        : 0;
+      if (duration <= 0 || duration > 60) {
+        toast.error("Quick Sampler supports audio samples up to 60 seconds");
+        return;
+      }
+
+      const bufferId = `quick-sampler-${uid()}`;
+      await engine.storeBuffer(bufferId, decoded);
+      const instrument = `quick-sampler-${bufferId}`;
+      const name = file.name.replace(/\.[^.]+$/, "").trim() || "Quick Sampler";
+      addTrack({
+        type: "midi",
+        instrument,
+        name,
+        icon: "audio-waveform",
+        color: "#4a90d9",
+        sampleBufferId: bufferId,
+        sampleRootPitch: 60,
+        samplePlaybackMode: "one-shot",
+        sampleName: file.name,
+      });
+      setModal("none");
+      toast.success(`Loaded ${file.name} into Quick Sampler`);
+    } catch (error) {
+      console.error("Quick Sampler import failed", error);
+      toast.error("Could not decode this audio file. Try WAV, MP3 or OGG.");
+    } finally {
+      setImportingSample(false);
+    }
   };
 
   const addDrummerTrack = () => {
@@ -151,6 +205,22 @@ export function AddTrackDialog() {
                 );
               })}
             </div>
+            <input
+              ref={sampleInputRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={importQuickSampler}
+              aria-label="Choose audio file for Quick Sampler"
+            />
+            <button
+              type="button"
+              disabled={importingSample}
+              onClick={() => sampleInputRef.current?.click()}
+              className="h-8 rounded-md border border-[#4a90d9]/40 bg-[#4a90d9]/10 text-[10px] font-medium text-[#9dc8f0] hover:bg-[#4a90d9]/20 disabled:opacity-50 transition-colors"
+            >
+              {importingSample ? "Loading sample…" : "Create Quick Sampler from Audio"}
+            </button>
           </div>
 
           {/* 2. Audio */}
