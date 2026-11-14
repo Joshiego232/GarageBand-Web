@@ -66,8 +66,28 @@ export function MySongsModal() {
   }, []);
 
   useEffect(() => {
-    if (open) refresh();
-  }, [open, refresh]);
+    if (!open) return;
+
+    let cancelled = false;
+    const loadSongs = async () => {
+      try {
+        const res = await fetch("/api/songs");
+        if (!res.ok) throw new Error("list failed");
+        const json = (await res.json()) as SongMeta[];
+        if (!cancelled) setSongs(Array.isArray(json) ? json : []);
+      } catch {
+        if (!cancelled) {
+          setSongs([]);
+          toast.error("Could not load songs");
+        }
+      }
+    };
+
+    void loadSongs();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const openSong = async (id: string) => {
     setOpeningId(id);
