@@ -336,6 +336,7 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
         playbackMode: "one-shot",
       };
       const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+      commit();
       const otherZones = (current?.sampleZones ?? []).filter(
         (item) => !(selectedPad >= item.lowKey && selectedPad <= item.highKey)
       );
@@ -414,6 +415,7 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
         playbackMode: track.samplePlaybackMode ?? "one-shot",
       };
       const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+      commit();
       useDAW.getState().updateTrack(
         track.id,
         { sampleZones: [...(current?.sampleZones ?? []), zone] },
