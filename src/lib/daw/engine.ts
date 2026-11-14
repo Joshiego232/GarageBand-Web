@@ -60,6 +60,33 @@ interface TrackNodes {
   flangerDepth: GainNode;
 }
 
+interface LiveClipRef {
+  trackId: string;
+  regionId: string;
+}
+
+interface LiveMidiClipState {
+  kind: "midi";
+  track: Track;
+  region: Region;
+  notes: Note[];
+  startTime: number;
+  periodTicks: number;
+  periodSec: number;
+  scheduledUntil: number;
+  voices: { handle: VoiceHandle; until: number }[];
+}
+
+interface LiveAudioClipState {
+  kind: "audio";
+  trackId: string;
+  regionId: string;
+  source: AudioBufferSourceNode;
+  gain: GainNode;
+}
+
+type LiveClipState = LiveMidiClipState | LiveAudioClipState;
+
 interface MasterNodes {
   input: GainNode;
   limiter: DynamicsCompressorNode;
@@ -380,6 +407,9 @@ export class AudioEngine {
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
   private auditionDest: GainNode | null = null;
   private previewTimer: ReturnType<typeof setInterval> | null = null;
+  private liveLoopTimer: ReturnType<typeof setInterval> | null = null;
+  private liveClips = new Map<string, LiveClipState>();
+  private liveGridStartTime = 0;
 
   // loop preview
   private preview: {
@@ -1333,6 +1363,208 @@ export class AudioEngine {
       }
     }
     pv.scheduledUntil = horizon;
+  }
+
+  // ---------------- Live Loops clip launcher ----------------
+
+  getLiveClipTrackIds(): string[] {
+    return Array.from(this.liveClips.keys());
+  }
+
+  isLiveClipActive(trackId: string, regionId: string): boolean {
+    const active = this.liveClips.get(trackId);
+    return !!active && active.regionId === regionId;
+  }
+
+  async launchLiveScene(clips: LiveClipRef[]): Promise<void> {
+    this.stopLiveLoops();
+    const ctx = this.ensure();
+    const project = useDAW.getState().project;
+    this.sync(project);
+    const launchTime = ctx.currentTime + 0.1;
+    await this.addLiveClips(clips, launchTime, project, ctx);
+  }
+
+  async launchLiveClip(trackId: string, regionId: string): Promise<void> {
+    this.stopLiveClip(trackId);
+    const ctx = this.ensure();
+    const project = useDAW.getState().project;
+    this.sync(project);
+    const barSeconds = tickToSec(barTicks(project.timeSig), project.tempo);
+    if (this.liveGridStartTime <= 0 || ctx.currentTime < this.liveGridStartTime) {
+      this.liveGridStartTime = ctx.currentTime + 0.05;
+    }
+    const elapsed = Math.max(0, ctx.currentTime - this.liveGridStartTime);
+    const launchTime =
+      this.liveGridStartTime + (Math.floor(elapsed / barSeconds) + 1) * barSeconds;
+    await this.addLiveClips([{ trackId, regionId }], launchTime, project, ctx);
+  }
+
+  private async addLiveClips(
+    clips: LiveClipRef[],
+    launchTime: number,
+    project: Project,
+    ctx: AudioContext
+  ) {
+    for (const ref of clips) {
+      const track = project.tracks.find((item) => item.id === ref.trackId);
+      const region = track?.regions.find((item) => item.id === ref.regionId);
+      if (!track || !region || region.muted || track.role === "folder" || track.role === "vca" || track.role === "aux") {
+        continue;
+      }
+      const nodes = this.tracks.get(track.id);
+      if (!nodes) continue;
+
+      if (region.type === "audio") {
+        if (!region.bufferId) continue;
+        const stored = await this.ensureBufferLoaded(region.bufferId);
+        if (!stored) {
+          toast.error(`Could not load the audio clip ${region.name}`);
+          continue;
+        }
+        const buffer = this.bufferFor(ctx, region.bufferId);
+        if (!buffer) continue;
+
+        const source = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        const startOffset = clamp(region.sampleStart ?? 0, 0, Math.max(0, buffer.duration - 0.01));
+        const available = Math.max(0.01, buffer.duration - startOffset);
+        const loopLength = clamp(region.sampleLength ?? available, 0.01, available);
+        source.buffer = buffer;
+        source.loop = true;
+        source.loopStart = startOffset;
+        source.loopEnd = startOffset + loopLength;
+        gain.gain.setValueAtTime(0.0001, launchTime);
+        gain.gain.linearRampToValueAtTime(clamp(region.gain ?? 1, 0, 2), launchTime + 0.008);
+        source.connect(gain).connect(nodes.input);
+        source.start(launchTime, startOffset);
+        this.liveClips.set(track.id, {
+          kind: "audio",
+          trackId: track.id,
+          regionId: region.id,
+          source,
+          gain,
+        });
+        continue;
+      }
+
+      if (track.sampleBufferId) {
+        const stored = await this.ensureBufferLoaded(track.sampleBufferId);
+        if (!stored) {
+          toast.error(`Could not load Quick Sampler audio for ${track.name}`);
+          continue;
+        }
+      } else {
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) {
+          try {
+            await warmSampledPatch(ctx, nodes.input, patch);
+          } catch {
+            toast.error(`Could not load ${patch.name} samples`);
+            continue;
+          }
+        }
+      }
+
+      const notes = applyMidiPlugins(
+        region.notes ?? [],
+        track.midiPlugins ?? [],
+        project.keyTonic,
+        project.keyMode
+      );
+      const periodTicks = region.looped && region.coreLength ? region.coreLength : region.length;
+      if (periodTicks <= 0 || !notes.length) continue;
+      this.liveClips.set(track.id, {
+        kind: "midi",
+        track,
+        region,
+        notes,
+        startTime: launchTime,
+        periodTicks,
+        periodSec: tickToSec(periodTicks, project.tempo),
+        scheduledUntil: launchTime,
+        voices: [],
+      });
+    }
+
+    if (Array.from(this.liveClips.values()).some((clip) => clip.kind === "midi")) {
+      this.scheduleLiveLoops();
+      if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+      this.liveLoopTimer = setInterval(() => this.scheduleLiveLoops(), TICK_INTERVAL_MS);
+    }
+  }
+
+  private scheduleLiveLoops() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const project = useDAW.getState().project;
+    const horizon = ctx.currentTime + LOOKAHEAD_SEC;
+
+    for (const clip of this.liveClips.values()) {
+      if (clip.kind !== "midi") continue;
+      const nodes = this.tracks.get(clip.track.id);
+      if (!nodes) continue;
+
+      const repeats = Math.max(
+        1,
+        Math.ceil((horizon - clip.startTime) / clip.periodSec) + 1
+      );
+      for (let repeat = 0; repeat < repeats; repeat++) {
+        const base = clip.startTime + repeat * clip.periodSec;
+        for (const note of clip.notes) {
+          if (note.start >= clip.periodTicks) continue;
+          const when = base + tickToSec(note.start, project.tempo);
+          if (when < clip.scheduledUntil || when >= horizon) continue;
+          const durationTicks = Math.min(note.length, clip.periodTicks - note.start);
+          if (durationTicks <= 0) continue;
+          const duration = tickToSec(durationTicks, project.tempo);
+          const voice = this.playTrackNote(
+            ctx,
+            nodes.input,
+            clip.track,
+            note.pitch,
+            note.velocity / 127,
+            Math.max(when, ctx.currentTime),
+            duration
+          );
+          voice.scheduleStop(when + duration);
+          clip.voices.push({ handle: voice, until: when + duration + 6 });
+        }
+      }
+      clip.scheduledUntil = horizon;
+      clip.voices = clip.voices.filter((voice) => voice.until > ctx.currentTime - 2);
+    }
+  }
+
+  stopLiveClip(trackId: string) {
+    const clip = this.liveClips.get(trackId);
+    if (!clip) return;
+    if (clip.kind === "audio") {
+      const now = this.ctx?.currentTime ?? 0;
+      try {
+        clip.gain.gain.cancelScheduledValues(now);
+        clip.gain.gain.setValueAtTime(Math.max(0.0001, clip.gain.gain.value), now);
+        clip.gain.gain.linearRampToValueAtTime(0.0001, now + 0.025);
+        clip.source.stop(now + 0.03);
+      } catch { /* already ended */ }
+    } else {
+      for (const voice of clip.voices) voice.handle.kill();
+    }
+    this.liveClips.delete(trackId);
+    if (this.liveClips.size === 0) {
+      if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+      this.liveLoopTimer = null;
+      this.liveGridStartTime = 0;
+    }
+  }
+
+  stopLiveLoops() {
+    for (const trackId of Array.from(this.liveClips.keys())) {
+      this.stopLiveClip(trackId);
+    }
+    if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+    this.liveLoopTimer = null;
+    this.liveGridStartTime = 0;
   }
 
   // ---------------- audio capture ----------------
