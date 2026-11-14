@@ -275,6 +275,32 @@ export const COMMANDS: Command[] = [
   cmd("file.new", "New Project", "File", "N", () => useDAW.getState().setModal("newProject"), { mod: true }),
   cmd("file.open", "My Songs", "File", "O", () => useDAW.getState().setModal("mySongs"), { mod: true }),
   cmd("file.save", "Save", "File", "S", () => void saveProject(), { mod: true }),
+  cmd("file.saveAlternative", "Save Project Alternative…", "File", "", () => {
+    const st = useDAW.getState();
+    const name = window.prompt("Name this project alternative", `${st.project.name} Version ${(st.project.alternatives ?? []).length + 1}`);
+    if (name === null) return;
+    st.saveAlternative(name);
+    toast.success("Project alternative saved");
+  }, { separatorBefore: true }),
+  cmd("file.loadAlternative", "Recall Project Alternative…", "File", "", () => {
+    const st = useDAW.getState();
+    const alternatives = st.project.alternatives ?? [];
+    if (!alternatives.length) {
+      toast.info("No saved project alternatives yet");
+      return;
+    }
+    const choice = window.prompt(
+      `Enter the number of the alternative to recall:\\n${alternatives.map((item, index) => `${index + 1}. ${item.name}`).join("\\n")}`
+    );
+    if (choice === null) return;
+    const selected = alternatives[Number(choice) - 1];
+    if (!selected) {
+      toast.error("That alternative number was not found");
+      return;
+    }
+    st.loadAlternative(selected.id);
+    toast.success(`Loaded alternative: ${selected.name}`);
+  }),
   cmd("file.saveAs", "Save As", "File", "S", () => {
     const st = useDAW.getState();
     const name = window.prompt("Song name", st.project.name);
@@ -328,6 +354,16 @@ export const COMMANDS: Command[] = [
 
   // ---------------- Track ----------------
   cmd("track.new", "New Track", "Track", "N", () => useDAW.getState().setModal("addTrack"), { mod: true, shift: true }),
+  cmd("track.newAux", "New Aux Bus", "Track", "", () => {
+    useDAW.getState().createAuxBus();
+    useDAW.getState().setUI({ panels: { ...useDAW.getState().ui.panels, mixer: true } });
+    toast.success("Aux bus created");
+  }),
+  cmd("track.newVca", "New VCA Fader", "Track", "", () => {
+    useDAW.getState().createVca();
+    useDAW.getState().setUI({ panels: { ...useDAW.getState().ui.panels, mixer: true } });
+    toast.success("VCA fader created");
+  }),
   cmd("track.duplicate", "Duplicate Track", "Track", "D", () => {
     const st = useDAW.getState();
     if (st.ui.selectedTrackId) st.duplicateTrack(st.ui.selectedTrackId);
@@ -392,6 +428,11 @@ export const COMMANDS: Command[] = [
   }, { mod: true, alt: true }),
 
   // ---------------- Mix ----------------
+  cmd("mix.showConsole", "Open Full Mixer Console", "Mix", "", () => {
+    const st = useDAW.getState();
+    st.setUI({ panels: { ...st.ui.panels, mixer: true } });
+    window.dispatchEvent(new CustomEvent("daw:mixer-expand"));
+  }, { separatorBefore: true }),
   cmd("mix.masterVolumeUp", "Master Volume Up", "Mix", "ArrowUp", () => {
     const p = useDAW.getState().project;
     useDAW.getState().setMasterVolume(clamp(p.masterVolume + 0.05, 0, 1.25));
@@ -402,6 +443,32 @@ export const COMMANDS: Command[] = [
   }, { mod: true, alt: true, shift: true }),
 
   // ---------------- View ----------------
+  cmd("view.saveScreenset", "Save Screenset…", "View", "", () => {
+    const st = useDAW.getState();
+    const name = window.prompt("Name this workspace layout", `Screenset ${(st.project.screensets ?? []).length + 1}`);
+    if (name === null) return;
+    st.saveScreenset(name);
+    toast.success("Screenset saved");
+  }, { separatorBefore: true }),
+  cmd("view.loadScreenset", "Recall Screenset…", "View", "", () => {
+    const st = useDAW.getState();
+    const screensets = st.project.screensets ?? [];
+    if (!screensets.length) {
+      toast.info("No saved screensets yet");
+      return;
+    }
+    const choice = window.prompt(
+      `Enter the number of the screenset to recall:\\n${screensets.map((item, index) => `${index + 1}. ${item.name}`).join("\\n")}`
+    );
+    if (choice === null) return;
+    const selected = screensets[Number(choice) - 1];
+    if (!selected) {
+      toast.error("That screenset number was not found");
+      return;
+    }
+    st.loadScreenset(selected.id);
+    toast.success(`Loaded screenset: ${selected.name}`);
+  }),
   cmd("view.zoomIn", "Zoom In", "View", "=", () => useDAW.getState().setZoom(useDAW.getState().ui.zoom * 1.3), { mod: true }),
   cmd("view.zoomOut", "Zoom Out", "View", "-", () => useDAW.getState().setZoom(useDAW.getState().ui.zoom / 1.3), { mod: true }),
   cmd("view.zoomFit", "Zoom to Fit Song", "View", "0", () => {
