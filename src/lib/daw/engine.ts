@@ -553,6 +553,8 @@ export class AudioEngine {
       .catch((error: unknown) => {
         if (requestId !== this.playRequestId) return;
         this.playPending = false;
+        this.recording = false;
+        useDAW.getState().setTransport({ playing: false, recording: false, countInRemaining: 0 });
         console.error("GarageBand Web Studio could not load one or more instrument samples.", error);
         toast.error("Some instrument samples could not load. Check your connection and press Play to retry.");
       });
@@ -573,7 +575,7 @@ export class AudioEngine {
         const patch = PATCHES[track.instrument];
         const nodes = this.tracks.get(track.id);
         if (patch?.sampled && nodes) {
-          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch, true));
+          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch));
         }
       }
 
@@ -1039,7 +1041,7 @@ export class AudioEngine {
 
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch, true).then(play).catch(() => {
+      void warmSampledPatch(ctx, dest, patch).then(play).catch(() => {
         toast.error(`Could not load ${patch.name} samples. Please try again.`);
       });
       return;
@@ -1098,7 +1100,7 @@ export class AudioEngine {
     };
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch, true).then(startScheduler).catch(() => {
+      void warmSampledPatch(ctx, dest, patch).then(startScheduler).catch(() => {
         this.stopPreview();
         toast.error(`Could not load ${patch.name} samples for the loop preview.`);
       });
