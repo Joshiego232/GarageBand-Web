@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useState } from "react";
-import { Circle, Copy, Trash2, Volume2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Circle, Copy, Trash2, Volume2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { useDAW } from "@/lib/daw/store";
 import { TRACK_SIZES, type Track, type TrackSize } from "@/lib/daw/types";
@@ -21,7 +21,18 @@ interface TrackHeadersProps {
 }
 
 export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
-  const tracks = useDAW((s) => s.project.tracks);
+  const project = useDAW((s) => s.project);
+  const collapsedFolderIds = new Set(
+    project.tracks
+      .filter((track) => track.role === "folder" && track.collapsed)
+      .map((track) => track.id)
+  );
+  const tracks = project.tracks.filter(
+    (track) =>
+      track.role !== "aux" &&
+      track.role !== "vca" &&
+      (!track.parentTrackId || !collapsedFolderIds.has(track.parentTrackId))
+  );
   const selectedTrackId = useDAW((s) => s.ui.selectedTrackId);
   const selectTrack = useDAW((s) => s.selectTrack);
   const toggleTrackMute = useDAW((s) => s.toggleTrackMute);
@@ -31,6 +42,7 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
   const duplicateTrack = useDAW((s) => s.duplicateTrack);
   const removeTrack = useDAW((s) => s.removeTrack);
   const setModal = useDAW((s) => s.setModal);
+  const toggleTrackStack = useDAW((s) => s.toggleTrackStack);
 
   const h = TRACK_SIZES[size];
 
@@ -59,6 +71,12 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
             onRename={(name) => updateTrack(track.id, { name }, false)}
             onDuplicate={() => duplicateTrack(track.id)}
             onDelete={() => removeTrack(track.id)}
+            folderChildCount={project.stacks?.find((stack) => stack.folderTrackId === track.id)?.trackIds.length ?? 0}
+            folderCollapsed={!!track.collapsed}
+            onToggleCollapse={() => {
+              const stack = project.stacks?.find((item) => item.folderTrackId === track.id);
+              if (stack) toggleTrackStack(stack.id);
+            }}
           />
         ))}
         {/* add track button */}
@@ -91,6 +109,9 @@ interface TrackHeaderProps {
   onRename: (name: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  folderChildCount: number;
+  folderCollapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
 function TrackHeader(p: TrackHeaderProps) {
@@ -104,7 +125,9 @@ function TrackHeader(p: TrackHeaderProps) {
     <div
       className={cn(
         "relative border-b border-black/40 flex flex-col justify-center px-2.5 cursor-pointer group transition-colors",
-        selected ? "bg-[#2c2c33]" : "bg-[#242429] hover:bg-[#28282e]"
+        selected ? "bg-[#2c2c33]" : "bg-[#242429] hover:bg-[#28282e]",
+        track.parentTrackId && "pl-7",
+        track.role === "folder" && "bg-[#292e37]"
       )}
       style={{ height, width: "100%" }}
       onPointerDown={p.onSelect}
@@ -119,6 +142,21 @@ function TrackHeader(p: TrackHeaderProps) {
       {/* selection accent */}
       {selected && <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-[#ffb648]" />}
       <div className="flex items-center gap-2 min-w-0">
+        {track.role === "folder" && (
+          <button
+            type="button"
+            aria-label={p.folderCollapsed ? "Expand track stack" : "Collapse track stack"}
+            title={p.folderCollapsed ? "Expand folder stack" : "Collapse folder stack"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              p.onToggleCollapse();
+            }}
+            className="size-5 rounded flex items-center justify-center text-[#a8bad7] hover:bg-white/10 shrink-0"
+          >
+            {p.folderCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
         <div
           className="size-7 rounded-md flex items-center justify-center shrink-0 shadow-sm border border-black/40"
           style={{ background: `linear-gradient(160deg, ${track.color}, ${track.color}bb)` }}
@@ -150,12 +188,17 @@ function TrackHeader(p: TrackHeaderProps) {
               {track.name}
             </div>
           )}
-          {size !== "S" && track.type === "midi" && (
+          {size !== "S" && track.role === "folder" && (
+            <div className="text-[9px] text-[#a8bad7] truncate leading-tight">
+              {p.folderChildCount} tracks · {p.folderCollapsed ? "collapsed" : "expanded"}
+            </div>
+          )}
+          {size !== "S" && track.role !== "folder" && track.type === "midi" && (
             <div className="text-[9px] text-zinc-500 truncate leading-tight">
               {patch?.name ?? track.instrument}
             </div>
           )}
-          {size !== "S" && track.type === "audio" && (
+          {size !== "S" && track.role !== "folder" && track.type === "audio" && (
             <div className="text-[9px] text-zinc-500 truncate leading-tight">
               {track.armed ? "Ready to record" : "Audio"}
             </div>
@@ -188,7 +231,7 @@ function TrackHeader(p: TrackHeaderProps) {
         </div>
       </div>
       {/* controls row */}
-      {size !== "S" && (
+      {size !== "S" && track.role !== "folder" && (
         <div className="flex items-center gap-2 mt-1.5" onPointerDown={(e) => e.stopPropagation()}>
           <button
             title="Record enable"
@@ -257,7 +300,7 @@ function TrackHeader(p: TrackHeaderProps) {
           )}
         </div>
       )}
-      {size === "S" && (
+      {size === "S" && track.role !== "folder" && (
         <div className="flex items-center gap-1 mt-1" onPointerDown={(e) => e.stopPropagation()}>
           <button
             title="Mute (M)"
