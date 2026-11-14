@@ -48,22 +48,29 @@ const PATCH_ICONS: Record<string, LucideIcon> = {
 const CATEGORY_COLORS: Record<string, string> = {
   "Piano & Keys": "#8fb44a",
   Synthesizer: "#7a6fd0",
+  "Worship Keys": "#9675d6",
+  Organs: "#4ca8a0",
   Bass: "#e08e3c",
-  Orchestral: "#3f9d8b",
-  Guitar: "#e0533d",
-  Mallets: "#c65cb8",
-  Drums: "#d9b13b",
+  Guitars: "#e0533d",
+  "Strings & Orchestral": "#3f9d8b",
+  "Bells & Mallets": "#c65cb8",
+  "Brass & Winds": "#d29a52",
+  "Drums & Percussion": "#d9b13b",
 };
 const FALLBACK_COLOR = "#3f9d8b";
 
 /** Quick-pick patches shown on the Software Instrument card */
 const QUICK_PICKS = [
   "grand-piano",
-  "808-kit",
+  "stage-epiano",
   "saw-lead",
-  "pluck-bass",
   "warm-pad",
-  "marimba",
+  "tonewheel-organ",
+  "pluck-bass",
+  "nylon-guitar",
+  "string-ensemble",
+  "celesta",
+  "808-kit",
 ] as const;
 
 export function AddTrackDialog() {
