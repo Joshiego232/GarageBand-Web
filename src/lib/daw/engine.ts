@@ -33,7 +33,7 @@ interface TrackNodes {
   eqHigh: BiquadFilterNode;
   deEsser: BiquadFilterNode;
   presence: BiquadFilterNode;
-  gate: DynamicsCompressorNode;
+  highPass: BiquadFilterNode;
   comp: DynamicsCompressorNode;
   saturation: WaveShaperNode;
   gain: GainNode;
@@ -149,12 +149,10 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   presence.frequency.value = 3200;
   presence.Q.value = 0.8;
 
-  const gate = ctx.createDynamicsCompressor();
-  gate.threshold.value = 0;
-  gate.ratio.value = 1;
-  gate.knee.value = 0;
-  gate.attack.value = 0.004;
-  gate.release.value = 0.12;
+  const highPass = ctx.createBiquadFilter();
+  highPass.type = "highpass";
+  highPass.frequency.value = 20;
+  highPass.Q.value = 0.707;
 
   const comp = ctx.createDynamicsCompressor();
   setComp(comp, false);
@@ -201,7 +199,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
     .connect(eqHigh)
     .connect(deEsser)
     .connect(presence)
-    .connect(gate)
+    .connect(highPass)
     .connect(comp)
     .connect(saturation)
     .connect(gain)
@@ -221,7 +219,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   flangerDelay.connect(flangerFeedback).connect(flangerDelay);
 
   return {
-    input, eqLow, eqMid, eqHigh, deEsser, presence, gate, comp, saturation,
+    input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
     gain, panner, analyser, reverbSend, delaySend, chorusDelay, chorusSend,
     chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
     flangerLfo, flangerDepth,
@@ -245,20 +243,20 @@ function activeAudioPlugin(track: Track, id: string) {
   return (track.audioPlugins ?? []).find((plugin) => plugin.pluginId === id) ?? null;
 }
 
-function applyTrackAudioPlugins(tn: TrackNodes, track: Track, tempo: number) {
+function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
   const get = (id: string) => activeAudioPlugin(track, id);
-  const active = (id: string) => !!get(id)?.enabled;
   const eqPlugin = get("eq");
   const eqEnabled = eqPlugin ? eqPlugin.enabled : true;
   const eq = track.eq;
 
   tn.eqLow.frequency.value = eq.lowFreq;
-  tn.eqLow.gain.value = eqEnabled ? eq.lowGain : 0;
+  const eqMix = eqPlugin?.enabled ? clamp(eqPlugin.params.mix ?? 1, 0, 1) : 1;
+  tn.eqLow.gain.value = eqEnabled ? eq.lowGain * eqMix : 0;
   tn.eqMid.frequency.value = eq.midFreq;
   tn.eqMid.Q.value = eq.midQ;
-  tn.eqMid.gain.value = eqEnabled ? eq.midGain : 0;
+  tn.eqMid.gain.value = eqEnabled ? eq.midGain * eqMix : 0;
   tn.eqHigh.frequency.value = eq.highFreq;
-  tn.eqHigh.gain.value = eqEnabled ? eq.highGain : 0;
+  tn.eqHigh.gain.value = eqEnabled ? eq.highGain * eqMix : 0;
 
   const compressor = get("compressor");
   setComp(
@@ -268,12 +266,10 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track, tempo: number) {
     compressor?.params.ratio ?? 2.5
   );
 
-  const gate = get("noise-gate");
-  tn.gate.threshold.value = gate?.enabled ? gate.params.threshold ?? -48 : 0;
-  tn.gate.ratio.value = gate?.enabled ? 20 : 1;
-  tn.gate.knee.value = gate?.enabled ? 0 : 0;
-  tn.gate.attack.value = 0.004;
-  tn.gate.release.value = 0.12;
+  const highPass = get("high-pass");
+  tn.highPass.frequency.value = highPass?.enabled
+    ? clamp(highPass.params.frequency ?? 80, 20, 320)
+    : 20;
 
   const deEsser = get("de-esser");
   tn.deEsser.frequency.value = deEsser?.params.frequency ?? 6800;
@@ -326,8 +322,6 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track, tempo: number) {
     ? (delay.enabled ? clamp(delay.params.amount ?? 0.22, 0, 1) : 0)
     : clamp((track.params.delay ?? 0) * 0.9, 0, 1);
 
-  // Keep the delay bus tempo-locked even when the selected effect is bypassed.
-  void tempo;
 }
 
 export class AudioEngine {
@@ -434,7 +428,7 @@ export class AudioEngine {
         const patch = PATCHES[track.instrument];
         if (patch?.sampled) void warmSampledPatch(ctx, tn.input, patch);
       }
-      applyTrackAudioPlugins(tn, track, project.tempo);
+      applyTrackAudioPlugins(tn, track);
       const audible = !track.mute && (!anySolo || track.solo);
       tn.gain.gain.value = audible ? clamp(track.volume, 0, 1.25) : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
