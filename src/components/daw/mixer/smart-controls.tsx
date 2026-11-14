@@ -380,7 +380,7 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
         ) : (
           <div className="space-y-1.5">
             {zones.map((zone) => (
-              <div key={zone.id} className="grid grid-cols-[minmax(90px,1fr)_56px_56px_56px_26px] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] p-2">
+              <div key={zone.id} className="grid grid-cols-[minmax(110px,1fr)_62px_52px_52px_48px_48px_66px_26px] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] p-2">
                 <span className="truncate text-[9px] text-zinc-300" title={zone.name}>{zone.name}</span>
                 <label className="flex flex-col gap-0.5">
                   <span className="text-[8px] text-zinc-600">Root</span>
@@ -396,25 +396,55 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
                   </select>
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[8px] text-zinc-600">Low</span>
+                  <span className="text-[8px] text-zinc-600">Key Lo</span>
                   <input
                     type="number" min={0} max={127} value={zone.lowKey}
                     onPointerDown={commit}
-                    onChange={(event) => updateZone(zone.id, { lowKey: Math.max(0, Math.min(127, Number(event.target.value))) })}
+                    onChange={(event) => updateZone(zone.id, { lowKey: Math.min(zone.highKey, Math.max(0, Math.min(127, Number(event.target.value)))) })}
                     className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
                     aria-label={`${zone.name} low key`}
                   />
                 </label>
                 <label className="flex flex-col gap-0.5">
-                  <span className="text-[8px] text-zinc-600">High</span>
+                  <span className="text-[8px] text-zinc-600">Key Hi</span>
                   <input
                     type="number" min={0} max={127} value={zone.highKey}
                     onPointerDown={commit}
-                    onChange={(event) => updateZone(zone.id, { highKey: Math.max(0, Math.min(127, Number(event.target.value))) })}
+                    onChange={(event) => updateZone(zone.id, { highKey: Math.max(zone.lowKey, Math.max(0, Math.min(127, Number(event.target.value)))) })}
                     className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
                     aria-label={`${zone.name} high key`}
                   />
                 </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[8px] text-zinc-600">Vel Lo</span>
+                  <input
+                    type="number" min={1} max={127} value={zone.velocityLow}
+                    onPointerDown={commit}
+                    onChange={(event) => updateZone(zone.id, { velocityLow: Math.min(zone.velocityHigh, Math.max(1, Math.min(127, Number(event.target.value)))) })}
+                    className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
+                    aria-label={`${zone.name} low velocity`}
+                  />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[8px] text-zinc-600">Vel Hi</span>
+                  <input
+                    type="number" min={1} max={127} value={zone.velocityHigh}
+                    onPointerDown={commit}
+                    onChange={(event) => updateZone(zone.id, { velocityHigh: Math.max(zone.velocityLow, Math.max(1, Math.min(127, Number(event.target.value)))) })}
+                    className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
+                    aria-label={`${zone.name} high velocity`}
+                  />
+                </label>
+                <select
+                  value={zone.playbackMode}
+                  onPointerDown={commit}
+                  onChange={(event) => updateZone(zone.id, { playbackMode: event.target.value as "one-shot" | "loop" })}
+                  aria-label={`${zone.name} playback mode`}
+                  className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[8px] text-zinc-200"
+                >
+                  <option value="one-shot">One-shot</option>
+                  <option value="loop">Loop</option>
+                </select>
                 <button
                   type="button"
                   onClick={() => removeZone(zone.id)}
@@ -429,7 +459,7 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
           </div>
         )}
         <p className="text-[9px] text-zinc-600">
-          Narrower key zones take priority over wider zones. Velocity ranges are stored per zone; the default is 1–127. Set Low and High to the same MIDI note to create a one-key drum pad.
+          Narrower key zones take priority over wider zones. Edit key and velocity ranges to build velocity layers, and choose one-shot or loop behavior per sample. Set Key Lo and Key Hi to the same note to create a one-key drum pad.
         </p>
       </div>
     </div>
