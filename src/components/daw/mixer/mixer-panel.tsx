@@ -26,6 +26,7 @@ export function MixerPanel() {
   const [expanded, setExpanded] = useState(false);
   const [stackName, setStackName] = useState("");
   const [selectedForStack, setSelectedForStack] = useState<string[]>([]);
+  const [masteringOpen, setMasteringOpen] = useState(false);
 
   useEffect(() => {
     const expand = () => setExpanded(true);
@@ -92,6 +93,13 @@ export function MixerPanel() {
           {tracks.length} channels · {buses.length} aux · {vcas.length} VCA
         </span>
         <AudioOutputSelector />
+        <button
+          type="button"
+          onClick={() => setMasteringOpen(true)}
+          className="hidden sm:inline-flex h-7 px-2 rounded border border-[#ffb648]/30 bg-[#ffb648]/10 text-[10px] text-[#ffcf8a] hover:bg-[#ffb648]/15"
+        >
+          Mastering Assistant
+        </button>
         <div className="ml-auto flex items-center gap-1">
           <button type="button" onClick={addBus} className="h-7 px-2 rounded border border-[#4ca8a0]/35 bg-[#4ca8a0]/10 text-[10px] text-[#8bd4c9] hover:bg-[#4ca8a0]/20 inline-flex items-center gap-1">
             <Plus size={11} /> Aux
@@ -135,6 +143,8 @@ export function MixerPanel() {
           ))}
         </div>
       </div>
+
+      {masteringOpen && <MasteringAssistant onClose={() => setMasteringOpen(false)} />}
 
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 flex flex-col">
@@ -300,5 +310,173 @@ function AudioOutputSelector() {
         ))}
       </select>
     </label>
+  );
+}
+
+
+function MasteringAssistant({ onClose }: { onClose: () => void }) {
+  const project = useDAW((state) => state.project);
+  const setMasterVolume = useDAW((state) => state.setMasterVolume);
+  const [targetRmsDb, setTargetRmsDb] = useState(-14);
+  const [progress, setProgress] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [analysis, setAnalysis] = useState<{
+    peakDb: number;
+    rmsDb: number;
+    crestDb: number;
+    suggestedVolume: number;
+    gainDb: number;
+  } | null>(null);
+
+  const analyze = async () => {
+    setBusy(true);
+    setProgress(0);
+    setAnalysis(null);
+    try {
+      const rendered = await engine.renderProject(project, (value) => setProgress(Math.round(value * 100)));
+      if (!rendered?.channels.length) throw new Error("The project did not produce any audio");
+      let sumSquares = 0;
+      let count = 0;
+      let peak = 0;
+      for (const channel of rendered.channels) {
+        for (let i = 0; i < channel.length; i++) {
+          const sample = channel[i] ?? 0;
+          const magnitude = Math.abs(sample);
+          peak = Math.max(peak, magnitude);
+          sumSquares += sample * sample;
+          count++;
+        }
+      }
+      const rms = count ? Math.sqrt(sumSquares / count) : 0;
+      if (peak < 1e-7 || rms < 1e-7) throw new Error("The rendered mix is silent or too quiet to analyze");
+
+      const peakDb = 20 * Math.log10(peak);
+      const rmsDb = 20 * Math.log10(rms);
+      const crestDb = peakDb - rmsDb;
+      const peakLimitedGain = -1 - peakDb;
+      const targetGain = targetRmsDb - rmsDb;
+      const availableGain = project.masterVolume > 0
+        ? 20 * Math.log10(1.25 / project.masterVolume)
+        : 6;
+      const gainDb = Math.max(-12, Math.min(6, targetGain, peakLimitedGain, availableGain));
+      const suggestedVolume = Math.max(
+        0,
+        Math.min(1.25, project.masterVolume * Math.pow(10, gainDb / 20))
+      );
+      setAnalysis({ peakDb, rmsDb, crestDb, suggestedVolume, gainDb });
+    } catch (error) {
+      console.error("Mastering analysis failed", error);
+      toast.error(error instanceof Error ? error.message : "Could not analyze this mix");
+    } finally {
+      setBusy(false);
+      setProgress(100);
+    }
+  };
+
+  const apply = () => {
+    if (!analysis) return;
+    setMasterVolume(analysis.suggestedVolume);
+    toast.success("Suggested master level applied");
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4" role="dialog" aria-modal="true" aria-label="Mastering Assistant">
+      <div className="w-full max-w-lg rounded-xl border border-[#45454d] bg-[#202024] shadow-2xl text-zinc-200 overflow-hidden">
+        <header className="flex items-center gap-2 px-4 py-3 border-b border-black/50 bg-[#29292f]">
+          <SlidersHorizontal size={15} className="text-[#ffb648]" />
+          <div>
+            <p className="text-[12px] font-semibold">Mastering Assistant</p>
+            <p className="text-[9px] text-zinc-500">Offline mix analysis · level and peak recommendation</p>
+          </div>
+          <button type="button" onClick={onClose} className="ml-auto h-7 w-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-white/5" aria-label="Close mastering assistant">
+            <X size={14} className="mx-auto" />
+          </button>
+        </header>
+
+        <div className="p-4 space-y-4">
+          <label className="block rounded-lg border border-black/40 bg-[#18181b] p-3">
+            <span className="flex items-center justify-between text-[10px] text-zinc-400">
+              <span>Target average RMS</span>
+              <strong className="font-mono text-[#ffcf8a]">{targetRmsDb} dBFS</strong>
+            </span>
+            <input
+              type="range"
+              min={-20}
+              max={-8}
+              step={1}
+              value={targetRmsDb}
+              onChange={(event) => setTargetRmsDb(Number(event.target.value))}
+              className="mt-3 w-full accent-[#ffb648]"
+              aria-label="Target average RMS level"
+            />
+            <span className="mt-1 block text-[9px] text-zinc-600">Peak ceiling: -1.0 dBFS · Master gain is limited to the app's output range</span>
+          </label>
+
+          {busy ? (
+            <div className="rounded-lg border border-black/40 bg-[#18181b] p-4">
+              <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                <span>Rendering and analyzing project…</span>
+                <span className="font-mono">{progress}%</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-[#303036] overflow-hidden">
+                <div className="h-full bg-[#ffb648] transition-all" style={{ width: `${progress}%` }} />
+              </div>
+            </div>
+          ) : analysis ? (
+            <div className="rounded-lg border border-black/40 bg-[#18181b] p-3 space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <Metric label="Sample peak" value={`${analysis.peakDb.toFixed(1)} dBFS`} />
+                <Metric label="Average RMS" value={`${analysis.rmsDb.toFixed(1)} dBFS`} />
+                <Metric label="Crest factor" value={`${analysis.crestDb.toFixed(1)} dB`} />
+              </div>
+              <div className="border-t border-black/40 pt-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] text-zinc-500">Suggested master gain</p>
+                  <p className="text-lg font-semibold text-[#ffcf8a] tabular-nums">
+                    {analysis.gainDb >= 0 ? "+" : ""}{analysis.gainDb.toFixed(1)} dB
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[9px] text-zinc-600">New master fader</p>
+                  <p className="text-[13px] font-mono text-zinc-200">{Math.round(analysis.suggestedVolume * 100)}%</p>
+                </div>
+              </div>
+              <p className="text-[9px] leading-relaxed text-zinc-600">
+                RMS is a simple broadband estimate, not standards-compliant LUFS. This assistant changes the master level only; it does not automatically EQ, compress individual stems, or create spatial audio.
+              </p>
+            </div>
+          ) : (
+            <p className="rounded-lg border border-dashed border-[#45454d] p-4 text-[10px] leading-relaxed text-zinc-500">
+              The assistant will render the whole project, measure its peak and average RMS level, and calculate a conservative master-fader adjustment. Your tracks and their individual faders remain unchanged.
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="h-8 px-3 rounded border border-black/40 bg-[#303036] text-[10px] text-zinc-300 hover:bg-[#3a3a41]">
+              Close
+            </button>
+            {analysis ? (
+              <button type="button" onClick={apply} className="h-8 px-3 rounded border border-[#ffb648]/40 bg-[#ffb648]/15 text-[10px] font-medium text-[#ffcf8a] hover:bg-[#ffb648]/20">
+                Apply Suggested Level
+              </button>
+            ) : (
+              <button type="button" onClick={() => void analyze()} disabled={busy} className="h-8 px-3 rounded border border-[#ffb648]/40 bg-[#ffb648]/15 text-[10px] font-medium text-[#ffcf8a] hover:bg-[#ffb648]/20 disabled:opacity-40">
+                {busy ? "Analyzing…" : "Analyze Mix"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-black/30 bg-[#222226] p-2">
+      <p className="text-[8px] text-zinc-600">{label}</p>
+      <p className="mt-1 text-[11px] font-mono text-zinc-200 tabular-nums">{value}</p>
+    </div>
   );
 }
