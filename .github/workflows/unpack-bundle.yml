@@ -2,7 +2,7 @@ name: Expand merged DAW source
 on:
   push:
     branches: [merge-soundstage-daw]
-    paths: ['.merge-bundle.tar.xz']
+    paths: ['.bundle/part-*']
 permissions:
   contents: write
 jobs:
@@ -16,14 +16,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f .merge-bundle.tar.xz ]; then
+          if [ ! -f .bundle/part-00 ]; then
             echo "No pending source bundle; nothing to do."
             exit 0
           fi
+          cat .bundle/part-* > .merge-bundle.tar.xz
           mkdir -p .merge-unpack
-          tar -xJf .merge-bundle.tar.xz -C .merge-unpack
+          # The uploaded XZ stream contains a gzip-compressed tar archive.
+          xz -dc .merge-bundle.tar.xz | tar -xzf - -C .merge-unpack
           cp -a .merge-unpack/. .
-          rm -rf .merge-unpack .merge-bundle.tar.xz
+          rm -rf .merge-unpack .bundle .merge-bundle.tar.xz
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
