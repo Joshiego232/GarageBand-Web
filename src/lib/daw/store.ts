@@ -81,6 +81,7 @@ interface DAWState {
   // regions
   addRegion: (region: Region) => void;
   addRegions: (regions: Region[]) => void;
+  replaceRegionWithSegments: (regionId: string, segments: Region[]) => void;
   removeRegions: (ids: string[]) => void;
   moveRegions: (ids: string[], deltaTick: number, toTrackId?: string) => void;
   setRegionStart: (id: string, start: number, length?: number) => void;
@@ -722,6 +723,36 @@ export const useDAW = create<DAWState>((set, get) => ({
         ),
       },
       ui: { ...get().ui, selectedRegionIds: regions.map((r) => r.id), selectedTrackId: regions[regions.length - 1]?.trackId ?? get().ui.selectedTrackId },
+    });
+  },
+
+  replaceRegionWithSegments: (regionId, segments) => {
+    const project = get().project;
+    const found = findRegion(project, regionId);
+    if (!found || segments.some((segment) => segment.trackId !== found.track.id)) return;
+    get().commit();
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((track) =>
+          track.id === found.track.id
+            ? {
+                ...track,
+                regions: [
+                  ...track.regions.filter((region) => region.id !== regionId),
+                  ...segments,
+                ].sort((a, b) => a.start - b.start),
+              }
+            : track
+        ),
+      },
+      ui: {
+        ...get().ui,
+        selectedTrackId: found.track.id,
+        selectedRegionIds: segments.map((segment) => segment.id),
+        selectedNoteIds: [],
+        editorRegionId: segments[0]?.id ?? null,
+      },
     });
   },
 
