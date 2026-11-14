@@ -23,6 +23,9 @@ import {
   type SnapMode,
   type Tool,
   type EqSettings,
+  type TrackStack,
+  type ScreenSet,
+  type ProjectAlternative,
 } from "./types";
 import { emptyProject, makeTrack } from "./loops";
 import { PATCHES, defaultParams } from "./instruments";
@@ -61,6 +64,15 @@ interface DAWState {
   duplicateTrack: (id: string) => void;
   updateTrack: (id: string, patch: Partial<Track>, commit?: boolean) => void;
   setTrackInstrument: (id: string, instrument: string) => void;
+  createAuxBus: (name?: string) => string;
+  createVca: (name?: string) => string;
+  setTrackRouting: (id: string, outputBusId?: string | null, vcaId?: string | null, commit?: boolean) => void;
+  createTrackStack: (name: string, type: TrackStack["type"], trackIds: string[]) => string | null;
+  removeTrackStack: (id: string) => void;
+  saveAlternative: (name: string) => string;
+  loadAlternative: (id: string) => void;
+  saveScreenset: (name: string) => string;
+  loadScreenset: (id: string) => void;
   selectTrack: (id: string | null) => void;
   toggleTrackMute: (id: string) => void;
   toggleTrackSolo: (id: string) => void;
@@ -195,11 +207,24 @@ export const useDAW = create<DAWState>((set, get) => ({
   // ---------------- project meta ----------------
 
   loadProject: (p) => {
+    const normalized: Project = {
+      ...p,
+      stacks: p.stacks ?? [],
+      alternatives: p.alternatives ?? [],
+      screensets: p.screensets ?? [],
+      tracks: p.tracks.map((track) => ({
+        ...track,
+        role: track.role ?? "track",
+        outputBusId: track.outputBusId ?? null,
+        vcaId: track.vcaId ?? null,
+        stackId: track.stackId ?? null,
+      })),
+    };
     set({
-      project: p,
+      project: normalized,
       past: [],
       future: [],
-      ui: { ...get().ui, selectedRegionIds: [], selectedNoteIds: [], selectedTrackId: p.tracks[0]?.id ?? null, modal: "none", editorRegionId: null },
+      ui: { ...get().ui, selectedRegionIds: [], selectedNoteIds: [], selectedTrackId: normalized.tracks[0]?.id ?? null, modal: "none", editorRegionId: null },
     });
   },
 
@@ -315,6 +340,247 @@ export const useDAW = create<DAWState>((set, get) => ({
               }
             : t
         ),
+      },
+    });
+  },
+
+  createAuxBus: (name) => {
+    get().commit();
+    const project = get().project;
+    const index = project.tracks.filter((track) => track.role === "aux").length + 1;
+    const bus = makeTrack({
+      type: "audio",
+      role: "aux",
+      name: name?.trim() || `Aux ${index}`,
+      icon: "audio-lines",
+      color: "#4ca8a0",
+      volume: 0.9,
+      regions: [],
+    });
+    set({
+      project: { ...project, tracks: [...project.tracks, bus] },
+      ui: { ...get().ui, selectedTrackId: bus.id },
+    });
+    return bus.id;
+  },
+
+  createVca: (name) => {
+    get().commit();
+    const project = get().project;
+    const index = project.tracks.filter((track) => track.role === "vca").length + 1;
+    const vca = makeTrack({
+      type: "audio",
+      role: "vca",
+      name: name?.trim() || `VCA ${index}`,
+      icon: "sliders-horizontal",
+      color: "#b38ad9",
+      volume: 1,
+      regions: [],
+    });
+    set({
+      project: { ...project, tracks: [...project.tracks, vca] },
+      ui: { ...get().ui, selectedTrackId: vca.id },
+    });
+    return vca.id;
+  },
+
+  setTrackRouting: (id, outputBusId, vcaId, doCommit = true) => {
+    const project = get().project;
+    const source = project.tracks.find((track) => track.id === id);
+    if (!source || source.role === "vca") return;
+
+    let safeBusId = outputBusId ?? null;
+    if (safeBusId) {
+      const seen = new Set([id]);
+      let currentId: string | null = safeBusId;
+      while (currentId) {
+        if (seen.has(currentId)) {
+          safeBusId = null;
+          break;
+        }
+        seen.add(currentId);
+        const target = project.tracks.find((track) => track.id === currentId);
+        if (!target || target.role !== "aux") {
+          safeBusId = null;
+          break;
+        }
+        currentId = target.outputBusId ?? null;
+      }
+    }
+
+    const vca = vcaId ? project.tracks.find((track) => track.id === vcaId) : null;
+    const safeVcaId = vca?.role === "vca" && vca.id !== id ? vca.id : null;
+    if (doCommit) get().commit();
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((track) =>
+          track.id === id
+            ? { ...track, outputBusId: safeBusId, vcaId: safeVcaId }
+            : track
+        ),
+      },
+    });
+  },
+
+  createTrackStack: (name, type, trackIds) => {
+    const project = get().project;
+    const uniqueIds = [...new Set(trackIds)].filter((id) =>
+      project.tracks.some((track) => track.id === id && (track.role ?? "track") === "track")
+    );
+    if (uniqueIds.length < 2) return null;
+
+    get().commit();
+    const stackId = uid();
+    let tracks = project.tracks;
+    let busTrackId: string | undefined;
+    if (type === "summing") {
+      const bus = makeTrack({
+        type: "audio",
+        role: "aux",
+        name: `${name.trim() || "Summing Stack"} Bus`,
+        icon: "audio-lines",
+        color: "#4ca8a0",
+        volume: 0.9,
+        regions: [],
+      });
+      busTrackId = bus.id;
+      tracks = [...tracks, bus];
+    }
+
+    const stack: TrackStack = {
+      id: stackId,
+      name: name.trim() || (type === "folder" ? "Track Stack" : "Summing Stack"),
+      type,
+      trackIds: uniqueIds,
+      ...(busTrackId ? { busTrackId } : {}),
+    };
+
+    const stacks = (project.stacks ?? []).filter(
+      (existing) => !uniqueIds.some((id) => existing.trackIds.includes(id))
+    );
+    const removedStackIds = new Set(
+      (project.stacks ?? [])
+        .filter((existing) => !stacks.some((kept) => kept.id === existing.id))
+        .map((existing) => existing.id)
+    );
+    tracks = tracks.map((track) => {
+      const belongs = uniqueIds.includes(track.id);
+      if (belongs) {
+        return {
+          ...track,
+          stackId,
+          ...(busTrackId ? { outputBusId: busTrackId } : {}),
+        };
+      }
+      if (removedStackIds.has(track.stackId ?? "")) {
+        return {
+          ...track,
+          stackId: null,
+          ...(project.stacks?.find((item) => item.id === track.stackId)?.busTrackId === track.outputBusId
+            ? { outputBusId: null }
+            : {}),
+        };
+      }
+      return track;
+    });
+
+    set({
+      project: { ...project, tracks, stacks: [...stacks, stack] },
+      ui: { ...get().ui, selectedTrackId: busTrackId ?? uniqueIds[0] },
+    });
+    return stackId;
+  },
+
+  removeTrackStack: (id) => {
+    const project = get().project;
+    const stack = project.stacks?.find((item) => item.id === id);
+    if (!stack) return;
+    get().commit();
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks
+          .filter((track) => track.id !== stack.busTrackId)
+          .map((track) => ({
+            ...track,
+            stackId: track.stackId === id ? null : track.stackId,
+            outputBusId:
+              stack.busTrackId && track.outputBusId === stack.busTrackId
+                ? null
+                : track.outputBusId,
+          })),
+        stacks: (project.stacks ?? []).filter((item) => item.id !== id),
+      },
+    });
+  },
+
+  saveAlternative: (name) => {
+    const project = get().project;
+    const snapshot = { ...project, alternatives: [] };
+    const alternative: ProjectAlternative = {
+      id: uid(),
+      name: name.trim() || `Alternative ${(project.alternatives ?? []).length + 1}`,
+      snapshot: JSON.stringify(snapshot),
+      savedAt: new Date().toISOString(),
+    };
+    set({ project: { ...project, alternatives: [...(project.alternatives ?? []), alternative] } });
+    return alternative.id;
+  },
+
+  loadAlternative: (id) => {
+    const project = get().project;
+    const alternative = project.alternatives?.find((item) => item.id === id);
+    if (!alternative) return;
+    let snapshot: Project;
+    try {
+      snapshot = JSON.parse(alternative.snapshot) as Project;
+    } catch {
+      return;
+    }
+    get().commit();
+    set({
+      project: {
+        ...snapshot,
+        stacks: snapshot.stacks ?? [],
+        alternatives: project.alternatives ?? [],
+        screensets: project.screensets ?? [],
+      },
+      ui: {
+        ...get().ui,
+        selectedTrackId: snapshot.tracks[0]?.id ?? null,
+        selectedRegionIds: [],
+        selectedNoteIds: [],
+        editorRegionId: null,
+      },
+    });
+  },
+
+  saveScreenset: (name) => {
+    const project = get().project;
+    const currentUI = get().ui;
+    const screenset: ScreenSet = {
+      id: uid(),
+      name: name.trim() || `Screenset ${(project.screensets ?? []).length + 1}`,
+      panels: { ...currentUI.panels },
+      editorMode: currentUI.editorMode,
+      trackSize: currentUI.trackSize,
+      zoom: currentUI.zoom,
+    };
+    set({ project: { ...project, screensets: [...(project.screensets ?? []), screenset] } });
+    return screenset.id;
+  },
+
+  loadScreenset: (id) => {
+    const screenset = get().project.screensets?.find((item) => item.id === id);
+    if (!screenset) return;
+    set({
+      ui: {
+        ...get().ui,
+        panels: { ...screenset.panels },
+        editorMode: screenset.editorMode,
+        trackSize: screenset.trackSize,
+        zoom: screenset.zoom,
       },
     });
   },
