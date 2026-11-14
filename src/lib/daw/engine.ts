@@ -22,6 +22,7 @@ import {
 } from "./utils";
 import type { StoredBuffer } from "./idb";
 import { loadBuffer } from "./idb";
+import { toast } from "sonner";
 
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
@@ -259,11 +260,12 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
   tn.eqHigh.gain.value = eqEnabled ? eq.highGain * eqMix : 0;
 
   const compressor = get("compressor");
+  const compressorPluginEnabled = !!compressor?.enabled;
   setComp(
     tn.comp,
-    track.compressor || !!compressor?.enabled,
-    compressor?.params.threshold ?? -18,
-    compressor?.params.ratio ?? 2.5
+    track.compressor || compressorPluginEnabled,
+    compressorPluginEnabled ? compressor?.params.threshold ?? -18 : -18,
+    compressorPluginEnabled ? compressor?.params.ratio ?? 2.5 : 2.5
   );
 
   const highPass = get("high-pass");
@@ -330,6 +332,8 @@ export class AudioEngine {
   private tracks = new Map<string, TrackNodes>();
   private voices: ActiveVoice[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  private playRequestId = 0;
+  private playPending = false;
 
   // transport
   playing = false;
@@ -426,7 +430,11 @@ export class AudioEngine {
       }
       if (track.type === "midi") {
         const patch = PATCHES[track.instrument];
-        if (patch?.sampled) void warmSampledPatch(ctx, tn.input, patch);
+        if (patch?.sampled) {
+          // Warm in the background when a track is created or its instrument changes.
+          // Transport start also awaits these promises before scheduling MIDI notes.
+          void warmSampledPatch(ctx, tn.input, patch).catch(() => undefined);
+        }
       }
       applyTrackAudioPlugins(tn, track);
       const audible = !track.mute && (!anySolo || track.solo);
@@ -529,8 +537,59 @@ export class AudioEngine {
   play(fromTick?: number) {
     const ctx = this.ensure();
     this.stopPreview();
-    const st = useDAW.getState();
-    const project = st.project;
+
+    const requestId = ++this.playRequestId;
+    this.playPending = true;
+
+    // Sample-backed instruments load over the network. Never start the
+    // transport while a MIDI patch is still loading, otherwise the first
+    // notes in a region can be silently dropped.
+    void this.preparePlaybackSamples(requestId, ctx)
+      .then(() => {
+        if (requestId !== this.playRequestId || this.ctx !== ctx) return;
+        this.playPending = false;
+        this.beginPlayback(fromTick, ctx);
+      })
+      .catch((error: unknown) => {
+        if (requestId !== this.playRequestId) return;
+        this.playPending = false;
+        console.error("GarageBand Web Studio could not load one or more instrument samples.", error);
+        toast.error("Some instrument samples could not load. Check your connection and press Play to retry.");
+      });
+  }
+
+  private async preparePlaybackSamples(requestId: number, ctx: AudioContext) {
+    let snapshot: Project;
+    do {
+      if (requestId !== this.playRequestId || this.ctx !== ctx) return;
+
+      snapshot = useDAW.getState().project;
+      this.sync(snapshot);
+
+      const anySolo = snapshot.tracks.some((track) => track.solo);
+      const sampleLoads: Promise<void>[] = [];
+      for (const track of snapshot.tracks) {
+        if (track.type !== "midi" || track.mute || (anySolo && !track.solo)) continue;
+        const patch = PATCHES[track.instrument];
+        const nodes = this.tracks.get(track.id);
+        if (patch?.sampled && nodes) {
+          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch, true));
+        }
+      }
+
+      await Promise.all(sampleLoads);
+      // If the user changed instruments while samples were loading, prepare
+      // the latest project too before allowing playback to begin.
+    } while (
+      snapshot !== useDAW.getState().project &&
+      requestId === this.playRequestId
+    );
+  }
+
+  private beginPlayback(fromTick: number | undefined, ctx: AudioContext) {
+    if (this.ctx !== ctx || !this.master) return;
+
+    const project = useDAW.getState().project;
     const start = fromTick ?? this.stoppedAtTick ?? 0;
     const beatSec = 60 / project.tempo;
     const countIn = this.recording && project.countIn ? project.timeSig[0] : 0;
@@ -554,6 +613,9 @@ export class AudioEngine {
   }
 
   stop() {
+    // Also cancels playback that is waiting for sample downloads.
+    this.playRequestId += 1;
+    this.playPending = false;
     const wasPlaying = this.playing;
     if (!wasPlaying) return;
     const tick = this.currentTick();
@@ -580,7 +642,7 @@ export class AudioEngine {
   }
 
   togglePlay() {
-    if (this.playing) this.stop();
+    if (this.playing || this.playPending) this.stop();
     else this.play(this.stoppedAtTick ?? 0);
   }
 
@@ -630,7 +692,7 @@ export class AudioEngine {
 
   setPlayhead(tick: number) {
     this.stoppedAtTick = Math.max(0, tick);
-    if (this.playing) {
+    if (this.playing || this.playPending) {
       this.play(Math.max(0, tick));
     }
   }
@@ -977,7 +1039,9 @@ export class AudioEngine {
 
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch).then(play);
+      void warmSampledPatch(ctx, dest, patch, true).then(play).catch(() => {
+        toast.error(`Could not load ${patch.name} samples. Please try again.`);
+      });
       return;
     }
     play();
@@ -993,7 +1057,7 @@ export class AudioEngine {
   ) {
     const ctx = this.ensure();
     this.stopPreview();
-    if (this.playing) this.stop();
+    if (this.playing || this.playPending) this.stop();
     const dest = ctx.createGain();
     dest.gain.value = 0.9;
     dest.connect(this.master?.input ?? ctx.destination);
@@ -1034,7 +1098,10 @@ export class AudioEngine {
     };
     const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch).then(startScheduler);
+      void warmSampledPatch(ctx, dest, patch, true).then(startScheduler).catch(() => {
+        this.stopPreview();
+        toast.error(`Could not load ${patch.name} samples for the loop preview.`);
+      });
     } else {
       startScheduler();
     }
