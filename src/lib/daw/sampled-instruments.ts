@@ -256,6 +256,7 @@ export function playSampledNote(
   when: number,
   dur: number,
   params: Record<string, number>,
+  noteOffControlled = false,
 ): VoiceHandle | null {
   const source = patch.sampled;
   if (!source) return null;
@@ -284,16 +285,17 @@ export function playSampledNote(
     note,
     velocity: Math.round(Math.min(1, Math.max(0.02, velocity)) * 127),
     time: when,
-    duration: isDrumMachine ? null : dur,
+    duration: isDrumMachine || noteOffControlled ? null : dur,
     ampRelease: Math.max(0.04, Math.min(2.5, params.release ?? 0.28)),
   });
 
   return {
-    scheduleStop() {
-      // Tonal SoundFonts already receive a duration in start(), which schedules
-      // Voice.stop() on the audio clock. Calling the returned StopFn here would
-      // also cancel a not-yet-dispatched sampler queue event. Drum-machine
-      // samples are one-shots and are allowed to decay naturally.
+    scheduleStop(at: number) {
+      // Timeline notes are stopped by Smplr's duration parameter so scheduled
+      // future events are not cancelled. Live input notes instead wait for an
+      // actual key-up and must call the returned stop function.
+      if (noteOffControlled && !isDrumMachine) stop(at);
+      // Drum-machine samples are one-shots and decay naturally.
     },
     kill() {
       stop(ctx.currentTime);
