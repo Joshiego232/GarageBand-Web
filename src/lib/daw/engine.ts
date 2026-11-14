@@ -452,15 +452,15 @@ export class AudioEngine {
         : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       // prefetch audio buffers
-      for (const r of track.regions) {
-        if (r.bufferId && !this.bufferCache.has(r.bufferId) && !this.pendingLoads.has(r.bufferId)) {
+      for (const bufferId of [track.sampleBufferId, ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
+        if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
           this.pendingLoads.add(r.bufferId);
-          loadBuffer(r.bufferId)
+          loadBuffer(bufferId)
             .then((b) => {
-              if (b) this.bufferCache.set(r.bufferId as string, b);
+              if (b) this.bufferCache.set(bufferId, b);
             })
             .catch(() => undefined)
-            .finally(() => this.pendingLoads.delete(r.bufferId as string));
+            .finally(() => this.pendingLoads.delete(bufferId));
         }
       }
     }
@@ -606,7 +606,13 @@ export class AudioEngine {
         if (track.type !== "midi" || track.mute || (anySolo && !track.solo)) continue;
         const patch = PATCHES[track.instrument];
         const nodes = this.tracks.get(track.id);
-        if (patch?.sampled && nodes) {
+        if (track.sampleBufferId) {
+          sampleLoads.push(
+            this.ensureBufferLoaded(track.sampleBufferId).then((buffer) => {
+              if (!buffer) throw new Error(`Quick Sampler audio ${track.sampleName ?? track.sampleBufferId} is missing`);
+            })
+          );
+        } else if (patch?.sampled && nodes) {
           sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch));
         }
       }
@@ -834,6 +840,90 @@ export class AudioEngine {
     }
   }
 
+  private playTrackNote(
+    ctx: BaseAudioContext,
+    dest: AudioNode,
+    track: Track,
+    pitch: number,
+    velocity: number,
+    when: number,
+    duration: number,
+    noteOffControlled = false
+  ): VoiceHandle {
+    if (!track.sampleBufferId) {
+      return playNote(
+        ctx,
+        dest,
+        track.instrument,
+        pitch,
+        velocity,
+        when,
+        duration,
+        track.params,
+        noteOffControlled
+      );
+    }
+
+    const buffer = this.bufferFor(ctx, track.sampleBufferId);
+    if (!buffer || buffer.duration <= 0) {
+      return { scheduleStop() {}, kill() {} };
+    }
+
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    const mode = track.samplePlaybackMode ?? "one-shot";
+    source.buffer = buffer;
+    source.playbackRate.value = Math.pow(
+      2,
+      (pitch - clamp(track.sampleRootPitch ?? 60, 0, 127)) / 12
+    );
+    source.loop = mode === "loop";
+    if (source.loop) {
+      source.loopStart = 0;
+      source.loopEnd = buffer.duration;
+    }
+
+    const level = clamp(velocity, 0, 1);
+    const attack = Math.min(0.008, Math.max(0.002, duration * 0.05));
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0001, level), when + attack);
+    source.connect(gain).connect(dest);
+    source.start(when);
+
+    let stopped = false;
+    const stopAt = (at: number, release: number) => {
+      if (stopped) return;
+      stopped = true;
+      const safeAt = Math.max(at, ctx.currentTime);
+      try {
+        gain.gain.cancelScheduledValues(safeAt);
+        gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), safeAt);
+        gain.gain.linearRampToValueAtTime(0.0001, safeAt + release);
+        source.stop(safeAt + release + 0.005);
+      } catch {
+        // The source may already have reached the end of a one-shot sample.
+      }
+    };
+
+    source.onended = () => {
+      try {
+        source.disconnect();
+        gain.disconnect();
+      } catch { /* already disconnected */ }
+    };
+
+    return {
+      scheduleStop(at: number) {
+        // Quick Sampler's one-shot mode plays through even when the MIDI key
+        // is released. Loop mode follows MIDI note-off and fades cleanly.
+        if (mode === "loop" || noteOffControlled) stopAt(at, 0.045);
+      },
+      kill() {
+        stopAt(ctx.currentTime, 0.005);
+      },
+    };
+  }
+
   private scheduleMidiRegion(
     region: Region,
     track: Track,
@@ -865,15 +955,14 @@ export class AudioEngine {
         const when = timeAt(absStart);
         const dur = tickToSec(durTicks, project.tempo);
         const noteStart = Math.max(when, (this.ctx as AudioContext).currentTime);
-        const voice = playNote(
+        const voice = this.playTrackNote(
           this.ctx as AudioContext,
           tn.input,
-          track.instrument,
+          track,
           n.pitch,
           n.velocity / 127,
           noteStart,
-          dur,
-          track.params
+          dur
         );
         // All sustained instruments must receive MIDI note-off at the end of
         // the note. Without this, pads, strings, organs and leads can sustain
@@ -1038,15 +1127,14 @@ export class AudioEngine {
       const currentDestination =
         this.tracks.get(currentTrack.id)?.input ?? this.master?.input ?? ctx.destination;
       noteState.voices = inputNotes.slice(0, 16).map((note) =>
-        playNote(
+        this.playTrackNote(
           ctx,
           currentDestination,
-          currentTrack.instrument,
+          currentTrack,
           note.pitch,
           note.velocity / 127,
           ctx.currentTime,
           3600,
-          currentTrack.params,
           true
         )
       );
@@ -1098,7 +1186,12 @@ export class AudioEngine {
     const play = () => {
       const when = ctx.currentTime;
       const duration = 0.5;
-      const voice = playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p);
+      const customTrack = st.project.tracks.find(
+        (track) => track.instrument === patchId && !!track.sampleBufferId
+      );
+      const voice = customTrack
+        ? this.playTrackNote(ctx, dest, customTrack, pitch, velocity / 127, when, duration)
+        : playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p);
       voice.scheduleStop(when + duration);
       this.voices.push({ handle: voice, until: when + 6 });
     };
@@ -1367,15 +1460,14 @@ export class AudioEngine {
               if (durTicks <= 0) continue;
               const noteStart = timeAt(absStart);
               const noteDuration = tickToSec(durTicks, project.tempo);
-              const voice = playNote(
+              const voice = this.playTrackNote(
                 offline,
                 tn.input,
-                track.instrument,
+                track,
                 n.pitch,
                 n.velocity / 127,
                 noteStart,
-                noteDuration,
-                track.params
+                noteDuration
               );
               // Match live playback: release sustained patches at MIDI note-off.
               voice.scheduleStop(noteStart + noteDuration);
