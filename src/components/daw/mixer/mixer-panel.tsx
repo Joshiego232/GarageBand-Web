@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  AudioLines,
   FolderPlus,
   Layers3,
   Maximize2,
@@ -27,6 +26,13 @@ export function MixerPanel() {
   const [expanded, setExpanded] = useState(false);
   const [stackName, setStackName] = useState("");
   const [selectedForStack, setSelectedForStack] = useState<string[]>([]);
+
+  useEffect(() => {
+    const expand = () => setExpanded(true);
+    window.addEventListener("daw:mixer-expand", expand);
+    return () => window.removeEventListener("daw:mixer-expand", expand);
+  }, []);
+
   const project = useDAW((state) => state.project);
   const selectedTrackId = useDAW((state) => state.ui.selectedTrackId);
   const togglePanel = useDAW((state) => state.togglePanel);
