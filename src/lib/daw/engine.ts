@@ -906,9 +906,10 @@ export class AudioEngine {
     const gain = ctx.createGain();
     const mode = track.samplePlaybackMode ?? "one-shot";
     source.buffer = buffer;
-    source.playbackRate.value = Math.pow(
-      2,
-      (pitch - clamp(track.sampleRootPitch ?? 60, 0, 127)) / 12
+    source.playbackRate.value = clamp(
+      Math.pow(2, (pitch - clamp(track.sampleRootPitch ?? 60, 0, 127)) / 12),
+      0.25,
+      4
     );
     source.loop = mode === "loop";
     if (source.loop) {
@@ -1717,7 +1718,25 @@ export class AudioEngine {
     for (const t of project.tracks) {
       for (const r of t.regions) endTick = Math.max(endTick, r.start + r.length);
     }
-    const totalSec = tickToSec(endTick, project.tempo) + 3.2; // reverb tail
+    let quickSamplerTailSec = 0;
+    for (const track of project.tracks) {
+      if (!track.sampleBufferId || (track.samplePlaybackMode ?? "one-shot") !== "one-shot") continue;
+      const stored = this.bufferCache.get(track.sampleBufferId);
+      if (!stored) continue;
+      const sampleDuration = stored.channels[0]?.length
+        ? stored.channels[0].length / stored.sampleRate
+        : 0;
+      const root = clamp(track.sampleRootPitch ?? 60, 0, 127);
+      for (const region of track.regions) {
+        if (region.type !== "midi") continue;
+        for (const note of region.notes ?? []) {
+          const rate = clamp(Math.pow(2, (note.pitch - root) / 12), 0.25, 4);
+          quickSamplerTailSec = Math.max(quickSamplerTailSec, sampleDuration / rate);
+        }
+      }
+    }
+    const totalSec =
+      tickToSec(endTick, project.tempo) + Math.max(3.2, quickSamplerTailSec + 0.25);
     const length = Math.ceil(totalSec * sr);
     const offline = new OfflineAudioContext(2, length, sr);
     onProgress?.(0.08);
