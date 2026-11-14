@@ -1,5 +1,6 @@
 import type { Note } from "./types";
-import { clamp, uid, PPQ } from "./types";
+import { uid, PPQ } from "./types";
+import { clamp } from "./utils";
 
 export interface PluginControl {
   id: string;
