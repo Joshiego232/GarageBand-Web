@@ -1039,7 +1039,9 @@ export class AudioEngine {
     if (!buf) return;
     const regionEnd = region.start + region.length;
     const contentSec = region.sampleLength ?? buf.duration;
-    const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+    const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+    const contentPlaySec = contentSec / playbackRate;
+    const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
     const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
     for (let k = 0; k < reps; k++) {
       const occStart = region.start + k * periodTicks;
@@ -1047,7 +1049,7 @@ export class AudioEngine {
       if (occStart < fromTick) continue;
       const when = timeAt(occStart);
       const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-      const durSec = Math.min(contentSec, tickToSec(remainTicks, project.tempo));
+      const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
       if (durSec <= 0.005) continue;
       this.playAudioSlice(region, buf, tn.input, when, 0, durSec);
     }
@@ -1065,11 +1067,13 @@ export class AudioEngine {
     const ctx = this.ctx as AudioContext;
     const src = ctx.createBufferSource();
     src.buffer = buf;
+    const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+    src.playbackRate.value = playbackRate;
     const g = ctx.createGain();
     const gainVal = region.gain ?? 1;
     const fi = Math.min(region.fadeIn ?? 0, durSec);
     const fo = Math.min(region.fadeOut ?? 0, durSec);
-    const fiRemain = Math.max(0, fi - offsetIntoContentSec);
+    const fiRemain = Math.max(0, fi - offsetIntoContentSec / playbackRate);
     const end = when + durSec;
     let t = when;
     if (fiRemain > 0) {
@@ -1086,7 +1090,7 @@ export class AudioEngine {
     }
     src.connect(g).connect(dest);
     const sampleStart = (region.sampleStart ?? 0) + offsetIntoContentSec;
-    src.start(Math.max(when, ctx.currentTime), sampleStart, durSec + 0.02);
+    src.start(Math.max(when, ctx.currentTime), sampleStart, durSec * playbackRate + 0.02);
     // register for kill
     const voice: VoiceHandle = {
       scheduleStop() { /* scheduled already */ },
@@ -1119,14 +1123,16 @@ export class AudioEngine {
         const buf = this.bufferFor(this.ctx as AudioContext, region.bufferId);
         if (!buf) continue;
         const contentSec = region.sampleLength ?? buf.duration;
-        const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+        const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+        const contentPlaySec = contentSec / playbackRate;
+        const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
         let occStart = region.start;
         if (periodTicks) {
           occStart = region.start + Math.floor((atTick - region.start) / periodTicks) * periodTicks;
         }
-        const offsetIntoContent = tickToSec(atTick - occStart, project.tempo);
+        const offsetIntoContent = tickToSec(atTick - occStart, project.tempo) * playbackRate;
         const remainRegionSec = tickToSec(regionEnd - atTick, project.tempo);
-        const durSec = Math.max(0, Math.min(contentSec - offsetIntoContent, remainRegionSec));
+        const durSec = Math.max(0, Math.min((contentSec - offsetIntoContent) / playbackRate, remainRegionSec));
         if (durSec > 0.005) {
           this.playAudioSlice(region, buf, tn.input, atTime, offsetIntoContent, durSec);
         }
@@ -1492,6 +1498,7 @@ export class AudioEngine {
         const available = Math.max(0.01, buffer.duration - startOffset);
         const loopLength = clamp(region.sampleLength ?? available, 0.01, available);
         source.buffer = buffer;
+        source.playbackRate.value = clamp(region.playbackRate ?? 1, 0.5, 2);
         source.loop = true;
         source.loopStart = startOffset;
         source.loopEnd = startOffset + loopLength;
@@ -1828,17 +1835,20 @@ export class AudioEngine {
           const buf = this.bufferFor(offline, region.bufferId);
           if (buf) {
             const contentSec = region.sampleLength ?? buf.duration;
-            const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+            const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+            const contentPlaySec = contentSec / playbackRate;
+            const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
             const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
             for (let k = 0; k < reps; k++) {
               const occStart = region.start + k * periodTicks;
               if (occStart >= regionEnd) continue;
               const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-              const durSec = Math.min(contentSec, tickToSec(remainTicks, project.tempo));
+              const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
               if (durSec <= 0.005) continue;
-              // offline version of playAudioSlice
+              // Offline varispeed follows the same playback-rate automation as live playback.
               const src = offline.createBufferSource();
               src.buffer = buf;
+              src.playbackRate.value = playbackRate;
               const g = offline.createGain();
               const gainVal = region.gain ?? 1;
               const fi = Math.min(region.fadeIn ?? 0, durSec);
@@ -1859,7 +1869,7 @@ export class AudioEngine {
                 g.gain.linearRampToValueAtTime(0.0001, end);
               }
               src.connect(g).connect(tn.input);
-              src.start(when, region.sampleStart ?? 0, durSec + 0.02);
+              src.start(when, region.sampleStart ?? 0, durSec * playbackRate + 0.02);
             }
           }
         }
