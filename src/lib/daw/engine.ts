@@ -39,6 +39,8 @@ interface TrackNodes {
   saturation: WaveShaperNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  output: GainNode;
+  routingTarget: AudioNode;
   analyser: AnalyserNode;
   reverbSend: GainNode;
   delaySend: GainNode;
@@ -164,6 +166,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   const gain = ctx.createGain();
   const panner = ctx.createStereoPanner();
   const analyser = ctx.createAnalyser();
+  const output = ctx.createGain();
   analyser.fftSize = 512;
   const reverbSend = ctx.createGain();
   reverbSend.gain.value = 0;
@@ -206,7 +209,9 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
     .connect(gain)
     .connect(panner)
     .connect(analyser)
-    .connect(master.input);
+    .connect(output);
+
+  output.connect(master.input);
 
   panner.connect(reverbSend).connect(master.reverbConv);
   panner.connect(delaySend).connect(master.delay);
@@ -221,7 +226,8 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
 
   return {
     input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
-    gain, panner, analyser, reverbSend, delaySend, chorusDelay, chorusSend,
+    gain, panner, analyser, output, routingTarget: master.input,
+    reverbSend, delaySend, chorusDelay, chorusSend,
     chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
     flangerLfo, flangerDepth,
   };
@@ -419,7 +425,8 @@ export class AudioEngine {
     m.delay.delayTime.value = Math.min(1.9, beat * 0.75); // dotted 8th
     m.click.gain.value = 0.9;
 
-    const anySolo = project.tracks.some((t) => t.solo);
+    const trackById = new Map(project.tracks.map((track) => [track.id, track]));
+    const anySolo = project.tracks.some((track) => track.solo);
     const seen = new Set<string>();
     for (const track of project.tracks) {
       seen.add(track.id);
@@ -437,8 +444,30 @@ export class AudioEngine {
         }
       }
       applyTrackAudioPlugins(tn, track);
-      const audible = !track.mute && (!anySolo || track.solo);
-      tn.gain.gain.value = audible ? clamp(track.volume, 0, 1.25) : 0;
+      const vca = track.vcaId ? trackById.get(track.vcaId) : undefined;
+      const activeVca = vca?.role === "vca" ? vca : undefined;
+      const mutedByVca = !!activeVca?.mute;
+      const soloedByVca = !!activeVca?.solo;
+
+      let routedToSolo = false;
+      let routeId = track.outputBusId ?? null;
+      const routeSeen = new Set<string>([track.id]);
+      while (routeId) {
+        if (routeSeen.has(routeId)) break;
+        routeSeen.add(routeId);
+        const route = trackById.get(routeId);
+        if (!route || route.role !== "aux") break;
+        if (route.solo) routedToSolo = true;
+        routeId = route.outputBusId ?? null;
+      }
+
+      const audible =
+        track.role !== "vca" &&
+        !track.mute &&
+        !mutedByVca &&
+        (!anySolo || track.solo || soloedByVca || routedToSolo);
+      const vcaLevel = activeVca ? clamp(activeVca.volume, 0, 1.25) : 1;
+      tn.gain.gain.value = audible ? clamp(track.volume * vcaLevel, 0, 1.5625) : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       // prefetch audio buffers
       for (const r of track.regions) {
@@ -453,6 +482,43 @@ export class AudioEngine {
         }
       }
     }
+    // Reconnect channel outputs after every track node exists so an instrument
+    // can safely feed an Aux bus that appears later in the track list.
+    for (const track of project.tracks) {
+      const nodes = this.tracks.get(track.id);
+      if (!nodes || track.role === "vca") continue;
+
+      let target: AudioNode = m.input;
+      let routeId = track.outputBusId ?? null;
+      const visited = new Set<string>([track.id]);
+      let firstBus: Track | undefined;
+      let validRoute = true;
+      while (routeId) {
+        if (visited.has(routeId)) {
+          validRoute = false;
+          break;
+        }
+        visited.add(routeId);
+        const route = trackById.get(routeId);
+        if (!route || route.role !== "aux") {
+          validRoute = false;
+          break;
+        }
+        firstBus ??= route;
+        routeId = route.outputBusId ?? null;
+      }
+      if (validRoute && firstBus) {
+        const busNodes = this.tracks.get(firstBus.id);
+        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      }
+
+      if (nodes.routingTarget !== target) {
+        try { nodes.output.disconnect(); } catch { /* noop */ }
+        nodes.output.connect(target);
+        nodes.routingTarget = target;
+      }
+    }
+
     // remove stale track nodes
     for (const id of Array.from(this.tracks.keys())) {
       if (!seen.has(id)) {
@@ -461,6 +527,7 @@ export class AudioEngine {
           try {
             tn.input.disconnect();
             tn.analyser.disconnect();
+            tn.output.disconnect();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
             tn.chorusSend.disconnect();
