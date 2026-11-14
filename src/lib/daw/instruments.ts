@@ -5,6 +5,7 @@
 import type { Patch, KnobDef } from "./types";
 import { midiToFreq, clamp } from "./utils";
 import { playSampledNote } from "./sampled-instruments";
+import { buildMorphSpectrum } from "./morph-synth";
 
 export interface VoiceHandle {
   /** Schedule the release at absolute ctx time */
@@ -1322,25 +1323,9 @@ function morphPeriodicWave(
   const cached = cache.get(key);
   if (cached) return cached;
 
-  const m = morphStep / 24;
-  const h = harmonicStep / 24;
   const count = 64;
   const real = new Float32Array(count);
-  const imag = new Float32Array(count);
-
-  for (let partial = 1; partial < count; partial++) {
-    const n = partial;
-    const saw = 1 / n;
-    const oddOrgan = n % 2 === 1 ? 1 / n : 0;
-    const bell = Math.exp(-Math.pow((Math.log(n) - 1.35) / 0.78, 2)) / Math.sqrt(n);
-    const glass = Math.exp(-Math.pow((n - (2 + m * 25)) / (1.4 + m * 2.8), 2)) / Math.sqrt(n);
-    const organBell = oddOrgan * (1 - m) + bell * m;
-    const spectral = organBell * (1 - m * 0.55) + glass * m * 0.55;
-    const body = saw * (1 - m) + spectral * m;
-    const rolloff = Math.pow(1 - (n - 1) / count, 0.3 + (1 - h) * 2.4);
-    imag[partial] = body * rolloff * (0.35 + h * 1.65);
-  }
-
+  const imag = buildMorphSpectrum(morphStep / 24, harmonicStep / 24, count);
   const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: false });
   cache.set(key, wave);
   return wave;
