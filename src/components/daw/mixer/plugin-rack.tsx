@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Plus, Power, Trash2 } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import type { Track } from "@/lib/daw/types";
+import { validateMidiScript } from "@/lib/daw/midi-scripter";
 import {
   AUDIO_PLUGIN_DEFS,
   MIDI_PLUGIN_DEFS,
@@ -57,6 +58,15 @@ export function PluginRack({ track }: { track: Track }) {
         plugin.id === pluginId
           ? { ...plugin, params: { ...plugin.params, [key]: value } }
           : plugin
+      ),
+      false
+    );
+  };
+
+  const changeScript = (pluginId: string, script: string) => {
+    updatePlugins(
+      plugins.map((plugin) =>
+        plugin.id === pluginId ? { ...plugin, script } : plugin
       ),
       false
     );
@@ -123,6 +133,7 @@ export function PluginRack({ track }: { track: Track }) {
               onToggle={() => togglePlugin(plugin.id)}
               onRemove={() => removePlugin(plugin.id)}
               onChange={(key, value) => changeParameter(plugin.id, key, value)}
+              onScriptChange={(script) => changeScript(plugin.id, script)}
             />
           );
         })}
@@ -137,12 +148,14 @@ function PluginCard({
   onToggle,
   onRemove,
   onChange,
+  onScriptChange,
 }: {
   definition: PluginDefinition;
   instance: TrackPluginInstance;
   onToggle: () => void;
   onRemove: () => void;
   onChange: (key: string, value: number) => void;
+  onScriptChange: (script: string) => void;
 }) {
   return (
     <section className={`rounded-md border p-2 transition-colors ${instance.enabled ? "border-[#4d6235]/60 bg-[#24272a]" : "border-black/40 bg-[#222226] opacity-70"}`}>
@@ -170,6 +183,41 @@ function PluginCard({
           <Trash2 size={12} />
         </button>
       </div>
+
+      {definition.id === "scripter" && (
+        <div className="mt-2 space-y-1.5">
+          <label className="block text-[9px] text-zinc-400" htmlFor={`midi-script-${instance.id}`}>
+            MIDI Script · one command per line
+          </label>
+          <textarea
+            id={`midi-script-${instance.id}`}
+            value={instance.script ?? ""}
+            disabled={!instance.enabled}
+            onPointerDown={() => useDAW.getState().commit()}
+            onChange={(event) => onScriptChange(event.target.value)}
+            spellCheck={false}
+            aria-label="MIDI Scripter program"
+            className="w-full min-h-28 resize-y rounded border border-black/50 bg-[#17171a] p-2 font-mono text-[10px] leading-relaxed text-[#c6e88a] outline-none focus:border-[#8fb44a]/60 disabled:opacity-40"
+          />
+          <p className={validateMidiScript(instance.script ?? "") ? "text-[9px] text-[#e69b85]" : "text-[9px] text-zinc-600"}>
+            {validateMidiScript(instance.script ?? "") ??
+              "Safe commands: transpose, chord, duplicate, repeat, scaleLock, velocityScale, velocityAdd, lengthScale and delay. No JavaScript execution."}
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {["transpose(12)", "chord(4, 7)", "duplicate(12, 0.7)", "scaleLock()"].map((snippet) => (
+              <button
+                key={snippet}
+                type="button"
+                disabled={!instance.enabled}
+                onClick={() => onScriptChange([instance.script?.trim(), snippet].filter(Boolean).join("\n"))}
+                className="rounded border border-black/40 bg-[#29292f] px-1.5 py-1 font-mono text-[8px] text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+              >
+                + {snippet}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {definition.controls.length > 0 && (
         <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2">
