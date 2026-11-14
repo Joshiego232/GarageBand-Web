@@ -21,6 +21,7 @@ try {
     "src/lib/daw/types.ts",
     "src/lib/daw/utils.ts",
     "src/lib/daw/plugins.ts",
+    "src/lib/daw/midi-scripter.ts",
     "src/lib/daw/routing.ts",
     "src/lib/daw/sampler.ts",
     "src/lib/daw/morph-synth.ts",
@@ -62,6 +63,9 @@ try {
 
   const dawPlugins = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/plugins.js")).href
+  );
+  const midiScripter = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/midi-scripter.js")).href
   );
   const { PATCHES } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/instruments.js")).href
@@ -566,13 +570,61 @@ try {
   );
 
   const humanizerInput = [note(60, 0, 960, 90), note(64, 240, 960, 80)];
-  const humanized = run(humanizerInput, instance("velocity-humanizer", { amount: 20 }));
-  const humanizedAgain = run(humanizerInput, instance("velocity-humanizer", { amount: 20 }));
+  const legacyHumanizer = {
+    id: "legacy-humanizer",
+    pluginId: "velocity-humanizer",
+    enabled: true,
+    params: { amount: 20 },
+  };
+  const humanized = run(humanizerInput, legacyHumanizer);
+  const humanizedAgain = run(humanizerInput, legacyHumanizer);
   expect(
     humanized.every((n, index) =>
       n.velocity >= 70 && n.velocity <= 110 && n.velocity === humanizedAgain[index].velocity
     ),
-    "Velocity Humanizer must be bounded and deterministic for repeatable playback",
+    "Legacy Velocity Humanizer projects must remain bounded and deterministic",
+  );
+
+  const scripterProgram = [
+    "transpose(12)",
+    "velocityScale(0.8)",
+    "lengthScale(0.5)",
+  ].join("\\n");
+  const scripted = run(
+    [note(60, 0, 960, 100)],
+    { ...instance("scripter"), script: scripterProgram },
+  );
+  expect(
+    scripted.length === 1 &&
+      scripted[0].pitch === 72 &&
+      scripted[0].velocity === 80 &&
+      scripted[0].length === 480,
+    "MIDI Scripter did not apply transpose, velocity and length commands",
+  );
+  const scriptedChord = run(
+    [note(60)],
+    { ...instance("scripter"), script: "chord(4, 7)" },
+  );
+  expect(
+    scriptedChord.map((item) => item.pitch).sort((a, b) => a - b).join(",") === "60,64,67",
+    "MIDI Scripter chord command did not create the expected triad",
+  );
+  const scriptedRepeat = run(
+    [note(60)],
+    { ...instance("scripter"), script: "repeat(3, 120)" },
+  );
+  expect(
+    scriptedRepeat.length === 3 &&
+      scriptedRepeat.map((item) => item.start).join(",") === "0,120,240",
+    "MIDI Scripter repeat command did not create the expected pattern",
+  );
+  expect(
+    midiScripter.validateMidiScript("fetch('https://example.com')") !== null,
+    "MIDI Scripter accepted arbitrary JavaScript instead of its safe command syntax",
+  );
+  expect(
+    midiScripter.validateMidiScript("transpose(12)") === null,
+    "MIDI Scripter rejected a valid transpose command",
   );
 
   const repeated = run(
@@ -620,7 +672,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins (including Scripter) and 10 audio plugins; MIDI processor behavior checks passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
