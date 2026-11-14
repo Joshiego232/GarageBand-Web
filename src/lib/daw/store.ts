@@ -282,13 +282,20 @@ export const useDAW = create<DAWState>((set, get) => ({
     get().commit();
     const project = get().project;
     const removed = project.tracks.find((track) => track.id === id);
-    const removedStackIds = (project.stacks ?? [])
-      .filter((stack) => stack.trackIds.includes(id))
-      .map((stack) => stack.id);
-    const removedStacks = (project.stacks ?? []).filter((stack) => removedStackIds.includes(stack.id));
+    const candidateStacks = (project.stacks ?? []).map((stack) => ({
+      ...stack,
+      trackIds: stack.trackIds.filter((trackId) => trackId !== id),
+    }));
+    const removedStackIds = new Set(
+      candidateStacks
+        .filter((stack) => stack.trackIds.length < 2 || stack.busTrackId === id)
+        .map((stack) => stack.id)
+    );
     const removedBusIds = new Set([
       ...(removed?.role === "aux" ? [id] : []),
-      ...removedStacks.flatMap((stack) => stack.busTrackId ? [stack.busTrackId] : []),
+      ...candidateStacks.flatMap((stack) =>
+        removedStackIds.has(stack.id) && stack.busTrackId ? [stack.busTrackId] : []
+      ),
     ]);
     const removedVcaId = removed?.role === "vca" ? id : null;
     const tracks = project.tracks
@@ -297,14 +304,9 @@ export const useDAW = create<DAWState>((set, get) => ({
         ...track,
         outputBusId: removedBusIds.has(track.outputBusId ?? "") ? null : track.outputBusId,
         vcaId: removedVcaId && track.vcaId === removedVcaId ? null : track.vcaId,
-        stackId: removedStackIds.includes(track.stackId ?? "") ? null : track.stackId,
+        stackId: removedStackIds.has(track.stackId ?? "") ? null : track.stackId,
       }));
-    const stacks = (project.stacks ?? [])
-      .filter((stack) => !removedStackIds.includes(stack.id))
-      .map((stack) => ({
-        ...stack,
-        trackIds: stack.trackIds.filter((trackId) => trackId !== id),
-      }));
+    const stacks = candidateStacks.filter((stack) => !removedStackIds.has(stack.id));
     set({
       project: { ...project, tracks, stacks },
       ui: {
@@ -481,34 +483,41 @@ export const useDAW = create<DAWState>((set, get) => ({
       ...(busTrackId ? { busTrackId } : {}),
     };
 
-    const stacks = (project.stacks ?? []).filter(
-      (existing) => !uniqueIds.some((id) => existing.trackIds.includes(id))
-    );
+    const remainingStacks = (project.stacks ?? []).map((existing) => ({
+      ...existing,
+      trackIds: existing.trackIds.filter((id) => !uniqueIds.includes(id)),
+    }));
     const removedStackIds = new Set(
-      (project.stacks ?? [])
-        .filter((existing) => !stacks.some((kept) => kept.id === existing.id))
+      remainingStacks
+        .filter((existing) => existing.trackIds.length < 2)
         .map((existing) => existing.id)
     );
-    tracks = tracks.map((track) => {
-      const belongs = uniqueIds.includes(track.id);
-      if (belongs) {
-        return {
-          ...track,
-          stackId,
-          ...(busTrackId ? { outputBusId: busTrackId } : {}),
-        };
-      }
-      if (removedStackIds.has(track.stackId ?? "")) {
-        return {
-          ...track,
-          stackId: null,
-          ...(project.stacks?.find((item) => item.id === track.stackId)?.busTrackId === track.outputBusId
-            ? { outputBusId: null }
-            : {}),
-        };
-      }
-      return track;
-    });
+    const removedBusIds = new Set(
+      remainingStacks.flatMap((existing) =>
+        removedStackIds.has(existing.id) && existing.busTrackId ? [existing.busTrackId] : []
+      )
+    );
+    const stacks = remainingStacks.filter((existing) => !removedStackIds.has(existing.id));
+    tracks = tracks
+      .filter((track) => !removedBusIds.has(track.id))
+      .map((track) => {
+        const belongs = uniqueIds.includes(track.id);
+        if (belongs) {
+          return {
+            ...track,
+            stackId,
+            ...(busTrackId ? { outputBusId: busTrackId } : {}),
+          };
+        }
+        if (removedStackIds.has(track.stackId ?? "")) {
+          return {
+            ...track,
+            stackId: null,
+            ...(removedBusIds.has(track.outputBusId ?? "") ? { outputBusId: null } : {}),
+          };
+        }
+        return track;
+      });
 
     set({
       project: { ...project, tracks, stacks: [...stacks, stack] },
