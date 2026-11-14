@@ -327,6 +327,7 @@ export function emptyProject(name = "My Song"): Project {
     countIn: true,
     metronome: false,
     masterVolume: 0.9,
+    audioOutputDeviceId: null,
     tracks: [],
     stacks: [],
     alternatives: [],
