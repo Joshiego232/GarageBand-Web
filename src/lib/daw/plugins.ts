@@ -50,8 +50,8 @@ export const MIDI_PLUGIN_DEFS: PluginDefinition[] = [
 export const AUDIO_PLUGIN_DEFS: PluginDefinition[] = [
   { id: "eq", name: "Channel EQ", description: "Three-band low, mid and high equalizer.", controls: [control("mix", "Amount", 0, 1, 1, 0.05)] },
   { id: "compressor", name: "Compressor", description: "Controls vocal and instrument dynamics.", controls: [control("threshold", "Threshold", -36, 0, -18), control("ratio", "Ratio", 1, 12, 3, 0.5)] },
-  { id: "noise-gate", name: "Noise Gate", description: "Reduces low-level room noise between phrases.", controls: [control("threshold", "Threshold", -70, -20, -48)] },
-  { id: "de-esser", name: "De-Esser", description: "Tames harsh sibilance in vocal recordings.", controls: [control("frequency", "Frequency", 4000, 10000, 6800, 100), control("reduction", "Reduction", 0, 12, 5)] },
+  { id: "high-pass", name: "High-Pass Filter", description: "Removes low-frequency rumble from vocals and recordings.", controls: [control("frequency", "Cutoff", 20, 320, 80, 5)] },
+  { id: "de-esser", name: "Sibilance Tamer", description: "Uses a focused upper-frequency cut to soften harsh sibilance.", controls: [control("frequency", "Frequency", 4000, 10000, 6800, 100), control("reduction", "Reduction", 0, 12, 5)] },
   { id: "presence", name: "Vocal Presence", description: "Adds controlled clarity and intelligibility in the upper mids.", controls: [control("frequency", "Frequency", 1500, 6000, 3200, 100), control("gain", "Gain", 0, 8, 2, 0.5)] },
   { id: "saturation", name: "Tape Saturation", description: "Adds harmonic warmth and gentle drive.", controls: [control("drive", "Drive", 0, 1, 0.28, 0.02)] },
   { id: "chorus", name: "Stereo Chorus", description: "Adds modulated width and gentle movement.", controls: [control("rate", "Rate", 0.1, 2, 0.7, 0.05), control("depth", "Depth", 0, 1, 0.45, 0.05)] },
