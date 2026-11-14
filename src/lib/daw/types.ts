@@ -90,6 +90,11 @@ export interface Track {
   icon: string; // icon key from INSTRUMENTS or 'mic' for audio
   color: string; // hex
   instrument: string; // patch id for midi tracks
+  /** IndexedDB sample key for a user-created Quick Sampler instrument. */
+  sampleBufferId?: string;
+  sampleRootPitch?: number;
+  samplePlaybackMode?: "one-shot" | "loop";
+  sampleName?: string;
   volume: number; // 0..1.25 (1 = 0 dB)
   pan: number; // -1..1
   mute: boolean;
