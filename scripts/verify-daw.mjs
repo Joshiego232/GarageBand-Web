@@ -187,6 +187,34 @@ try {
     "Screenset did not restore the saved workspace layout",
   );
 
+  // Verify Quick Swipe comping replaces aligned audio takes atomically.
+  useDAW.getState().addTrack({ type: "audio", name: "Comp Test Track" });
+  const compTrack = useDAW.getState().project.tracks.find((track) => track.name === "Comp Test Track");
+  expect(!!compTrack, "Could not create audio comp test track");
+  const takeA = {
+    id: "take-a", trackId: compTrack.id, type: "audio", name: "Take A",
+    start: 0, length: 3840, bufferId: "take-buffer-a",
+    sampleStart: 0, sampleLength: 8, gain: 1,
+  };
+  const takeB = {
+    ...takeA, id: "take-b", name: "Take B", bufferId: "take-buffer-b",
+  };
+  useDAW.getState().addRegion(takeA);
+  useDAW.getState().addRegion(takeB);
+  const compSegment = {
+    ...takeB, id: "comp-segment-1", name: "Comp 1", start: 0, length: 1920,
+    sampleStart: 2, sampleLength: 4,
+  };
+  useDAW.getState().createAudioComp(compTrack.id, [takeA.id, takeB.id], [compSegment]);
+  const compRegions = useDAW.getState().project.tracks.find((track) => track.id === compTrack.id)?.regions ?? [];
+  expect(
+    compRegions.length === 1 &&
+      compRegions[0].id === compSegment.id &&
+      compRegions[0].bufferId === takeB.bufferId &&
+      compRegions[0].sampleStart === 2,
+    "Quick Swipe comp did not replace the take lanes with the selected source segment",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -356,7 +384,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets and solo checks passed.`,
+    `DAW verification passed: ${Object.values(PATCHES).length} sampled instruments across ${categories.size} families; 10 MIDI plugins and 10 audio plugins; all 10 MIDI processors passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
