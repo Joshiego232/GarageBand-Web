@@ -1,0 +1,750 @@
+// ============================================================
+// Central DAW state (zustand). UI reads project + ui; all edits
+// flow through actions with automatic undo/redo snapshots.
+// ============================================================
+"use client";
+
+import { create } from "zustand";
+import {
+  PPQ,
+  DEFAULT_EQ,
+  TRACK_SIZES,
+  uid,
+  type Project,
+  type Track,
+  type Region,
+  type Note,
+  type UIState,
+  type TransportState,
+  type TrackSize,
+  type PanelKey,
+  type ModalKind,
+  type EditorMode,
+  type SnapMode,
+  type Tool,
+  type EqSettings,
+} from "./types";
+import { emptyProject, makeTrack } from "./loops";
+import { PATCHES, defaultParams } from "./instruments";
+import { clamp, barTicks, snapTicks, snapTick } from "./utils";
+
+interface DAWState {
+  project: Project;
+  ui: UIState;
+  transport: TransportState;
+  past: Project[];
+  future: Project[];
+
+  // history
+  commit: () => void;
+  undo: () => void;
+  redo: () => void;
+
+  // project meta
+  loadProject: (p: Project) => void;
+  setProjectName: (name: string) => void;
+  setTempo: (bpm: number) => void;
+  setTimeSig: (n: number, d: number) => void;
+  setKey: (tonic: number, mode: "major" | "minor") => void;
+  setCycle: (on: boolean, start?: number, end?: number) => void;
+  setMasterVolume: (v: number) => void;
+  setCountIn: (on: boolean) => void;
+  setMetronome: (on: boolean) => void;
+
+  // transport mirror
+  setTransport: (t: Partial<TransportState>) => void;
+
+  // tracks
+  addTrack: (partial: Partial<Track> & { type: "midi" | "audio" }) => void;
+  addTracks: (tracks: Partial<Track> & { type: "midi" | "audio" }[]) => void;
+  removeTrack: (id: string) => void;
+  duplicateTrack: (id: string) => void;
+  updateTrack: (id: string, patch: Partial<Track>, commit?: boolean) => void;
+  setTrackInstrument: (id: string, instrument: string) => void;
+  selectTrack: (id: string | null) => void;
+  toggleTrackMute: (id: string) => void;
+  toggleTrackSolo: (id: string) => void;
+
+  // regions
+  addRegion: (region: Region) => void;
+  addRegions: (regions: Region[]) => void;
+  removeRegions: (ids: string[]) => void;
+  moveRegions: (ids: string[], deltaTick: number, toTrackId?: string) => void;
+  setRegionStart: (id: string, start: number, length?: number) => void;
+  updateRegion: (id: string, patch: Partial<Region>, commit?: boolean) => void;
+  updateRegions: (ids: string[], patch: Partial<Region>) => void;
+  duplicateRegions: (ids: string[]) => void;
+  splitRegionsAt: (tick: number) => void;
+  joinRegions: (ids: string[]) => void;
+  toggleRegionLoop: (ids: string[]) => void;
+  transposeRegions: (ids: string[], semitones: number) => void;
+  shiftRegionVelocity: (ids: string[], delta: number) => void;
+  quantizeRegions: (ids: string[], gridTicks: number) => void;
+
+  // notes (piano roll)
+  addNote: (regionId: string, note: Omit<Note, "id">) => void;
+  updateNotes: (regionId: string, ids: string[], patch: Partial<Note>) => void;
+  moveNotes: (regionId: string, ids: string[], deltaTick: number, deltaPitch: number) => void;
+  removeNotes: (regionId: string, ids: string[]) => void;
+  quantizeNotes: (regionId: string, ids: string[], gridTicks: number) => void;
+
+  // selection + ui
+  selectRegion: (id: string | null, additive?: boolean) => void;
+  selectRegions: (ids: string[]) => void;
+  selectNote: (id: string | null, additive?: boolean) => void;
+  setUI: (patch: Partial<UIState>) => void;
+  setTool: (tool: Tool) => void;
+  setSnap: (snap: SnapMode) => void;
+  setZoom: (zoom: number) => void;
+  setTrackSize: (size: TrackSize) => void;
+  togglePanel: (key: PanelKey) => void;
+  setEditorMode: (mode: EditorMode) => void;
+  setModal: (modal: ModalKind) => void;
+  openRegionInEditor: (regionId: string) => void;
+}
+
+function cloneProject(p: Project): Project {
+  return JSON.parse(JSON.stringify(p)) as Project;
+}
+
+function mapRegions(
+  project: Project,
+  ids: string[],
+  fn: (r: Region) => Region | null
+): Project {
+  const idSet = new Set(ids);
+  const tracks = project.tracks.map((t) => ({
+    ...t,
+    regions: t.regions.flatMap((r) => {
+      if (!idSet.has(r.id)) return [r];
+      const next = fn(r);
+      return next ? [next] : [];
+    }),
+  }));
+  return { ...project, tracks };
+}
+
+function findRegion(project: Project, id: string): { track: Track; region: Region } | null {
+  for (const t of project.tracks) {
+    for (const r of t.regions) {
+      if (r.id === id) return { track: t, region: r };
+    }
+  }
+  return null;
+}
+
+const initialUI: UIState = {
+  tool: "pointer",
+  snap: "smart",
+  zoom: 56,
+  trackSize: "M",
+  selectedTrackId: null,
+  selectedRegionIds: [],
+  selectedNoteIds: [],
+  panels: {
+    library: true,
+    loops: false,
+    mixer: false,
+    editor: false,
+    keyboard: false,
+    help: false,
+  },
+  editorMode: "smart",
+  editorRegionId: null,
+  modal: "none",
+  followPlayhead: true,
+  musicalTyping: false,
+  octaveBase: 3,
+  velocity: 96,
+};
+
+export const useDAW = create<DAWState>((set, get) => ({
+  project: emptyProject(),
+  ui: initialUI,
+  transport: { playing: false, recording: false, countInRemaining: 0 },
+  past: [],
+  future: [],
+
+  commit: () => {
+    const { project, past } = get();
+    set({ past: [...past.slice(-59), cloneProject(project)], future: [] });
+  },
+
+  undo: () => {
+    const { past, future, project } = get();
+    if (past.length === 0) return;
+    const prev = past[past.length - 1];
+    set({
+      project: prev,
+      past: past.slice(0, -1),
+      future: [cloneProject(project), ...future.slice(0, 59)],
+    });
+  },
+
+  redo: () => {
+    const { past, future, project } = get();
+    if (future.length === 0) return;
+    const next = future[0];
+    set({
+      project: next,
+      past: [...past, cloneProject(project)],
+      future: future.slice(1),
+    });
+  },
+
+  // ---------------- project meta ----------------
+
+  loadProject: (p) => {
+    set({
+      project: p,
+      past: [],
+      future: [],
+      ui: { ...get().ui, selectedRegionIds: [], selectedNoteIds: [], selectedTrackId: p.tracks[0]?.id ?? null, modal: "none", editorRegionId: null },
+    });
+  },
+
+  setProjectName: (name) => set({ project: { ...get().project, name } }),
+
+  setTempo: (bpm) => {
+    set({ project: { ...get().project, tempo: clamp(Math.round(bpm), 30, 260) } });
+  },
+
+  setTimeSig: (n, d) => set({ project: { ...get().project, timeSig: [clamp(n, 1, 12), d] } }),
+
+  setKey: (tonic, mode) => set({ project: { ...get().project, keyTonic: ((tonic % 12) + 12) % 12, keyMode: mode } }),
+
+  setCycle: (on, start, end) => {
+    const p = get().project;
+    set({
+      project: {
+        ...p,
+        cycleOn: on,
+        cycleStart: start !== undefined ? Math.max(0, start) : p.cycleStart,
+        cycleEnd: end !== undefined ? Math.max(end ?? 0, (start ?? p.cycleStart) + PPQ) : p.cycleEnd,
+      },
+    });
+  },
+
+  setMasterVolume: (v) => set({ project: { ...get().project, masterVolume: clamp(v, 0, 1.25) } }),
+
+  setCountIn: (on) => set({ project: { ...get().project, countIn: on } }),
+
+  setMetronome: (on) => set({ project: { ...get().project, metronome: on } }),
+
+  setTransport: (t) => set({ transport: { ...get().transport, ...t } }),
+
+  // ---------------- tracks ----------------
+
+  addTrack: (partial) => {
+    get().commit();
+    const track = makeTrack(partial);
+    set({
+      project: { ...get().project, tracks: [...get().project.tracks, track] },
+      ui: { ...get().ui, selectedTrackId: track.id, selectedRegionIds: [] },
+    });
+  },
+
+  addTracks: (partials) => {
+    get().commit();
+    const tracks = partials.map((p) => makeTrack(p));
+    set({
+      project: { ...get().project, tracks: [...get().project.tracks, ...tracks] },
+      ui: { ...get().ui, selectedTrackId: tracks[tracks.length - 1]?.id ?? get().ui.selectedTrackId },
+    });
+  },
+
+  removeTrack: (id) => {
+    get().commit();
+    const project = get().project;
+    const tracks = project.tracks.filter((t) => t.id !== id);
+    set({
+      project: { ...project, tracks },
+      ui: {
+        ...get().ui,
+        selectedTrackId: tracks[0]?.id ?? null,
+        selectedRegionIds: get().ui.selectedRegionIds.filter((rid) => !tracks.some((t) => t.regions.some((r) => r.id === rid))),
+      },
+    });
+  },
+
+  duplicateTrack: (id) => {
+    get().commit();
+    const project = get().project;
+    const idx = project.tracks.findIndex((t) => t.id === id);
+    if (idx < 0) return;
+    const src = project.tracks[idx];
+    const copy: Track = JSON.parse(JSON.stringify(src));
+    copy.id = uid();
+    copy.name = `${src.name} Copy`;
+    for (const r of copy.regions) {
+      r.id = uid();
+      r.trackId = copy.id;
+      if (r.notes) r.notes = r.notes.map((n) => ({ ...n, id: uid() }));
+    }
+    const tracks = [...project.tracks];
+    tracks.splice(idx + 1, 0, copy);
+    set({ project: { ...project, tracks }, ui: { ...get().ui, selectedTrackId: copy.id } });
+  },
+
+  updateTrack: (id, patch, doCommit = true) => {
+    if (doCommit) get().commit();
+    const project = get().project;
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+      },
+    });
+  },
+
+  setTrackInstrument: (id, instrument) => {
+    get().commit();
+    const project = get().project;
+    const patch = PATCHES[instrument];
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                instrument,
+                params: { ...defaultParams(instrument) },
+                icon: patch?.icon ?? t.icon,
+                name: t.type === "midi" ? patch?.name ?? t.name : t.name,
+              }
+            : t
+        ),
+      },
+    });
+  },
+
+  selectTrack: (id) => set({ ui: { ...get().ui, selectedTrackId: id, selectedNoteIds: [] } }),
+
+  toggleTrackMute: (id) => {
+    const t = get().project.tracks.find((x) => x.id === id);
+    if (t) get().updateTrack(id, { mute: !t.mute }, false);
+  },
+
+  toggleTrackSolo: (id) => {
+    const t = get().project.tracks.find((x) => x.id === id);
+    if (t) get().updateTrack(id, { solo: !t.solo }, false);
+  },
+
+  // ---------------- regions ----------------
+
+  addRegion: (region) => {
+    get().commit();
+    const project = get().project;
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) =>
+          t.id === region.trackId ? { ...t, regions: [...t.regions, region] } : t
+        ),
+      },
+      ui: { ...get().ui, selectedRegionIds: [region.id], selectedTrackId: region.trackId, selectedNoteIds: [] },
+    });
+  },
+
+  addRegions: (regions) => {
+    get().commit();
+    const project = get().project;
+    const trackMap = new Map<string, Region[]>();
+    for (const r of regions) {
+      const arr = trackMap.get(r.trackId) ?? [];
+      arr.push(r);
+      trackMap.set(r.trackId, arr);
+    }
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((t) =>
+          trackMap.has(t.id) ? { ...t, regions: [...t.regions, ...(trackMap.get(t.id) ?? [])] } : t
+        ),
+      },
+      ui: { ...get().ui, selectedRegionIds: regions.map((r) => r.id), selectedTrackId: regions[regions.length - 1]?.trackId ?? get().ui.selectedTrackId },
+    });
+  },
+
+  removeRegions: (ids) => {
+    get().commit();
+    const project = get().project;
+    set({ project: mapRegions(project, ids, () => null) });
+    set({ ui: { ...get().ui, selectedRegionIds: [], editorRegionId: null } });
+  },
+
+  moveRegions: (ids, deltaTick, toTrackId) => {
+    const project = get().project;
+    const idSet = new Set(ids);
+    // collect info
+    const moving = new Map<string, { type: string }>();
+    for (const t of project.tracks) {
+      for (const r of t.regions) if (idSet.has(r.id)) moving.set(r.id, { type: r.type });
+    }
+    const targetTrack = toTrackId ? project.tracks.find((t) => t.id === toTrackId) : null;
+    const tracks = project.tracks.map((t) => {
+      const grabbed = t.regions.filter((r) => idSet.has(r.id));
+      if (!grabed.length) {
+        return targetTrack && t.id === targetTrack.id
+          ? t // target handled below
+          : t;
+      }
+      if (targetTrack && targetTrack.id === t.id) {
+        // move within same track
+        return {
+          ...t,
+          regions: t.regions.map((r) => (idSet.has(r.id) ? { ...r, start: Math.max(0, r.start + deltaTick) } : r)),
+        };
+      }
+      // remove from this track
+      return { ...t, regions: t.regions.filter((r) => !idSet.has(r.id)) };
+    });
+    if (targetTrack) {
+      const ti = tracks.findIndex((t) => t.id === targetTrack.id);
+      const additions = [] as Region[];
+      for (const tr of project.tracks) {
+        for (const r of tr.regions) {
+          if (idSet.has(r.id)) {
+            // type check: midi can move to midi; audio to audio
+            if (r.type === (targetTrack.type === "audio" ? "audio" : "midi")) {
+              additions.push({ ...r, trackId: targetTrack.id, start: Math.max(0, r.start + deltaTick) });
+            } else {
+              additions.push(r);
+            }
+          }
+        }
+      }
+      if (ti >= 0) tracks[ti] = { ...tracks[ti], regions: [...tracks[ti].regions, ...additions.filter((a) => a.trackId === targetTrack.id)] };
+      // put back regions that couldn't move
+      for (const a of additions) {
+        if (a.trackId !== targetTrack.id) {
+          const oi = tracks.findIndex((t) => t.id === a.trackId);
+          if (oi >= 0) tracks[oi] = { ...tracks[oi], regions: [...tracks[oi].regions, a] };
+        }
+      }
+    }
+    set({ project: { ...project, tracks } });
+  },
+
+  setRegionStart: (id, start, length) => {
+    const project = get().project;
+    set({ project: mapRegions(project, [id], (r) => ({ ...r, start: Math.max(0, start), length: length ?? r.length })) });
+  },
+
+  updateRegion: (id, patch, doCommit = true) => {
+    if (doCommit) get().commit();
+    const project = get().project;
+    set({ project: mapRegions(project, [id], (r) => ({ ...r, ...patch })) });
+  },
+
+  updateRegions: (ids, patch) => {
+    const project = get().project;
+    set({ project: mapRegions(project, ids, (r) => ({ ...r, ...patch })) });
+  },
+
+  duplicateRegions: (ids) => {
+    get().commit();
+    const project = get().project;
+    const idSet = new Set(ids);
+    const newIds: string[] = [];
+    const tracks = project.tracks.map((t) => {
+      const copies: Region[] = [];
+      for (const r of t.regions) {
+        if (!idSet.has(r.id)) continue;
+        const copy: Region = JSON.parse(JSON.stringify(r));
+        copy.id = uid();
+        copy.start = r.start + r.length;
+        if (copy.notes) copy.notes = copy.notes.map((n) => ({ ...n, id: uid() }));
+        newIds.push(copy.id);
+        copies.push(copy);
+      }
+      return copies.length ? { ...t, regions: [...t.regions, ...copies] } : t;
+    });
+    set({ project: { ...project, tracks }, ui: { ...get().ui, selectedRegionIds: newIds } });
+  },
+
+  splitRegionsAt: (tick) => {
+    get().commit();
+    const project = get().project;
+    const tracks = project.tracks.map((t) => {
+      const out: Region[] = [];
+      let changed = false;
+      for (const r of t.regions) {
+        if (tick > r.start + 8 && tick < r.start + r.length - 8) {
+          changed = true;
+          const left: Region = { ...r, length: tick - r.start };
+          const right: Region = { ...r, id: uid(), start: tick, length: r.start + r.length - tick };
+          if (r.type === "midi" && r.notes) {
+            left.notes = r.notes.filter((n) => n.start < tick - r.start).map((n) => ({ ...n, length: Math.min(n.length, tick - r.start - n.start) }));
+            const shift = tick - r.start;
+            right.notes = r.notes
+              .filter((n) => n.start + n.length > shift)
+              .map((n) => {
+                const cut = Math.max(0, shift - n.start);
+                return { ...n, id: uid(), start: n.start - shift, length: n.length - cut };
+              });
+          }
+          if (r.type === "audio") {
+            const secPerTick = 60 / project.tempo / PPQ;
+            const cutSec = (tick - r.start) * secPerTick;
+            left.sampleLength = cutSec;
+            left.fadeOut = Math.min(r.fadeOut ?? 0, Math.max(0, cutSec));
+            right.sampleStart = (r.sampleStart ?? 0) + cutSec;
+            right.sampleLength = (r.sampleLength ?? 0) - cutSec;
+            right.fadeIn = Math.min(r.fadeIn ?? 0, Math.max(0, (r.sampleLength ?? 0)));
+          }
+          out.push(left, right);
+        } else {
+          out.push(r);
+        }
+      }
+      return changed ? { ...t, regions: out } : t;
+    });
+    set({ project: { ...project, tracks } });
+  },
+
+  joinRegions: (ids) => {
+    get().commit();
+    const project = get().project;
+    // group by track, must be adjacent midi regions
+    const groups = new Map<string, Region[]>();
+    for (const t of project.tracks) {
+      for (const r of t.regions) {
+        if (ids.includes(r.id)) {
+          const arr = groups.get(t.id) ?? [];
+          arr.push(r);
+          groups.set(t.id, arr);
+        }
+      }
+    }
+    const tracks = project.tracks.map((t) => {
+      const group = groups.get(t.id);
+      if (!group || group.length < 2) return t;
+      const sorted = [...group].sort((a, b) => a.start - b.start);
+      const first = sorted[0];
+      const merged: Region = { ...first, length: Math.max(...sorted.map((r) => r.start + r.length)) - first.start };
+      merged.length = sorted[sorted.length - 1].start + sorted[sorted.length - 1].length - first.start;
+      if (first.type === "midi") {
+        const notes: Note[] = [];
+        for (const r of sorted) {
+          const shift = r.start - first.start;
+          for (const n of r.notes ?? []) {
+            notes.push({ ...n, start: n.start + shift });
+          }
+        }
+        merged.notes = notes;
+        merged.looped = false;
+      }
+      const idSet = new Set(ids);
+      const kept = t.regions.filter((r) => !idSet.has(r.id));
+      return { ...t, regions: [...kept, merged] };
+    });
+    set({ project: { ...project, tracks }, ui: { ...get().ui, selectedRegionIds: [] } });
+  },
+
+  toggleRegionLoop: (ids) => {
+    get().commit();
+    const project = get().project;
+    const first = findRegion(project, ids[0])?.region;
+    const makeLooped = !(first?.looped ?? false);
+    set({
+      project: mapRegions(project, ids, (r) => ({
+        ...r,
+        looped: makeLooped,
+        coreLength: makeLooped ? (r.coreLength ?? r.notes ? contentExtent(r) : r.length) : r.coreLength,
+      })),
+    });
+  },
+
+  transposeRegions: (ids, semitones) => {
+    const project = get().project;
+    set({
+      project: mapRegions(project, ids, (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) => ({ ...n, pitch: clamp(n.pitch + semitones, 0, 127) })),
+      })),
+    });
+  },
+
+  shiftRegionVelocity: (ids, delta) => {
+    const project = get().project;
+    set({
+      project: mapRegions(project, ids, (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) => ({ ...n, velocity: clamp(n.velocity + delta, 1, 127) })),
+      })),
+    });
+  },
+
+  quantizeRegions: (ids, gridTicks) => {
+    const project = get().project;
+    set({
+      project: mapRegions(project, ids, (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) => ({ ...n, start: snapTick(n.start, gridTicks) })),
+      })),
+    });
+  },
+
+  // ---------------- notes ----------------
+
+  addNote: (regionId, note) => {
+    const project = get().project;
+    set({
+      project: mapRegions(project, [regionId], (r) => ({
+        ...r,
+        notes: [...(r.notes ?? []), { ...note, id: uid() }],
+      })),
+    });
+    // select the new note
+    const reg = findRegion(get().project, regionId)?.region;
+    if (reg?.notes?.length) {
+      set({ ui: { ...get().ui, selectedNoteIds: [reg.notes[reg.notes.length - 1].id] } });
+    }
+  },
+
+  updateNotes: (regionId, ids, patch) => {
+    const project = get().project;
+    const idSet = new Set(ids);
+    set({
+      project: mapRegions(project, [regionId], (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) => (idSet.has(n.id) ? { ...n, ...patch } : n)),
+      })),
+    });
+  },
+
+  moveNotes: (regionId, ids, deltaTick, deltaPitch) => {
+    const project = get().project;
+    const idSet = new Set(ids);
+    set({
+      project: mapRegions(project, [regionId], (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) =>
+          idSet.has(n.id)
+            ? {
+                ...n,
+                start: Math.max(0, n.start + deltaTick),
+                pitch: clamp(n.pitch + deltaPitch, 0, 127),
+              }
+            : n
+        ),
+      })),
+    });
+  },
+
+  removeNotes: (regionId, ids) => {
+    const project = get().project;
+    const idSet = new Set(ids);
+    set({
+      project: mapRegions(project, [regionId], (r) => ({
+        ...r,
+        notes: (r.notes ?? []).filter((n) => !idSet.has(n.id)),
+      })),
+    });
+    set({ ui: { ...get().ui, selectedNoteIds: [] } });
+  },
+
+  quantizeNotes: (regionId, ids, gridTicks) => {
+    const project = get().project;
+    const idSet = new Set(ids);
+    set({
+      project: mapRegions(project, [regionId], (r) => ({
+        ...r,
+        notes: (r.notes ?? []).map((n) => (idSet.has(n.id) ? { ...n, start: snapTick(n.start, gridTicks) } : n)),
+      })),
+    });
+  },
+
+  // ---------------- selection + ui ----------------
+
+  selectRegion: (id, additive) => {
+    const ui = get().ui;
+    if (id === null) {
+      set({ ui: { ...ui, selectedRegionIds: [], selectedNoteIds: [] } });
+      return;
+    }
+    if (additive) {
+      const has = ui.selectedRegionIds.includes(id);
+      set({
+        ui: {
+          ...ui,
+          selectedRegionIds: has ? ui.selectedRegionIds.filter((x) => x !== id) : [...ui.selectedRegionIds, id],
+          selectedNoteIds: [],
+        },
+      });
+    } else {
+      const region = findRegion(get().project, id);
+      set({
+        ui: {
+          ...ui,
+          selectedRegionIds: [id],
+          selectedTrackId: region?.track.id ?? ui.selectedTrackId,
+          selectedNoteIds: [],
+        },
+      });
+    }
+  },
+
+  selectRegions: (ids) => set({ ui: { ...get().ui, selectedRegionIds: ids, selectedNoteIds: [] } }),
+
+  selectNote: (id, additive) => {
+    const ui = get().ui;
+    if (id === null) {
+      set({ ui: { ...ui, selectedNoteIds: [] } });
+      return;
+    }
+    if (additive) {
+      const has = ui.selectedNoteIds.includes(id);
+      set({ ui: { ...ui, selectedNoteIds: has ? ui.selectedNoteIds.filter((x) => x !== id) : [...ui.selectedNoteIds, id] } });
+    } else {
+      set({ ui: { ...ui, selectedNoteIds: [id] } });
+    }
+  },
+
+  setUI: (patch) => set({ ui: { ...get().ui, ...patch } }),
+
+  setTool: (tool) => set({ ui: { ...get().ui, tool } }),
+
+  setSnap: (snap) => set({ ui: { ...get().ui, snap } }),
+
+  setZoom: (zoom) => set({ ui: { ...get().ui, zoom: clamp(zoom, 8, 640) } }),
+
+  setTrackSize: (size) => set({ ui: { ...get().ui, trackSize: size } }),
+
+  togglePanel: (key) => {
+    const ui = get().ui;
+    set({ ui: { ...ui, panels: { ...ui.panels, [key]: !ui.panels[key] } } });
+  },
+
+  setEditorMode: (mode) => set({ ui: { ...get().ui, editorMode: mode, panels: { ...get().ui.panels, editor: true } } }),
+
+  setModal: (modal) => set({ ui: { ...get().ui, modal } }),
+
+  openRegionInEditor: (regionId) => {
+    const found = findRegion(get().project, regionId);
+    if (!found) return;
+    set({
+      ui: {
+        ...get().ui,
+        editorRegionId: regionId,
+        selectedRegionIds: [regionId],
+        selectedTrackId: found.track.id,
+        panels: { ...get().ui.panels, editor: true },
+        editorMode: found.region.type === "midi" ? "piano" : "audio",
+      },
+    });
+  },
+}));
+
+function contentExtent(r: Region): number {
+  const notes = r.notes ?? [];
+  if (!notes.length) return r.length;
+  return Math.max(...notes.map((n) => n.start + n.length));
+}
+
+/** Convenience selector: layout constants */
+export function trackHeight(size: TrackSize): number {
+  return TRACK_SIZES[size];
+}

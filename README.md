@@ -1,7 +1,85 @@
 # GarageBand Web Studio
 
-An original browser-based digital audio workstation for Windows, macOS and ChromeOS. The application combines a full-featured Next.js DAW with selected workflows from Soundstage, including a 16-step drum sequencer and Soundstage project JSON interchange.
+An original browser-based digital audio workstation for Windows, macOS and ChromeOS. It combines the full-stack Next.js studio with selected creative workflows from the Soundstage DAW project in one application.
 
-The merged source is being staged on a review branch. See the pull request for the complete application, setup instructions, sample attribution, and known limitations.
+> This project is not affiliated with Apple. It does not include Apple's proprietary GarageBand/Logic assets or sound packs.
 
-This project is not affiliated with Apple and does not include Apple's proprietary GarageBand or Logic assets.
+## What is in the merged app
+
+- **Multitrack DAW workspace:** timeline, MIDI and audio regions, transport, loop/cycle, piano roll, mixer, EQ, sends, recording, library, and song management.
+- **Soundstage workflow additions:** 16-step drum sequencer for MIDI drum tracks, plus import and export of Soundstage `.soundstage.json` project files.
+- **Shared MIDI model:** step-sequencer hits are stored as MIDI notes, so they remain editable in the piano roll and work with playback and WAV rendering.
+- **Sampled instruments:** velocity-layered Splendid Grand Piano samples for Grand Piano/Bright Piano, and a FluidR3 GM orchestral String Ensemble soundfont. The original Web Audio patches remain as a fallback while samples load or when offline/network loading is unavailable.
+- **Full-stack song storage:** Next.js API routes backed by Prisma and SQLite for saving and retrieving project JSON.
+- **Audio output:** Web Audio playback, microphone recording where the browser permits it, WAV bounce, MIDI export, and audio-file import.
+
+## Technology
+
+- Next.js App Router, React, TypeScript
+- Web Audio API and `smplr` sample playback
+- Zustand project state
+- Prisma + SQLite saved-song API
+- Tailwind CSS and shadcn-style UI components
+
+## Run locally
+
+1. Install Node.js 22 or newer.
+2. Copy `.env.example` to `.env` and leave the SQLite URL as-is for a local database.
+3. Install dependencies and generate the Prisma client:
+
+   ```bash
+   npm install
+   npx prisma generate
+   npx prisma db push
+   ```
+
+4. Start the development server:
+
+   ```bash
+   npm run dev
+   ```
+
+5. Open `http://localhost:3000`.
+
+Production build:
+
+```bash
+npm run lint
+npm run typecheck
+npm run build
+npm start
+```
+
+Microphone recording requires HTTPS (or localhost), browser permission and a supported input device. Sampled patches need network access on first load; the sampler caches decoded samples for the current browser audio session. If a sample source cannot be reached, the app falls back to its built-in synthesis patches.
+
+## Soundstage project interchange
+
+Use **File → Import Soundstage Project JSON…** or **File → Export Soundstage Project JSON…**. MIDI tracks, regions, notes, tempo, meter, project key, loop settings, mixer settings and supported drum patterns are translated to the native DAW model.
+
+Soundstage JSON files do not contain their IndexedDB audio blobs. Audio clips therefore cannot be transferred through the JSON bridge; import the original audio files again after moving a session. Native audio assets stay in the browser's local storage and are not uploaded to GitHub.
+
+## Backend and account security status
+
+The current full-stack backend is a **single-instance Prisma/SQLite saved-song API**. It is suitable for local development or a controlled personal deployment, but it does **not** yet include user authentication, per-user ownership, cloud object storage, multi-device sync, or row-level security. Do not expose the saved-song API as a multi-user public service until authentication and authorization are added. Those account/cloud features remain future work rather than being represented as complete.
+
+The app is local-first for audio media. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
+
+## Sample credits and licenses
+
+- **Piano:** Splendid Grand Piano, using AKAI piano samples released to the public domain by the Splendid Grand Piano sample project. See [sfzinstruments/SplendidGrandPiano](https://github.com/sfzinstruments/SplendidGrandPiano).
+- **Orchestral strings:** FluidR3 GM soundfont, credited to Frank Wen and contributors and distributed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/). The sample-loading code requests the `string_ensemble_1` General MIDI program from the FluidR3 GM set.
+- **Sampler engine:** [`smplr`](https://github.com/danigb/smplr), used as a Web Audio sample playback library. See its repository for its own license and notices.
+
+See [`docs/SAMPLE_ATTRIBUTION.md`](docs/SAMPLE_ATTRIBUTION.md) for the asset-level notes.
+
+## Repository layout
+
+- `src/app` — Next.js application and saved-song API routes
+- `src/components/daw` — timeline, editor, sequencer, mixer and studio UI
+- `src/lib/daw` — project model, state, audio engine, sample-backed instruments, MIDI and Soundstage bridge
+- `prisma` — SQLite schema
+- `docs` — architecture, data interchange and audio attribution
+
+## Feature status
+
+The source contains the core DAW workflows listed above. Browser/device support varies for microphone access, MIDI devices and audio codecs. Cloud authentication and multi-user cloud sync are not implemented. For the exact current state of any feature, prefer the implementation and tests over roadmap language.
