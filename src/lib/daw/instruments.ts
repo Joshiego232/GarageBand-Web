@@ -1460,7 +1460,8 @@ export function playNote(
   velocity: number,
   when: number,
   dur: number,
-  params: Params
+  params: Params,
+  noteOffControlled = false
 ): VoiceHandle {
   const freq = midiToFreq(pitch);
   const safeVelocity = clamp(velocity, 0.02, 1);
@@ -1474,7 +1475,8 @@ export function playNote(
       safeVelocity,
       when,
       dur,
-      params
+      params,
+      noteOffControlled
     );
     // Sample-backed patches deliberately do not fall back to an unrelated
     // oscillator sound while their real samples are loading or unavailable.
