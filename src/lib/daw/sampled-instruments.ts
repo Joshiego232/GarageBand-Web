@@ -105,7 +105,7 @@ export function warmSampledPatch(
   const byPatch = instrumentMapFor(ctx, dest);
   const existing = byPatch.get(patch.id);
   if (existing) {
-    return existing.player.ready.then(() => undefined).catch(() => undefined);
+    return existing.readyPromise;
   }
 
   const loader = loaderFor(ctx);
@@ -177,6 +177,8 @@ export function warmSampledPatch(
     })
     .catch((error: unknown) => {
       entry.failed = true;
+      // Remove failed cache entries so a later Play/Preview attempt can retry.
+      if (byPatch.get(patch.id) === entry) byPatch.delete(patch.id);
       console.error(
         `Could not load sampled instrument ${patch.name}. Check the sample host connection and try loading the instrument again.`,
         error,
