@@ -9,7 +9,7 @@ import { Sparkles, Loader2, Music } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { LOOPS, loopToRegion, makeTrack, emptyProject } from "@/lib/daw/loops";
 import { defaultParams } from "@/lib/daw/instruments";
-import { PPQ, uid, type Project, type Track } from "@/lib/daw/types";
+import { PPQ, uid, type Project, type Region, type Track } from "@/lib/daw/types";
 import { toast } from "sonner";
 
 const IDEAS = [
@@ -124,7 +124,7 @@ function buildProject(a: Arrangement): Project {
     });
     const startBar = Math.max(0, Math.round(entry.startBar) || 0);
     const lengthBars = Math.min(64, Math.max(2, Math.round(entry.lengthBars) || 8));
-    const region = loopToRegion(def, track.id, startBar * bt, project);
+    const region: Region = loopToRegion(def, track.id, startBar * bt, project);
     region.looped = true;
     region.coreLength = def.bars * bt;
     region.length = lengthBars * bt;
