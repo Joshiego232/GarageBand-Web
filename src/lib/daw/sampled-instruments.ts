@@ -5,6 +5,7 @@ import {
   DrumMachine,
   ElectricPiano,
   SampleLoader,
+  Scheduler,
   SplendidGrandPiano,
   Soundfont,
 } from "smplr";
@@ -35,6 +36,7 @@ type SampleEntry = {
 };
 
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
+const schedulers = new WeakMap<BaseAudioContext, ReturnType<typeof Scheduler>>();
 const players = new WeakMap<
   BaseAudioContext,
   Map<AudioNode, Map<string, SampleEntry>>
@@ -50,6 +52,20 @@ function loaderFor(ctx: BaseAudioContext): SampleLoader {
     loaders.set(ctx, loader);
   }
   return loader;
+}
+
+function schedulerFor(ctx: BaseAudioContext, offline: boolean) {
+  let scheduler = schedulers.get(ctx);
+  if (!scheduler) {
+    // OfflineAudioContext renders much faster than wall-clock timers advance.
+    // Dispatch every note immediately and let Web Audio schedule it at its
+    // absolute audio time, rather than relying on the sampler's polling queue.
+    scheduler = Scheduler(ctx, {
+      lookaheadMs: offline ? 60_000_000 : 200,
+    });
+    schedulers.set(ctx, scheduler);
+  }
+  return scheduler;
 }
 
 function instrumentMapFor(ctx: BaseAudioContext, dest: AudioNode) {
@@ -80,6 +96,7 @@ export function warmSampledPatch(
   ctx: BaseAudioContext,
   dest: AudioNode,
   patch: Patch,
+  offline = false,
 ): Promise<void> {
   const source = patch.sampled;
   if (!source) return Promise.resolve();
@@ -91,6 +108,7 @@ export function warmSampledPatch(
   }
 
   const loader = loaderFor(ctx);
+  const scheduler = schedulerFor(ctx, offline);
   let player: SampledPlayer;
 
   switch (source.engine) {
@@ -98,6 +116,7 @@ export function warmSampledPatch(
       player = SplendidGrandPiano(ctx, {
         destination: dest,
         loader,
+        scheduler,
         volume: 100,
         notesToLoad: {
           notes: PIANO_SAMPLE_NOTES,
@@ -110,6 +129,7 @@ export function warmSampledPatch(
         instrument: source.instrument,
         destination: dest,
         loader,
+        scheduler,
         volume: 96,
       }) as unknown as SampledPlayer;
       break;
@@ -267,9 +287,11 @@ export function playSampledNote(
   });
 
   return {
-    scheduleStop(at: number) {
-      // Drum-machine sounds are one-shots: let the recorded sample decay naturally.
-      if (!isDrumMachine) stop(at);
+    scheduleStop() {
+      // Tonal SoundFonts already receive a duration in start(), which schedules
+      // Voice.stop() on the audio clock. Calling the returned StopFn here would
+      // also cancel a not-yet-dispatched sampler queue event. Drum-machine
+      // samples are one-shots and are allowed to decay naturally.
     },
     kill() {
       stop(ctx.currentTime);
