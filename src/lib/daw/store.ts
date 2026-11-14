@@ -82,6 +82,7 @@ interface DAWState {
   addRegion: (region: Region) => void;
   addRegions: (regions: Region[]) => void;
   replaceRegionWithSegments: (regionId: string, segments: Region[]) => void;
+  createAudioComp: (trackId: string, takeIds: string[], segments: Region[]) => void;
   removeRegions: (ids: string[]) => void;
   moveRegions: (ids: string[], deltaTick: number, toTrackId?: string) => void;
   setRegionStart: (id: string, start: number, length?: number) => void;
@@ -750,6 +751,40 @@ export const useDAW = create<DAWState>((set, get) => ({
       ui: {
         ...get().ui,
         selectedTrackId: found.track.id,
+        selectedRegionIds: segments.map((segment) => segment.id),
+        selectedNoteIds: [],
+        editorRegionId: segments[0]?.id ?? null,
+      },
+    });
+  },
+
+  createAudioComp: (trackId, takeIds, segments) => {
+    const project = get().project;
+    const track = project.tracks.find((item) => item.id === trackId);
+    if (!track || track.type !== "audio" || takeIds.length < 2 || segments.length === 0) return;
+    const idSet = new Set(takeIds);
+    const takes = track.regions.filter((region) => idSet.has(region.id) && region.type === "audio");
+    if (takes.length !== idSet.size || segments.some((segment) => segment.trackId !== trackId || segment.type !== "audio")) return;
+
+    get().commit();
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((item) =>
+          item.id === trackId
+            ? {
+                ...item,
+                regions: [
+                  ...item.regions.filter((region) => !idSet.has(region.id)),
+                  ...segments,
+                ].sort((a, b) => a.start - b.start),
+              }
+            : item
+        ),
+      },
+      ui: {
+        ...get().ui,
+        selectedTrackId: trackId,
         selectedRegionIds: segments.map((segment) => segment.id),
         selectedNoteIds: [],
         editorRegionId: segments[0]?.id ?? null,
