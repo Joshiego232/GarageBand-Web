@@ -69,6 +69,7 @@ interface DAWState {
   setTrackRouting: (id: string, outputBusId?: string | null, vcaId?: string | null, commit?: boolean) => void;
   createTrackStack: (name: string, type: TrackStack["type"], trackIds: string[]) => string | null;
   removeTrackStack: (id: string) => void;
+  toggleTrackStack: (id: string) => void;
   saveAlternative: (name: string) => string;
   loadAlternative: (id: string) => void;
   saveScreenset: (name: string) => string;
@@ -218,6 +219,8 @@ export const useDAW = create<DAWState>((set, get) => ({
         outputBusId: track.outputBusId ?? null,
         vcaId: track.vcaId ?? null,
         stackId: track.stackId ?? null,
+        parentTrackId: track.parentTrackId ?? null,
+        collapsed: track.collapsed ?? false,
       })),
     };
     set({
@@ -288,8 +291,15 @@ export const useDAW = create<DAWState>((set, get) => ({
     }));
     const removedStackIds = new Set(
       candidateStacks
-        .filter((stack) => stack.trackIds.length < 2 || stack.busTrackId === id)
+        .filter((stack) =>
+          stack.trackIds.length < 2 || stack.busTrackId === id || stack.folderTrackId === id
+        )
         .map((stack) => stack.id)
+    );
+    const removedFolderIds = new Set(
+      candidateStacks.flatMap((stack) =>
+        removedStackIds.has(stack.id) ? [stack.folderTrackId] : []
+      )
     );
     const removedBusIds = new Set([
       ...(removed?.role === "aux" ? [id] : []),
@@ -299,12 +309,15 @@ export const useDAW = create<DAWState>((set, get) => ({
     ]);
     const removedVcaId = removed?.role === "vca" ? id : null;
     const tracks = project.tracks
-      .filter((track) => track.id !== id && !removedBusIds.has(track.id))
+      .filter((track) =>
+        track.id !== id && !removedBusIds.has(track.id) && !removedFolderIds.has(track.id)
+      )
       .map((track) => ({
         ...track,
         outputBusId: removedBusIds.has(track.outputBusId ?? "") ? null : track.outputBusId,
         vcaId: removedVcaId && track.vcaId === removedVcaId ? null : track.vcaId,
         stackId: removedStackIds.has(track.stackId ?? "") ? null : track.stackId,
+        parentTrackId: removedStackIds.has(track.stackId ?? "") ? null : track.parentTrackId,
       }));
     const stacks = candidateStacks.filter((stack) => !removedStackIds.has(stack.id));
     set({
@@ -459,28 +472,37 @@ export const useDAW = create<DAWState>((set, get) => ({
 
     get().commit();
     const stackId = uid();
-    let tracks = project.tracks;
-    let busTrackId: string | undefined;
+    const stackName = name.trim() || (type === "folder" ? "Track Stack" : "Summing Stack");
+    const folder = makeTrack({
+      type: "audio",
+      role: "folder",
+      name: stackName,
+      icon: "folder",
+      color: "#596d8b",
+      volume: 0,
+      collapsed: false,
+      regions: [],
+    });
+    let busTrack: Track | undefined;
     if (type === "summing") {
-      const bus = makeTrack({
+      busTrack = makeTrack({
         type: "audio",
         role: "aux",
-        name: `${name.trim() || "Summing Stack"} Bus`,
+        name: `${stackName} Bus`,
         icon: "audio-lines",
         color: "#4ca8a0",
         volume: 0.9,
         regions: [],
       });
-      busTrackId = bus.id;
-      tracks = [...tracks, bus];
     }
 
     const stack: TrackStack = {
       id: stackId,
-      name: name.trim() || (type === "folder" ? "Track Stack" : "Summing Stack"),
+      name: stackName,
       type,
       trackIds: uniqueIds,
-      ...(busTrackId ? { busTrackId } : {}),
+      folderTrackId: folder.id,
+      ...(busTrack ? { busTrackId: busTrack.id } : {}),
     };
 
     const remainingStacks = (project.stacks ?? []).map((existing) => ({
@@ -492,36 +514,50 @@ export const useDAW = create<DAWState>((set, get) => ({
         .filter((existing) => existing.trackIds.length < 2)
         .map((existing) => existing.id)
     );
+    const removedFolderIds = new Set(
+      remainingStacks.flatMap((existing) =>
+        removedStackIds.has(existing.id) ? [existing.folderTrackId] : []
+      )
+    );
     const removedBusIds = new Set(
       remainingStacks.flatMap((existing) =>
         removedStackIds.has(existing.id) && existing.busTrackId ? [existing.busTrackId] : []
       )
     );
     const stacks = remainingStacks.filter((existing) => !removedStackIds.has(existing.id));
-    tracks = tracks
-      .filter((track) => !removedBusIds.has(track.id))
+
+    let tracks = project.tracks
+      .filter((track) =>
+        !removedFolderIds.has(track.id) && !removedBusIds.has(track.id)
+      )
       .map((track) => {
         const belongs = uniqueIds.includes(track.id);
         if (belongs) {
           return {
             ...track,
             stackId,
-            ...(busTrackId ? { outputBusId: busTrackId } : {}),
+            parentTrackId: folder.id,
+            ...(busTrack ? { outputBusId: busTrack.id } : {}),
           };
         }
         if (removedStackIds.has(track.stackId ?? "")) {
           return {
             ...track,
             stackId: null,
+            parentTrackId: null,
             ...(removedBusIds.has(track.outputBusId ?? "") ? { outputBusId: null } : {}),
           };
         }
         return track;
       });
 
+    const firstMemberIndex = tracks.findIndex((track) => uniqueIds.includes(track.id));
+    tracks.splice(Math.max(0, firstMemberIndex), 0, folder);
+    if (busTrack) tracks.push(busTrack);
+
     set({
       project: { ...project, tracks, stacks: [...stacks, stack] },
-      ui: { ...get().ui, selectedTrackId: busTrackId ?? uniqueIds[0] },
+      ui: { ...get().ui, selectedTrackId: folder.id },
     });
     return stackId;
   },
@@ -535,16 +571,33 @@ export const useDAW = create<DAWState>((set, get) => ({
       project: {
         ...project,
         tracks: project.tracks
-          .filter((track) => track.id !== stack.busTrackId)
+          .filter((track) => track.id !== stack.busTrackId && track.id !== stack.folderTrackId)
           .map((track) => ({
             ...track,
             stackId: track.stackId === id ? null : track.stackId,
+            parentTrackId: track.stackId === id ? null : track.parentTrackId,
             outputBusId:
               stack.busTrackId && track.outputBusId === stack.busTrackId
                 ? null
                 : track.outputBusId,
           })),
         stacks: (project.stacks ?? []).filter((item) => item.id !== id),
+      },
+    });
+  },
+
+  toggleTrackStack: (id) => {
+    const project = get().project;
+    const stack = project.stacks?.find((item) => item.id === id);
+    if (!stack) return;
+    set({
+      project: {
+        ...project,
+        tracks: project.tracks.map((track) =>
+          track.id === stack.folderTrackId
+            ? { ...track, collapsed: !track.collapsed }
+            : track
+        ),
       },
     });
   },
