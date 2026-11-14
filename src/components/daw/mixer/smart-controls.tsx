@@ -6,11 +6,12 @@
 // tracks. Rendered inside the bottom editor panel.
 // ============================================================
 
-import { useCallback, useEffect, useState } from "react";
-import { Mic, Play, SlidersHorizontal } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { toast } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
-import type { KnobDef } from "@/lib/daw/types";
+import { uid, type KnobDef, type SamplerZone } from "@/lib/daw/types";
 import { Knob } from "@/components/daw/controls/knob";
 import { TrackIcon } from "./track-icon";
 import { VisualEQ } from "./visual-eq";
@@ -133,7 +134,7 @@ export function SmartControls() {
       ) : (
       /* knob grid */
       <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] flex flex-wrap items-center justify-center gap-x-6 gap-y-2 py-3">
-        {track.sampleBufferId ? (
+        {track.sampleBufferId || (track.sampleZones ?? []).length > 0 ? (
           <QuickSamplerControls track={track} />
         ) : track.type === "midi" ? (
           (patch?.knobs ?? []).map((k: KnobDef) => (
@@ -198,27 +199,109 @@ export function SmartControls() {
 function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof useDAW.getState>["project"]["tracks"][number]> }) {
   const updateTrack = useDAW((state) => state.updateTrack);
   const commit = useDAW((state) => state.commit);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importingZone, setImportingZone] = useState(false);
+  const [newZoneRoot, setNewZoneRoot] = useState(
+    Math.min(108, (track.sampleRootPitch ?? 60) + 12 * ((track.sampleZones ?? []).length + 1))
+  );
   const sample = track.sampleBufferId ? engine.getStoredBuffer(track.sampleBufferId) : undefined;
   const duration = sample?.channels[0]?.length
     ? sample.channels[0].length / sample.sampleRate
     : 0;
   const rootPitch = track.sampleRootPitch ?? 60;
+  const zones = track.sampleZones ?? [];
   const noteName = (pitch: number) => {
     const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
     return `${names[pitch % 12]} ${Math.floor(pitch / 12) - 1}`;
   };
 
+  const updateZone = (zoneId: string, patch: Partial<SamplerZone>) => {
+    const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+    updateTrack(
+      track.id,
+      { sampleZones: (current?.sampleZones ?? []).map((zone) => zone.id === zoneId ? { ...zone, ...patch } : zone) },
+      false
+    );
+  };
+
+  const removeZone = (zoneId: string) => {
+    commit();
+    const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+    updateTrack(
+      track.id,
+      { sampleZones: (current?.sampleZones ?? []).filter((zone) => zone.id !== zoneId) },
+      false
+    );
+    toast.success("Sample zone removed");
+  };
+
+  const addSampleZone = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) {
+      toast.error("Choose an audio file for a sample zone");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Sample zones must be 25 MB or smaller");
+      return;
+    }
+
+    setImportingZone(true);
+    try {
+      const decoded = await engine.decodeAudioFile(file);
+      const sampleDuration = decoded.channels[0]?.length
+        ? decoded.channels[0].length / decoded.sampleRate
+        : 0;
+      if (sampleDuration <= 0 || sampleDuration > 60) {
+        toast.error("Sample zones must be 60 seconds or shorter");
+        return;
+      }
+
+      const bufferId = `sampler-zone-${uid()}`;
+      await engine.storeBuffer(bufferId, decoded);
+      const zone: SamplerZone = {
+        id: uid(),
+        bufferId,
+        name: file.name,
+        rootPitch: newZoneRoot,
+        lowKey: Math.max(0, newZoneRoot - 5),
+        highKey: Math.min(127, newZoneRoot + 5),
+        velocityLow: 1,
+        velocityHigh: 127,
+        playbackMode: track.samplePlaybackMode ?? "one-shot",
+      };
+      const current = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+      useDAW.getState().updateTrack(
+        track.id,
+        { sampleZones: [...(current?.sampleZones ?? []), zone] },
+        false
+      );
+      setNewZoneRoot(Math.min(120, newZoneRoot + 12));
+      toast.success(`Added sample zone: ${file.name}`);
+    } catch (error) {
+      console.error("Sampler zone import failed", error);
+      toast.error("Could not decode that sample. Try WAV, MP3 or OGG.");
+    } finally {
+      setImportingZone(false);
+    }
+  };
+
   return (
-    <div className="w-full max-w-3xl px-4 flex flex-col gap-4">
+    <div className="w-full max-w-3xl px-4 flex flex-col gap-4 overflow-y-auto py-2">
       <div className="rounded-lg border border-[#4a90d9]/30 bg-[#4a90d9]/10 p-4 flex items-center gap-3">
         <div className="size-10 rounded-lg bg-[#4a90d9]/15 text-[#9dc8f0] flex items-center justify-center shrink-0">
           <SlidersHorizontal size={19} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[12px] font-semibold text-zinc-100">Quick Sampler</p>
+          <p className="text-[12px] font-semibold text-zinc-100">{zones.length ? "Multi Sampler" : "Quick Sampler"}</p>
           <p className="text-[10px] text-zinc-400 truncate">{track.sampleName ?? track.name}</p>
           <p className="text-[9px] text-zinc-600 mt-0.5">
-            {duration > 0 ? `${duration.toFixed(2)} seconds · ${sample?.sampleRate.toLocaleString()} Hz` : "Sample will load when the track is played"}
+            {duration > 0
+              ? `${duration.toFixed(2)} seconds · ${sample?.sampleRate.toLocaleString()} Hz`
+              : "Sample sources load when the track is played"}
+            {zones.length ? ` · ${zones.length} mapped zones` : ""}
           </p>
         </div>
         <button
@@ -232,7 +315,7 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="rounded-md border border-black/40 bg-[#232327] p-3 flex flex-col gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Root key</span>
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Base sample root key</span>
           <select
             value={rootPitch}
             onPointerDown={commit}
@@ -243,11 +326,11 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
               <option key={pitch} value={pitch}>{noteName(pitch)}</option>
             ))}
           </select>
-          <span className="text-[9px] text-zinc-600">The imported recording is played at its original pitch on this key.</span>
+          <span className="text-[9px] text-zinc-600">The base recording is played at its original pitch on this key.</span>
         </label>
 
         <label className="rounded-md border border-black/40 bg-[#232327] p-3 flex flex-col gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Playback mode</span>
+          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Base playback mode</span>
           <select
             value={track.samplePlaybackMode ?? "one-shot"}
             onPointerDown={commit}
@@ -257,16 +340,101 @@ function QuickSamplerControls({ track }: { track: NonNullable<ReturnType<typeof 
             <option value="one-shot">One-shot · Play sample to the end</option>
             <option value="loop">Loop · Hold while MIDI note is held</option>
           </select>
-          <span className="text-[9px] text-zinc-600">Loop mode follows MIDI note length; one-shot ignores note-off.</span>
+          <span className="text-[9px] text-zinc-600">Base sample playback behavior.</span>
         </label>
       </div>
-      <p className="text-[9px] text-zinc-600">
-        This is a single-sample instrument mapped across the keyboard using pitch shifting. Multi-zone velocity layers and key-range mapping can be added as a later sampler upgrade.
-      </p>
+
+      <div className="rounded-lg border border-black/40 bg-[#202024] p-3 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-semibold text-zinc-200">Sample Zones</p>
+            <p className="text-[9px] text-zinc-600">Map different recordings to specific keyboard ranges and velocity layers.</p>
+          </div>
+          <input ref={fileInputRef} type="file" accept="audio/*" className="hidden" onChange={addSampleZone} />
+          <div className="flex items-center gap-1.5">
+            <select
+              value={newZoneRoot}
+              onChange={(event) => setNewZoneRoot(Number(event.target.value))}
+              aria-label="New sample zone root key"
+              className="h-7 max-w-20 rounded border border-black/50 bg-[#17171a] px-1.5 text-[9px] text-zinc-200"
+            >
+              {Array.from({ length: 73 }, (_, index) => index + 24).map((pitch) => (
+                <option key={pitch} value={pitch}>{noteName(pitch)}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={importingZone}
+              onClick={() => fileInputRef.current?.click()}
+              className="h-7 px-2 rounded border border-[#4a90d9]/35 bg-[#4a90d9]/10 text-[9px] text-[#a9d1f6] hover:bg-[#4a90d9]/20 disabled:opacity-40 inline-flex items-center gap-1"
+            >
+              <Upload size={10} /> {importingZone ? "Loading…" : "Add Sample"}
+            </button>
+          </div>
+        </div>
+
+        {zones.length === 0 ? (
+          <p className="rounded border border-dashed border-[#3c3c43] p-3 text-[9px] text-zinc-600 text-center">
+            No extra zones yet. Import another recording and assign its root key to build a multi-sampled instrument or drum kit.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {zones.map((zone) => (
+              <div key={zone.id} className="grid grid-cols-[minmax(90px,1fr)_56px_56px_56px_26px] gap-1.5 items-center rounded border border-black/30 bg-[#19191d] p-2">
+                <span className="truncate text-[9px] text-zinc-300" title={zone.name}>{zone.name}</span>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[8px] text-zinc-600">Root</span>
+                  <select
+                    value={zone.rootPitch}
+                    onPointerDown={commit}
+                    onChange={(event) => updateZone(zone.id, { rootPitch: Number(event.target.value) })}
+                    className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
+                  >
+                    {Array.from({ length: 73 }, (_, index) => index + 24).map((pitch) => (
+                      <option key={pitch} value={pitch}>{noteName(pitch)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[8px] text-zinc-600">Low</span>
+                  <input
+                    type="number" min={0} max={127} value={zone.lowKey}
+                    onPointerDown={commit}
+                    onChange={(event) => updateZone(zone.id, { lowKey: Math.max(0, Math.min(127, Number(event.target.value))) })}
+                    className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
+                    aria-label={`${zone.name} low key`}
+                  />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[8px] text-zinc-600">High</span>
+                  <input
+                    type="number" min={0} max={127} value={zone.highKey}
+                    onPointerDown={commit}
+                    onChange={(event) => updateZone(zone.id, { highKey: Math.max(0, Math.min(127, Number(event.target.value))) })}
+                    className="h-6 w-full rounded bg-[#2a2a30] px-1 text-[9px] text-zinc-200"
+                    aria-label={`${zone.name} high key`}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removeZone(zone.id)}
+                  title="Remove sample zone"
+                  aria-label={`Remove ${zone.name} sample zone`}
+                  className="h-6 w-6 rounded text-zinc-600 hover:text-red-300 hover:bg-white/5"
+                >
+                  <Trash2 size={11} className="mx-auto" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-[9px] text-zinc-600">
+          Narrower key zones take priority over wider zones. Velocity ranges are stored per zone; the default is 1–127. Set Low and High to the same MIDI note to create a one-key drum pad.
+        </p>
+      </div>
     </div>
   );
 }
-
 
 function AudioInputSelector({
   trackId,
