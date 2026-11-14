@@ -21,6 +21,7 @@ import {
 } from "react";
 import {
   AudioLines,
+  Cable,
   Circle,
   Clock,
   Library,
@@ -58,6 +59,7 @@ import {
   keyLabel,
 } from "@/lib/daw/utils";
 import { cn } from "@/lib/utils";
+import { MidiControlSurface } from "@/components/daw/panels/midi-control-surface";
 
 const MONO: CSSProperties = {
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -460,6 +462,9 @@ function LCD() {
           </PopoverContent>
         </Popover>
       </div>
+      {midiSurfaceOpen && (
+        <MidiControlSurface onClose={() => setMidiSurfaceOpen(false)} />
+      )}
     </div>
   );
 }
@@ -469,6 +474,7 @@ function LCD() {
 // ------------------------------------------------------------
 
 export function TopBar() {
+  const [midiSurfaceOpen, setMidiSurfaceOpen] = useState(false);
   const project = useDAW((s) => s.project);
   const transport = useDAW((s) => s.transport);
   const panels = useDAW((s) => s.ui.panels);
@@ -598,6 +604,14 @@ export function TopBar() {
           className="hidden sm:flex"
         >
           <SlidersHorizontal className="h-4 w-4" />
+        </IconButton>
+        <IconButton
+          label="MIDI Control Surface"
+          active={midiSurfaceOpen}
+          onClick={() => setMidiSurfaceOpen(true)}
+          className="hidden sm:flex"
+        >
+          <Cable className="h-4 w-4" />
         </IconButton>
         <IconButton
           label="Mixer"
