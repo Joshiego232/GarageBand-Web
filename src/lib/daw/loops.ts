@@ -288,6 +288,8 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
     outputBusId: partial.outputBusId ?? null,
     vcaId: partial.vcaId ?? null,
     stackId: partial.stackId ?? null,
+    parentTrackId: partial.parentTrackId ?? null,
+    collapsed: partial.collapsed ?? false,
     name: partial.name ?? patch?.name ?? "Audio",
     type: partial.type,
     icon: partial.icon ?? (partial.type === "audio" ? "mic" : patch?.icon ?? "piano"),
