@@ -434,20 +434,10 @@ export class AudioEngine {
         const patch = PATCHES[track.instrument];
         if (patch?.sampled) void warmSampledPatch(ctx, tn.input, patch);
       }
-      const eq = track.eq;
-      tn.eqLow.frequency.value = eq.lowFreq;
-      tn.eqLow.gain.value = eq.lowGain;
-      tn.eqMid.frequency.value = eq.midFreq;
-      tn.eqMid.Q.value = eq.midQ;
-      tn.eqMid.gain.value = eq.midGain;
-      tn.eqHigh.frequency.value = eq.highFreq;
-      tn.eqHigh.gain.value = eq.highGain;
-      setComp(tn.comp, track.compressor);
+      applyTrackAudioPlugins(tn, track, project.tempo);
       const audible = !track.mute && (!anySolo || track.solo);
       tn.gain.gain.value = audible ? clamp(track.volume, 0, 1.25) : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
-      tn.reverbSend.gain.value = clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
-      tn.delaySend.gain.value = clamp((track.params.delay ?? 0) * 0.9, 0, 1);
       // prefetch audio buffers
       for (const r of track.regions) {
         if (r.bufferId && !this.bufferCache.has(r.bufferId) && !this.pendingLoads.has(r.bufferId)) {
@@ -471,6 +461,10 @@ export class AudioEngine {
             tn.analyser.disconnect();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
+            tn.chorusSend.disconnect();
+            tn.flangerSend.disconnect();
+            tn.chorusLfo.stop();
+            tn.flangerLfo.stop();
           } catch { /* noop */ }
         }
         this.tracks.delete(id);
@@ -1157,19 +1151,9 @@ export class AudioEngine {
     for (const track of project.tracks) {
       if (track.mute || (anySolo && !track.solo)) continue;
       const tn = buildTrack(offline, master);
-      const eq = track.eq;
-      tn.eqLow.frequency.value = eq.lowFreq;
-      tn.eqLow.gain.value = eq.lowGain;
-      tn.eqMid.frequency.value = eq.midFreq;
-      tn.eqMid.Q.value = eq.midQ;
-      tn.eqMid.gain.value = eq.midGain;
-      tn.eqHigh.frequency.value = eq.highFreq;
-      tn.eqHigh.gain.value = eq.highGain;
-      setComp(tn.comp, track.compressor);
+      applyTrackAudioPlugins(tn, track, project.tempo);
       tn.gain.gain.value = clamp(track.volume, 0, 1.25);
       tn.panner.pan.value = clamp(track.pan, -1, 1);
-      tn.reverbSend.gain.value = clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
-      tn.delaySend.gain.value = clamp((track.params.delay ?? 0) * 0.9, 0, 1);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
         // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
