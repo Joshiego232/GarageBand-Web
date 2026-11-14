@@ -502,7 +502,7 @@ export class AudioEngine {
         : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       // prefetch audio buffers
-      for (const bufferId of [track.sampleBufferId, ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
+      for (const bufferId of [track.sampleBufferId, ...(track.sampleZones ?? []).map((zone) => zone.bufferId), ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
         if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
           void this.ensureBufferLoaded(bufferId).catch(() => undefined);
         }
@@ -658,10 +658,15 @@ export class AudioEngine {
         if (track.type !== "midi" || track.mute || (anySolo && !track.solo)) continue;
         const patch = PATCHES[track.instrument];
         const nodes = this.tracks.get(track.id);
-        if (track.sampleBufferId) {
+        const customSampleIds = [
+          track.sampleBufferId,
+          ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+        ].filter((id): id is string => !!id);
+        if (customSampleIds.length) {
           sampleLoads.push(
-            this.ensureBufferLoaded(track.sampleBufferId).then((buffer) => {
-              if (!buffer) throw new Error(`Quick Sampler audio ${track.sampleName ?? track.sampleBufferId} is missing`);
+            ...[...new Set(customSampleIds)].map(async (sampleId) => {
+              const buffer = await this.ensureBufferLoaded(sampleId);
+              if (!buffer) throw new Error(`Sampler audio is missing for ${track.sampleName ?? track.name}`);
             })
           );
         } else if (patch?.sampled && nodes) {
@@ -902,7 +907,19 @@ export class AudioEngine {
     duration: number,
     noteOffControlled = false
   ): VoiceHandle {
-    if (!track.sampleBufferId) {
+    const matchingZone = (track.sampleZones ?? [])
+      .filter((zone) =>
+        pitch >= zone.lowKey &&
+        pitch <= zone.highKey &&
+        velocity * 127 >= zone.velocityLow &&
+        velocity * 127 <= zone.velocityHigh
+      )
+      .sort((a, b) => (a.highKey - a.lowKey) - (b.highKey - b.lowKey))[0];
+    const bufferId = matchingZone?.bufferId ?? track.sampleBufferId;
+    if (!bufferId) {
+      if ((track.sampleZones ?? []).length) {
+        return { scheduleStop() {}, kill() {} };
+      }
       return playNote(
         ctx,
         dest,
@@ -916,17 +933,18 @@ export class AudioEngine {
       );
     }
 
-    const buffer = this.bufferFor(ctx, track.sampleBufferId);
+    const buffer = this.bufferFor(ctx, bufferId);
     if (!buffer || buffer.duration <= 0) {
       return { scheduleStop() {}, kill() {} };
     }
 
     const source = ctx.createBufferSource();
     const gain = ctx.createGain();
-    const mode = track.samplePlaybackMode ?? "one-shot";
+    const mode = matchingZone?.playbackMode ?? track.samplePlaybackMode ?? "one-shot";
+    const rootPitch = matchingZone?.rootPitch ?? track.sampleRootPitch ?? 60;
     source.buffer = buffer;
     source.playbackRate.value = clamp(
-      Math.pow(2, (pitch - clamp(track.sampleRootPitch ?? 60, 0, 127)) / 12),
+      Math.pow(2, (pitch - clamp(rootPitch, 0, 127)) / 12),
       0.25,
       4
     );
@@ -1199,10 +1217,21 @@ export class AudioEngine {
       );
     };
 
-    if (track.sampleBufferId) {
-      void this.ensureBufferLoaded(track.sampleBufferId)
+    if (track.sampleBufferId || (track.sampleZones ?? []).length) {
+      const selectedZone = (track.sampleZones ?? []).find((zone) =>
+        pitch >= zone.lowKey &&
+        pitch <= zone.highKey &&
+        velocity >= zone.velocityLow &&
+        velocity <= zone.velocityHigh
+      );
+      const sampleId = selectedZone?.bufferId ?? track.sampleBufferId;
+      if (!sampleId) {
+        this.openInputNotes.delete(pitch);
+        return;
+      }
+      void this.ensureBufferLoaded(sampleId)
         .then((buffer) => {
-          if (!buffer) throw new Error("Quick Sampler audio could not be loaded");
+          if (!buffer) throw new Error("Sampler audio could not be loaded");
           playLiveVoices();
         })
         .catch((error: unknown) => {
@@ -1262,7 +1291,9 @@ export class AudioEngine {
       const when = ctx.currentTime;
       const duration = 0.5;
       const customTrack = st.project.tracks.find(
-        (track) => track.instrument === patchId && !!track.sampleBufferId
+        (track) =>
+          track.instrument === patchId &&
+          (!!track.sampleBufferId || (track.sampleZones ?? []).length > 0)
       );
       const voice = customTrack
         ? this.playTrackNote(ctx, dest, customTrack, pitch, velocity / 127, when, duration)
@@ -1516,10 +1547,18 @@ export class AudioEngine {
         continue;
       }
 
-      if (track.sampleBufferId) {
-        const stored = await this.ensureBufferLoaded(track.sampleBufferId);
-        if (!stored) {
-          toast.error(`Could not load Quick Sampler audio for ${track.name}`);
+      const customSampleIds = [
+        track.sampleBufferId,
+        ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+      ].filter((id): id is string => !!id);
+      if (customSampleIds.length) {
+        try {
+          const buffers = await Promise.all(
+            [...new Set(customSampleIds)].map((id) => this.ensureBufferLoaded(id))
+          );
+          if (buffers.some((buffer) => !buffer)) throw new Error("Missing sampler source");
+        } catch {
+          toast.error(`Could not load sampler audio for ${track.name}`);
           continue;
         }
       } else {
@@ -1741,6 +1780,7 @@ export class AudioEngine {
     const bufferIds = new Set<string>();
     for (const t of project.tracks) {
       if (t.sampleBufferId) bufferIds.add(t.sampleBufferId);
+      for (const zone of t.sampleZones ?? []) bufferIds.add(zone.bufferId);
       for (const r of t.regions) if (r.bufferId) bufferIds.add(r.bufferId);
     }
     await Promise.all(Array.from(bufferIds).map((id) => this.ensureBufferLoaded(id)));
