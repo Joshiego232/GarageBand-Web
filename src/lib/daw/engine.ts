@@ -1303,17 +1303,28 @@ export class AudioEngine {
     };
 
     const customTrack = st.project.tracks.find(
-      (track) => track.instrument === patchId && !!track.sampleBufferId
+      (track) =>
+        track.instrument === patchId &&
+        (!!track.sampleBufferId || (track.sampleZones ?? []).length > 0)
     );
-    if (customTrack?.sampleBufferId) {
-      void this.ensureBufferLoaded(customTrack.sampleBufferId).then((buffer) => {
-        if (!buffer) throw new Error("Quick Sampler audio could not be loaded");
-        play();
-      }).catch((error: unknown) => {
-        console.error("Quick Sampler audition failed", error);
-        toast.error(`Could not load ${customTrack.sampleName ?? customTrack.name}.`);
-      });
-      return;
+    if (customTrack) {
+      const selectedZone = (customTrack.sampleZones ?? []).find((zone) =>
+        pitch >= zone.lowKey &&
+        pitch <= zone.highKey &&
+        velocity >= zone.velocityLow &&
+        velocity <= zone.velocityHigh
+      );
+      const sampleId = selectedZone?.bufferId ?? customTrack.sampleBufferId;
+      if (sampleId) {
+        void this.ensureBufferLoaded(sampleId).then((buffer) => {
+          if (!buffer) throw new Error("Sampler audio could not be loaded");
+          play();
+        }).catch((error: unknown) => {
+          console.error("Sampler audition failed", error);
+          toast.error(`Could not load ${customTrack.sampleName ?? customTrack.name}.`);
+        });
+        return;
+      }
     }
 
     const patch = PATCHES[patchId];
@@ -1485,9 +1496,17 @@ export class AudioEngine {
       }
 
       if (region.type !== "midi") return;
-      if (track.sampleBufferId) {
-        const stored = await this.ensureBufferLoaded(track.sampleBufferId);
-        if (!stored) throw new Error(`Could not load Quick Sampler for ${track.name}`);
+      const customSampleIds = [
+        track.sampleBufferId,
+        ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+      ].filter((id): id is string => !!id);
+      if (customSampleIds.length) {
+        const buffers = await Promise.all(
+          [...new Set(customSampleIds)].map((id) => this.ensureBufferLoaded(id))
+        );
+        if (buffers.some((buffer) => !buffer)) {
+          throw new Error(`Could not load sampler sources for ${track.name}`);
+        }
         return;
       }
 
