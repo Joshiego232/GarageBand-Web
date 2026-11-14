@@ -1304,6 +1304,157 @@ function drumMachinePatch(
   };
 }
 
+const morphWaveCache = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
+
+function morphPeriodicWave(
+  ctx: BaseAudioContext,
+  morph: number,
+  harmonics: number
+): PeriodicWave {
+  const morphStep = Math.round(morph * 24);
+  const harmonicStep = Math.round(harmonics * 24);
+  const key = `${morphStep}:${harmonicStep}`;
+  let cache = morphWaveCache.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    morphWaveCache.set(ctx, cache);
+  }
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const m = morphStep / 24;
+  const h = harmonicStep / 24;
+  const count = 64;
+  const real = new Float32Array(count);
+  const imag = new Float32Array(count);
+
+  for (let partial = 1; partial < count; partial++) {
+    const n = partial;
+    const saw = 1 / n;
+    const oddOrgan = n % 2 === 1 ? 1 / n : 0;
+    const bell = Math.exp(-Math.pow((Math.log(n) - 1.35) / 0.78, 2)) / Math.sqrt(n);
+    const glass = Math.exp(-Math.pow((n - (2 + m * 25)) / (1.4 + m * 2.8), 2)) / Math.sqrt(n);
+    const organBell = oddOrgan * (1 - m) + bell * m;
+    const spectral = organBell * (1 - m * 0.55) + glass * m * 0.55;
+    const body = saw * (1 - m) + spectral * m;
+    const rolloff = Math.pow(1 - (n - 1) / count, 0.3 + (1 - h) * 2.4);
+    imag[partial] = body * rolloff * (0.35 + h * 1.65);
+  }
+
+  const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  cache.set(key, wave);
+  return wave;
+}
+
+function playMorphAdditive(v: VoiceCtx): VoiceHandle {
+  const { ctx, dest, freq, vel, when, p } = v;
+  const morph = clamp(p.morph ?? 0.5, 0, 1);
+  const harmonics = clamp(p.harmonics ?? 0.7, 0.1, 1);
+  const cutoff = clamp(p.cutoff ?? 6000, 80, 16000);
+  const resonance = clamp(p.resonance ?? 1.2, 0.1, 16);
+  const attack = clamp(p.attack ?? 0.03, 0.001, 4);
+  const decay = clamp(p.decay ?? 0.45, 0.02, 5);
+  const sustain = clamp(p.sustain ?? 0.65, 0, 1);
+  const release = clamp(p.release ?? 0.5, 0.03, 8);
+  const detune = clamp(p.detune ?? 6, 0, 40);
+  const subLevel = clamp(p.sub ?? 0.1, 0, 1);
+  const lfoRate = clamp(p.lfoRate ?? 0.25, 0.05, 12);
+  const lfoDepth = clamp(p.lfoDepth ?? 0.1, 0, 1);
+  const noiseLevel = clamp(p.noise ?? 0, 0, 1);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.Q.value = resonance;
+  const envelopePeak = Math.min(18000, cutoff * (1.2 + (1 - sustain) * 2.2));
+  filter.frequency.setValueAtTime(Math.max(80, cutoff * 0.45), when);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(90, envelopePeak), when + attack);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(80, cutoff), when + attack + decay);
+
+  const amp = ctx.createGain();
+  const peak = 0.28 * vel;
+  const sustainLevel = Math.max(0.0002, peak * sustain);
+  amp.gain.setValueAtTime(0.0001, when);
+  amp.gain.linearRampToValueAtTime(peak, when + attack);
+  amp.gain.exponentialRampToValueAtTime(sustainLevel, when + attack + decay);
+  filter.connect(amp).connect(dest);
+
+  const oscillators: OscillatorNode[] = [];
+  const sources: AudioScheduledSourceNode[] = [];
+  const main = ctx.createOscillator();
+  main.setPeriodicWave(morphPeriodicWave(ctx, morph, harmonics));
+  main.frequency.value = freq;
+  main.connect(filter);
+  main.start(when);
+  oscillators.push(main);
+
+  const unison = ctx.createOscillator();
+  unison.type = "sawtooth";
+  unison.frequency.value = freq;
+  unison.detune.value = detune;
+  const unisonGain = ctx.createGain();
+  unisonGain.gain.value = 0.08 + detune * 0.004;
+  unison.connect(unisonGain).connect(filter);
+  unison.start(when);
+  oscillators.push(unison);
+
+  if (subLevel > 0.001) {
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.value = freq / 2;
+    const subGain = ctx.createGain();
+    subGain.gain.value = subLevel * 0.38;
+    sub.connect(subGain).connect(filter);
+    sub.start(when);
+    oscillators.push(sub);
+  }
+
+  const lfo = ctx.createOscillator();
+  lfo.type = "sine";
+  lfo.frequency.value = lfoRate;
+  const filterLfo = ctx.createGain();
+  filterLfo.gain.value = cutoff * 0.42 * lfoDepth;
+  lfo.connect(filterLfo).connect(filter.frequency);
+  lfo.start(when);
+  oscillators.push(lfo);
+
+  if (noiseLevel > 0.001) {
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer(ctx, 1.5);
+    noise.loop = true;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "highpass";
+    noiseFilter.frequency.value = 900 + morph * 2800;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = noiseLevel * 0.075 * vel;
+    noise.connect(noiseFilter).connect(noiseGain).connect(filter);
+    noise.start(when);
+    sources.push(noise);
+  }
+
+  const stopSources = (at: number) => {
+    for (const source of [...oscillators, ...sources]) {
+      try { source.stop(at); } catch { /* already stopped */ }
+    }
+  };
+
+  return {
+    scheduleStop(at: number) {
+      const releaseAt = Math.max(at, when + attack * 0.5);
+      amp.gain.cancelScheduledValues(releaseAt);
+      amp.gain.setValueAtTime(Math.max(amp.gain.value, 0.0002), releaseAt);
+      amp.gain.exponentialRampToValueAtTime(0.0001, releaseAt + release);
+      stopSources(releaseAt + release + 0.04);
+    },
+    kill() {
+      const now = ctx.currentTime;
+      amp.gain.cancelScheduledValues(now);
+      amp.gain.setValueAtTime(Math.max(amp.gain.value, 0.0002), now);
+      amp.gain.linearRampToValueAtTime(0.0001, now + 0.018);
+      stopSources(now + 0.04);
+    },
+  };
+}
+
 function morphSynthPatch(
   id: string,
   name: string,
@@ -1553,6 +1704,9 @@ export function playNote(
   const freq = midiToFreq(pitch);
   const safeVelocity = clamp(velocity, 0.02, 1);
   const patch = PATCHES[patchId];
+  if (patch?.synthEngine === "morph-additive") {
+    return playMorphAdditive({ ctx, dest, freq, vel: safeVelocity, when, dur, p: params });
+  }
   if (patch?.sampled) {
     const sampled = playSampledNote(
       ctx,
