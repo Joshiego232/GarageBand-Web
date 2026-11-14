@@ -23,6 +23,11 @@ import {
 import type { StoredBuffer } from "./idb";
 import { loadBuffer } from "./idb";
 import { toast } from "sonner";
+import {
+  getEffectiveTrackGain,
+  isTrackAudible,
+  resolveOutputBus,
+} from "./routing";
 
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
@@ -425,8 +430,6 @@ export class AudioEngine {
     m.delay.delayTime.value = Math.min(1.9, beat * 0.75); // dotted 8th
     m.click.gain.value = 0.9;
 
-    const trackById = new Map(project.tracks.map((track) => [track.id, track]));
-    const anySolo = project.tracks.some((track) => track.solo);
     const seen = new Set<string>();
     for (const track of project.tracks) {
       seen.add(track.id);
@@ -444,30 +447,9 @@ export class AudioEngine {
         }
       }
       applyTrackAudioPlugins(tn, track);
-      const vca = track.vcaId ? trackById.get(track.vcaId) : undefined;
-      const activeVca = vca?.role === "vca" ? vca : undefined;
-      const mutedByVca = !!activeVca?.mute;
-      const soloedByVca = !!activeVca?.solo;
-
-      let routedToSolo = false;
-      let routeId = track.outputBusId ?? null;
-      const routeSeen = new Set<string>([track.id]);
-      while (routeId) {
-        if (routeSeen.has(routeId)) break;
-        routeSeen.add(routeId);
-        const route = trackById.get(routeId);
-        if (!route || route.role !== "aux") break;
-        if (route.solo) routedToSolo = true;
-        routeId = route.outputBusId ?? null;
-      }
-
-      const audible =
-        track.role !== "vca" &&
-        !track.mute &&
-        !mutedByVca &&
-        (!anySolo || track.solo || soloedByVca || routedToSolo);
-      const vcaLevel = activeVca ? clamp(activeVca.volume, 0, 1.25) : 1;
-      tn.gain.gain.value = audible ? clamp(track.volume * vcaLevel, 0, 1.5625) : 0;
+      tn.gain.gain.value = isTrackAudible(track, project.tracks)
+        ? getEffectiveTrackGain(track, project.tracks)
+        : 0;
       tn.panner.pan.value = clamp(track.pan, -1, 1);
       // prefetch audio buffers
       for (const r of track.regions) {
@@ -489,25 +471,8 @@ export class AudioEngine {
       if (!nodes || track.role === "vca") continue;
 
       let target: AudioNode = m.input;
-      let routeId = track.outputBusId ?? null;
-      const visited = new Set<string>([track.id]);
-      let firstBus: Track | undefined;
-      let validRoute = true;
-      while (routeId) {
-        if (visited.has(routeId)) {
-          validRoute = false;
-          break;
-        }
-        visited.add(routeId);
-        const route = trackById.get(routeId);
-        if (!route || route.role !== "aux") {
-          validRoute = false;
-          break;
-        }
-        firstBus ??= route;
-        routeId = route.outputBusId ?? null;
-      }
-      if (validRoute && firstBus) {
+      const firstBus = resolveOutputBus(track, project.tracks);
+      if (firstBus) {
         const busNodes = this.tracks.get(firstBus.id);
         if (busNodes && busNodes !== nodes) target = busNodes.input;
       }
