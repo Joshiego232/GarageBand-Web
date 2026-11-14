@@ -15,7 +15,7 @@ import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
 import { barTicks, clamp, formatBarsBeats, gainToDb, secToTick, tickToSec } from "@/lib/daw/utils";
-import { uid } from "@/lib/daw/types";
+import { PPQ, uid } from "@/lib/daw/types";
 import { toast } from "sonner";
 import { findActiveRegion } from "./piano-roll";
 
@@ -84,8 +84,8 @@ export function AudioEditor() {
       .filter((item) =>
         item.type === "audio" &&
         item.id !== region.id &&
-        item.start < regionEnd &&
-        item.start + item.length > region.start
+        item.start <= region.start + 1 &&
+        item.start + item.length >= regionEnd - 1
       )
       .sort((a, b) => a.start - b.start);
   }, [track, region]);
@@ -101,7 +101,7 @@ export function AudioEditor() {
   const commitQuickComp = () => {
     if (!region || region.type !== "audio" || !track || compSources.length < 2) return;
     const takeIds = compSources.map((take) => take.id);
-    const secPerTick = 60 / tempo / 960;
+    const secPerTick = 60 / tempo / PPQ;
     const segments = Array.from({ length: compBarCount }, (_, index) => {
       const offsetTicks = index * compBarTicks;
       const lengthTicks = Math.min(compBarTicks, region.length - offsetTicks);
