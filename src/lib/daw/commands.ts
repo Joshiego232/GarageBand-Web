@@ -486,6 +486,10 @@ export const COMMANDS: Command[] = [
     const order: ("S" | "M" | "L")[] = ["S", "M", "L"];
     st.setTrackSize(order[Math.max(0, order.indexOf(st.ui.trackSize) - 1)]);
   }, { mod: true, shift: true }),
+  cmd("view.liveLoops", "Open Live Loops Grid", "View", "", () => {
+    const st = useDAW.getState();
+    st.setUI({ panels: { ...st.ui.panels, liveLoops: !st.ui.panels.liveLoops } });
+  }, { separatorBefore: true }),
   cmd("view.library", "Show Library", "View", "Y", () => useDAW.getState().togglePanel("library"), { separatorBefore: true }),
   cmd("view.loops", "Show Loop Browser", "View", "O", () => useDAW.getState().togglePanel("loops")),
   cmd("view.editor", "Show Editor", "View", "E", () => useDAW.getState().togglePanel("editor")),
