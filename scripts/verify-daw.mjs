@@ -27,6 +27,7 @@ try {
     "src/lib/daw/morph-synth.ts",
     "src/lib/daw/pitch-correction.ts",
     "src/lib/daw/audio-slicing.ts",
+    "src/lib/daw/audio-time-stretch.ts",
     "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
     "src/lib/daw/store.ts",
@@ -84,6 +85,9 @@ try {
   );
   const audioSlicing = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/audio-slicing.js")).href
+  );
+  const audioTimeStretch = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/audio-time-stretch.js")).href
   );
   const midiControl = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/midi-control.js")).href
@@ -455,6 +459,52 @@ try {
     "Transient slicer created cuts in silence",
   );
 
+  // Verify both pitch-preserving Flex Time modes retain duration targets and source pitch.
+  const flexRate = 22050;
+  const flexInput = new Float32Array(flexRate);
+  for (let index = 0; index < flexInput.length; index++) {
+    flexInput[index] = Math.sin((2 * Math.PI * 440 * index) / flexRate) * 0.35;
+  }
+  const sourceSampleBeforeFlex = flexInput[5000];
+  const monoStretched = audioTimeStretch.stretchAudioChannels(
+    [flexInput], flexRate, 1.25, "monophonic"
+  )[0];
+  const polyStretched = audioTimeStretch.stretchAudioChannels(
+    [flexInput], flexRate, 1.25, "polyphonic"
+  )[0];
+  const expectedFlexLength = Math.round(flexInput.length * 1.25);
+  expect(
+    monoStretched?.length === expectedFlexLength &&
+      polyStretched?.length === expectedFlexLength,
+    "Flex Time modes did not produce the selected target duration",
+  );
+  expect(
+    monoStretched?.every(Number.isFinite) && polyStretched?.every(Number.isFinite),
+    "Flex Time generated non-finite audio samples",
+  );
+  const estimateTone = (samples) => {
+    const start = Math.floor(samples.length * 0.1);
+    const end = Math.floor(samples.length * 0.9);
+    let crossings = 0;
+    for (let index = start + 1; index < end; index++) {
+      if ((samples[index - 1] <= 0 && samples[index] > 0) ||
+          (samples[index - 1] >= 0 && samples[index] < 0)) crossings++;
+    }
+    return crossings / (2 * ((end - start) / flexRate));
+  };
+  expect(
+    Math.abs(estimateTone(monoStretched) - 440) < 25,
+    "Monophonic Flex Time changed the pitch of a 440 Hz test tone",
+  );
+  expect(
+    Math.abs(estimateTone(polyStretched) - 440) < 25,
+    "Polyphonic Flex Time changed the pitch of a 440 Hz test tone",
+  );
+  expect(
+    flexInput[5000] === sourceSampleBeforeFlex,
+    "Flex Time modified the original source PCM data",
+  );
+
   // Verify Aux routing, nested buses, feedback protection, VCA gain and solo logic.
   const aux2 = { id: "aux-2", name: "Aux 2", role: "aux", type: "audio", outputBusId: null, volume: 0.9, mute: false, solo: false };
   const aux1 = { id: "aux-1", name: "Aux 1", role: "aux", type: "audio", outputBusId: aux2.id, volume: 0.9, mute: false, solo: false };
@@ -672,7 +722,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins (including Scripter) and 10 audio plugins; MIDI processor behavior checks passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins (including Scripter) and 10 audio plugins; MIDI processor behavior checks passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, WSOLA and phase-vocoder Flex Time, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
