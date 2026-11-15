@@ -39,7 +39,7 @@ const control = (
 
 export const MIDI_PLUGIN_DEFS: PluginDefinition[] = [
   { id: "arpeggiator", name: "Arpeggiator", description: "Turns held chord notes into a timed up/down note pattern.", controls: [control("stepTicks", "Step", 120, 960, 240, 120), control("gate", "Gate", 0.2, 1, 0.82, 0.02)] },
-  { id: "chord-maker", name: "Chord Generator", description: "Adds a third and fifth above each incoming note.", controls: [control("third", "Third", 3, 4, 4), control("fifth", "Fifth", 7, 7, 7)] },
+  { id: "chord-maker", name: "Chord Trigger", description: "Turns each incoming note into a chord by adding configured harmony intervals.", controls: [control("third", "Third", 3, 4, 4), control("fifth", "Fifth", 7, 7, 7)] },
   { id: "scale-lock", name: "Scale Lock", description: "Moves notes to the nearest note in the song key.", controls: [] },
   { id: "octave-doubler", name: "Octave Doubler", description: "Adds a second voice one octave above the played notes.", controls: [control("semitones", "Interval", 12, 24, 12)] },
   { id: "transposer", name: "Transposer", description: "Shifts every note by a selected number of semitones.", controls: [control("semitones", "Semitones", -24, 24, 0)] },
