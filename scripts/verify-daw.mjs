@@ -589,7 +589,7 @@ try {
     "transpose(12)",
     "velocityScale(0.8)",
     "lengthScale(0.5)",
-  ].join("\\n");
+  ].join("\n");
   const scripted = run(
     [note(60, 0, 960, 100)],
     { ...instance("scripter"), script: scripterProgram },
