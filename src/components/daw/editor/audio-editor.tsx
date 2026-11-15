@@ -15,6 +15,7 @@ import { engine } from "@/lib/daw/engine";
 import { runCommandById } from "@/lib/daw/commands";
 import { computePeaks } from "@/lib/daw/wav";
 import { detectTransientCuts } from "@/lib/daw/audio-slicing";
+import { stretchAudioChannels, type FlexTimeMode } from "@/lib/daw/audio-time-stretch";
 import { barTicks, clamp, formatBarsBeats, gainToDb, noteName, secToTick, tickToSec } from "@/lib/daw/utils";
 import { PPQ, uid } from "@/lib/daw/types";
 import {
@@ -70,6 +71,9 @@ export function AudioEditor() {
   const [busy, setBusy] = useState(false);
   const [silenceThreshold, setSilenceThreshold] = useState(-48);
   const [sliceSensitivity, setSliceSensitivity] = useState(-18);
+  const [flexTimeMode, setFlexTimeMode] = useState<FlexTimeMode>("monophonic");
+  const [flexTimeFactor, setFlexTimeFactor] = useState(1.2);
+  const [stretching, setStretching] = useState(false);
   const [loadTick, setLoadTick] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -545,6 +549,71 @@ export function AudioEditor() {
     }
   };
 
+  const onApplyFlexTime = async () => {
+    const r = region;
+    if (!r || !stored || stretching || Math.abs(flexTimeFactor - 1) < 0.001) return;
+    setStretching(true);
+    try {
+      const sr = stored.sampleRate;
+      const startFrame = Math.max(0, Math.floor(sampleStart * sr));
+      const endFrame = Math.min(
+        stored.channels[0]?.length ?? 0,
+        Math.ceil((sampleStart + sampleLength) * sr)
+      );
+      if (endFrame - startFrame < 1024) {
+        toast.error("The selected audio range is too short for Flex Time");
+        return;
+      }
+      const selectedChannels = stored.channels.map((channel) => channel.slice(startFrame, endFrame));
+      const stretchedChannels = stretchAudioChannels(
+        selectedChannels,
+        sr,
+        flexTimeFactor,
+        flexTimeMode
+      );
+      const outputFrames = stretchedChannels[0]?.length ?? 0;
+      if (
+        outputFrames < 1 ||
+        stretchedChannels.some((channel) => channel.length !== outputFrames) ||
+        stretchedChannels.some((channel) => !channel.every(Number.isFinite))
+      ) {
+        throw new Error("Flex Time produced an invalid audio buffer");
+      }
+
+      const newId = `flex-time-${uid()}`;
+      const durationSec = outputFrames / sr;
+      await engine.storeBuffer(newId, {
+        sampleRate: sr,
+        channels: stretchedChannels,
+        name: `${stored.name} - Flex Time`,
+      });
+      const store = useDAW.getState();
+      store.commit();
+      store.updateRegion(
+        r.id,
+        {
+          bufferId: newId,
+          sampleStart: 0,
+          sampleLength: durationSec,
+          length: Math.max(1, Math.round(r.length * flexTimeFactor)),
+          playbackRate: 1,
+          looped: false,
+          coreLength: undefined,
+        },
+        false
+      );
+      setLoadTick((tick) => tick + 1);
+      toast.success(
+        `Flex Time applied · ${flexTimeMode === "monophonic" ? "Monophonic WSOLA" : "Polyphonic Phase Vocoder"}`
+      );
+    } catch (error) {
+      console.error("Flex Time render failed", error);
+      toast.error(error instanceof Error ? error.message : "Could not stretch this audio");
+    } finally {
+      setStretching(false);
+    }
+  };
+
   const onSliceAtTransients = () => {
     const r = region;
     if (!r || !stored || busy) return;
@@ -842,6 +911,46 @@ export function AudioEditor() {
             onValueCommit={onGainCommit}
             aria-label="Region gain"
           />
+        </div>
+
+        <div className="flex flex-col gap-2 rounded border border-[#76a9df]/30 bg-[#76a9df]/[0.05] p-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] uppercase tracking-wider text-[#a9c9ec]">Flex Time · Pitch Preserving</span>
+            <span className="text-[9px] font-mono text-zinc-400">{Math.round(flexTimeFactor * 100)}%</span>
+          </div>
+          <select
+            value={flexTimeMode}
+            onChange={(event) => setFlexTimeMode(event.target.value as FlexTimeMode)}
+            aria-label="Flex Time algorithm"
+            className="h-7 rounded border border-black/50 bg-[#232327] px-2 text-[9px] text-zinc-200"
+          >
+            <option value="monophonic">Monophonic · WSOLA (vocals / lead)</option>
+            <option value="polyphonic">Polyphonic · Phase Vocoder (chords / mixes)</option>
+          </select>
+          <input
+            type="range"
+            min={0.5}
+            max={2}
+            step={0.05}
+            value={flexTimeFactor}
+            onChange={(event) => setFlexTimeFactor(Number(event.target.value))}
+            aria-label="Flex Time stretch amount"
+            className="w-full h-1.5 accent-[#76a9df]"
+          />
+          <Button
+            size="sm"
+            variant="secondary"
+            className={BTN}
+            onClick={() => void onApplyFlexTime()}
+            disabled={!stored || stretching || Math.abs(flexTimeFactor - 1) < 0.001}
+            title="Create a new pitch-preserved audio buffer and resize the region"
+          >
+            {stretching ? <Loader2 className="size-3 animate-spin" /> : <Repeat className="size-3" />}
+            {stretching ? "Stretching…" : "Apply Flex Time"}
+          </Button>
+          <p className="text-[8px] text-zinc-600">
+            100% is unchanged. WSOLA suits a single voice or lead; Phase Vocoder suits chords and dense audio. Use Transient Slicing for drum hits.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1 rounded border border-black/40 bg-[#19191c] p-2">
