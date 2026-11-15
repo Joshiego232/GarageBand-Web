@@ -5,6 +5,7 @@
 import type { Patch, KnobDef } from "./types";
 import { midiToFreq, clamp } from "./utils";
 import { playSampledNote } from "./sampled-instruments";
+import { buildMorphSpectrum } from "./morph-synth";
 
 export interface VoiceHandle {
   /** Schedule the release at absolute ctx time */
@@ -669,7 +670,7 @@ function playGuitar(v: VoiceCtx): VoiceHandle {
   const data = ksString(freq, 0.9965 + damp * 0.003, 0.35 + tone * 0.6);
   const src = ctx.createBufferSource();
   const buf = ctx.createBuffer(1, data.length, 44100);
-  buf.copyToChannel(data, 0);
+  buf.copyToChannel(new Float32Array(data), 0);
   src.buffer = buf;
   const g = ctx.createGain();
   g.gain.value = 0.55 * vel;
@@ -1233,165 +1234,431 @@ function play808Drum(v: VoiceCtx, piece: string): VoiceHandle {
 // Patch registry
 // ============================================================
 
+function soundfontPatch(
+  id: string,
+  name: string,
+  category: string,
+  instrument: string,
+  icon: string,
+  desc: string,
+  options: { loop?: boolean; brightness?: number; release?: number } = {}
+): Patch {
+  return {
+    id,
+    name,
+    category,
+    icon,
+    desc,
+    sampled: {
+      engine: "soundfont",
+      instrument,
+      kit: "MusyngKite",
+      loop: options.loop ?? false,
+    },
+    knobs: [
+      k("brightness", "Tone", 0, 1, options.brightness ?? 0.68),
+      k("release", "Release", 0.05, 2.5, options.release ?? 0.28, { unit: "s" }),
+      ...SEND_KNOBS,
+    ],
+  };
+}
+
+function electricPianoPatch(
+  id: string,
+  name: string,
+  instrument: string,
+  desc: string
+): Patch {
+  return {
+    id,
+    name,
+    category: "Piano & Keys",
+    icon: "piano",
+    desc,
+    sampled: { engine: "electric-piano", instrument },
+    knobs: [
+      k("brightness", "Tone", 0, 1, 0.7),
+      k("release", "Release", 0.05, 1.5, 0.22, { unit: "s" }),
+      ...SEND_KNOBS,
+    ],
+  };
+}
+
+function drumMachinePatch(
+  id: string,
+  name: string,
+  instrument: string,
+  desc: string
+): Patch {
+  return {
+    id,
+    name,
+    category: "Drums & Percussion",
+    icon: "drum",
+    desc,
+    isDrum: true,
+    sampled: { engine: "drum-machine", instrument },
+    knobs: [
+      k("brightness", "Tone", 0, 1, 0.72),
+      ...SEND_KNOBS,
+    ],
+  };
+}
+
+const morphWaveCache = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
+
+function morphPeriodicWave(
+  ctx: BaseAudioContext,
+  morph: number,
+  harmonics: number
+): PeriodicWave {
+  const morphStep = Math.round(morph * 24);
+  const harmonicStep = Math.round(harmonics * 24);
+  const key = `${morphStep}:${harmonicStep}`;
+  let cache = morphWaveCache.get(ctx);
+  if (!cache) {
+    cache = new Map();
+    morphWaveCache.set(ctx, cache);
+  }
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const count = 64;
+  const real = new Float32Array(count);
+  const imag = buildMorphSpectrum(morphStep / 24, harmonicStep / 24, count);
+  const wave = ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  cache.set(key, wave);
+  return wave;
+}
+
+function playMorphAdditive(v: VoiceCtx): VoiceHandle {
+  const { ctx, dest, freq, vel, when, p } = v;
+  const morph = clamp(p.morph ?? 0.5, 0, 1);
+  const harmonics = clamp(p.harmonics ?? 0.7, 0.1, 1);
+  const cutoff = clamp(p.cutoff ?? 6000, 80, 16000);
+  const resonance = clamp(p.resonance ?? 1.2, 0.1, 16);
+  const attack = clamp(p.attack ?? 0.03, 0.001, 4);
+  const decay = clamp(p.decay ?? 0.45, 0.02, 5);
+  const sustain = clamp(p.sustain ?? 0.65, 0, 1);
+  const release = clamp(p.release ?? 0.5, 0.03, 8);
+  const detune = clamp(p.detune ?? 6, 0, 40);
+  const subLevel = clamp(p.sub ?? 0.1, 0, 1);
+  const lfoRate = clamp(p.lfoRate ?? 0.25, 0.05, 12);
+  const lfoDepth = clamp(p.lfoDepth ?? 0.1, 0, 1);
+  const noiseLevel = clamp(p.noise ?? 0, 0, 1);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.Q.value = resonance;
+  const envelopePeak = Math.min(18000, cutoff * (1.2 + (1 - sustain) * 2.2));
+  filter.frequency.setValueAtTime(Math.max(80, cutoff * 0.45), when);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(90, envelopePeak), when + attack);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(80, cutoff), when + attack + decay);
+
+  const amp = ctx.createGain();
+  const peak = 0.28 * vel;
+  const sustainLevel = Math.max(0.0002, peak * sustain);
+  amp.gain.setValueAtTime(0.0001, when);
+  amp.gain.linearRampToValueAtTime(peak, when + attack);
+  amp.gain.exponentialRampToValueAtTime(sustainLevel, when + attack + decay);
+  filter.connect(amp).connect(dest);
+
+  const oscillators: OscillatorNode[] = [];
+  const sources: AudioScheduledSourceNode[] = [];
+  const main = ctx.createOscillator();
+  main.setPeriodicWave(morphPeriodicWave(ctx, morph, harmonics));
+  main.frequency.value = freq;
+  main.connect(filter);
+  main.start(when);
+  oscillators.push(main);
+
+  const unison = ctx.createOscillator();
+  unison.type = "sawtooth";
+  unison.frequency.value = freq;
+  unison.detune.value = detune;
+  const unisonGain = ctx.createGain();
+  unisonGain.gain.value = 0.08 + detune * 0.004;
+  unison.connect(unisonGain).connect(filter);
+  unison.start(when);
+  oscillators.push(unison);
+
+  if (subLevel > 0.001) {
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.value = freq / 2;
+    const subGain = ctx.createGain();
+    subGain.gain.value = subLevel * 0.38;
+    sub.connect(subGain).connect(filter);
+    sub.start(when);
+    oscillators.push(sub);
+  }
+
+  const lfo = ctx.createOscillator();
+  lfo.type = "sine";
+  lfo.frequency.value = lfoRate;
+  const filterLfo = ctx.createGain();
+  filterLfo.gain.value = cutoff * 0.42 * lfoDepth;
+  lfo.connect(filterLfo).connect(filter.frequency);
+  lfo.start(when);
+  oscillators.push(lfo);
+
+  if (noiseLevel > 0.001) {
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer(ctx, 1.5);
+    noise.loop = true;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "highpass";
+    noiseFilter.frequency.value = 900 + morph * 2800;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.value = noiseLevel * 0.075 * vel;
+    noise.connect(noiseFilter).connect(noiseGain).connect(filter);
+    noise.start(when);
+    sources.push(noise);
+  }
+
+  const stopSources = (at: number) => {
+    for (const source of [...oscillators, ...sources]) {
+      try { source.stop(at); } catch { /* already stopped */ }
+    }
+  };
+
+  return {
+    scheduleStop(at: number) {
+      const releaseAt = Math.max(at, when + attack * 0.5);
+      amp.gain.cancelScheduledValues(releaseAt);
+      amp.gain.setValueAtTime(Math.max(amp.gain.value, 0.0002), releaseAt);
+      amp.gain.exponentialRampToValueAtTime(0.0001, releaseAt + release);
+      stopSources(releaseAt + release + 0.04);
+    },
+    kill() {
+      const now = ctx.currentTime;
+      amp.gain.cancelScheduledValues(now);
+      amp.gain.setValueAtTime(Math.max(amp.gain.value, 0.0002), now);
+      amp.gain.linearRampToValueAtTime(0.0001, now + 0.018);
+      stopSources(now + 0.04);
+    },
+  };
+}
+
+function morphSynthPatch(
+  id: string,
+  name: string,
+  desc: string,
+  defaults: {
+    morph: number;
+    harmonics: number;
+    cutoff: number;
+    resonance: number;
+    attack: number;
+    decay: number;
+    sustain: number;
+    release: number;
+    detune: number;
+    sub: number;
+    lfoRate: number;
+    lfoDepth: number;
+    noise: number;
+  }
+): Patch {
+  return {
+    id,
+    name,
+    category: "Alchemy Synth",
+    icon: "audio-waveform",
+    desc,
+    synthEngine: "morph-additive",
+    knobs: [
+      k("morph", "Spectral Morph", 0, 1, defaults.morph),
+      k("harmonics", "Harmonics", 0.1, 1, defaults.harmonics),
+      k("cutoff", "Filter Cutoff", 80, 16000, defaults.cutoff, { curve: "log", unit: "Hz" }),
+      k("resonance", "Resonance", 0.1, 16, defaults.resonance),
+      k("attack", "Attack", 0.001, 4, defaults.attack, { unit: "s" }),
+      k("decay", "Decay", 0.02, 5, defaults.decay, { unit: "s" }),
+      k("sustain", "Sustain", 0, 1, defaults.sustain),
+      k("release", "Release", 0.03, 8, defaults.release, { unit: "s" }),
+      k("detune", "Unison Detune", 0, 40, defaults.detune, { unit: "ct" }),
+      k("sub", "Sub Layer", 0, 1, defaults.sub),
+      k("lfoRate", "LFO Rate", 0.05, 12, defaults.lfoRate, { unit: "Hz" }),
+      k("lfoDepth", "LFO Depth", 0, 1, defaults.lfoDepth),
+      k("noise", "Noise Layer", 0, 1, defaults.noise),
+      ...SEND_KNOBS,
+    ],
+  };
+}
+
 export const PATCHES: Record<string, Patch> = {
+  // Piano & Keys — ten playable sampled instruments
   "grand-piano": {
     id: "grand-piano",
-    name: "Grand Piano",
+    name: "Concert Grand Piano",
     category: "Piano & Keys",
     icon: "piano",
-    desc: "Velocity-layered, multi-sampled concert grand piano",
-    knobs: [k("brightness", "Tone", 0, 1, 0.6), k("release", "Release", 0.05, 1.5, 0.12, { unit: "s" }), ...SEND_KNOBS],
-  },
-  "bright-piano": {
-    id: "bright-piano",
-    name: "Bright Piano",
-    category: "Piano & Keys",
-    icon: "piano",
-    desc: "Bright velocity-layered sampled grand piano",
-    knobs: [k("brightness", "Tone", 0, 1, 0.92), k("release", "Release", 0.05, 1.5, 0.1, { unit: "s" }), ...SEND_KNOBS],
-  },
-  "stage-epiano": {
-    id: "stage-epiano",
-    name: "Stage Electric Piano",
-    category: "Piano & Keys",
-    icon: "piano",
-    desc: "Vintage tine electric piano",
-    knobs: [k("tine", "Tine", 0, 1, 0.55), k("tremolo", "Tremolo", 0, 1, 0.2), ...SEND_KNOBS],
-  },
-  "saw-lead": {
-    id: "saw-lead",
-    name: "Analog Saw Lead",
-    category: "Synthesizer",
-    icon: "audio-waveform",
-    desc: "Fat detuned lead synth",
+    desc: "Detailed multi-sampled concert grand piano",
+    sampled: { engine: "splendid-piano", instrument: "grand-piano" },
     knobs: [
-      k("cutoff", "Cutoff", 120, 12000, 4200, { curve: "log", unit: "Hz" }),
-      k("resonance", "Reso", 0.5, 18, 4),
-      k("attack", "Attack", 0.002, 0.8, 0.012, { unit: "s", curve: "log" }),
-      k("release", "Release", 0.02, 2, 0.24, { unit: "s", curve: "log" }),
+      k("brightness", "Tone", 0, 1, 0.72),
+      k("release", "Release", 0.05, 1.5, 0.18, { unit: "s" }),
       ...SEND_KNOBS,
     ],
   },
-  "warm-pad": {
-    id: "warm-pad",
-    name: "Warm Analog Pad",
-    category: "Synthesizer",
-    icon: "audio-waveform",
-    desc: "Lush evolving pad",
-    knobs: [
-      k("cutoff", "Cutoff", 150, 9000, 2200, { curve: "log", unit: "Hz" }),
-      k("attack", "Attack", 0.05, 3, 0.6, { unit: "s" }),
-      k("release", "Release", 0.1, 4, 1.4, { unit: "s" }),
-      k("shimmer", "Shimmer", 0, 1, 0.4),
-      ...SEND_KNOBS,
-    ],
-  },
-  "retro-chip": {
-    id: "retro-chip",
-    name: "Retro Chip Lead",
-    category: "Synthesizer",
-    icon: "gamepad-2",
-    desc: "8-bit pulse wave",
-    knobs: [k("duty", "Pulse", 0.1, 0.5, 0.25), ...SEND_KNOBS],
-  },
-  "sub-bass": {
-    id: "sub-bass",
-    name: "Deep Sub Bass",
-    category: "Bass",
-    icon: "speaker",
-    desc: "Clean sub sine bass",
-    knobs: [k("drive", "Drive", 0, 1, 0.2), k("decay", "Decay", 0.1, 2.5, 0.6, { unit: "s" }), ...SEND_KNOBS],
-  },
-  "pluck-bass": {
-    id: "pluck-bass",
-    name: "Fingered Bass",
-    category: "Bass",
-    icon: "speaker",
-    desc: "Plucked electric bass",
-    knobs: [k("punch", "Punch", 0, 1, 0.55), k("tone", "Tone", 0, 1, 0.5), ...SEND_KNOBS],
-  },
-  "808-bass": {
-    id: "808-bass",
-    name: "808 Bass",
-    category: "Bass",
-    icon: "speaker",
-    desc: "Hip-hop sub with glide",
-    knobs: [k("decay", "Decay", 0.2, 3, 1.0, { unit: "s" }), k("drive", "Drive", 0, 1, 0.3), ...SEND_KNOBS],
-  },
-  "string-ensemble": {
-    id: "string-ensemble",
-    name: "String Ensemble",
-    category: "Orchestral",
-    icon: "music",
-    desc: "Looped, sampled orchestral string ensemble",
-    knobs: [k("brightness", "Tone", 0, 1, 0.5), k("vibrato", "Vibrato", 0, 1, 0.35), ...SEND_KNOBS],
-  },
-  "tonewheel-organ": {
-    id: "tonewheel-organ",
-    name: "Tonewheel Organ",
-    category: "Piano & Keys",
-    icon: "piano",
-    desc: "Drawbar organ",
-    knobs: [k("harmonics", "Drawbars", 0, 1, 0.5), k("chorale", "Chorale", 0, 1, 0.3), ...SEND_KNOBS],
-  },
-  "nylon-guitar": {
-    id: "nylon-guitar",
-    name: "Nylon Guitar",
-    category: "Guitar",
-    icon: "guitar",
-    desc: "Soft classical strings",
-    knobs: [k("tone", "Tone", 0, 1, 0.45), k("damp", "Sustain", 0, 1, 0.55), ...SEND_KNOBS],
-  },
-  "steel-guitar": {
-    id: "steel-guitar",
-    name: "Steel-String Guitar",
-    category: "Guitar",
-    icon: "guitar",
-    desc: "Bright acoustic pluck",
-    knobs: [k("tone", "Tone", 0, 1, 0.75), k("damp", "Sustain", 0, 1, 0.6), ...SEND_KNOBS],
-  },
-  marimba: {
-    id: "marimba",
-    name: "Marimba",
-    category: "Mallets",
-    icon: "grid-3x3",
-    desc: "Wooden mallet tones",
-    knobs: [k("tone", "Tone", 0, 1, 0.5), ...SEND_KNOBS],
-  },
-  celesta: {
-    id: "celesta",
-    name: "Celesta & Bells",
-    category: "Mallets",
-    icon: "bell",
-    desc: "Sparkling bell tones",
-    knobs: [k("tone", "Tone", 0, 1, 0.5), ...SEND_KNOBS],
-  },
-  "wood-flute": {
-    id: "wood-flute",
-    name: "Wood Flute",
-    category: "Orchestral",
-    icon: "wind",
-    desc: "Breathy flute",
-    knobs: [k("breath", "Breath", 0, 1, 0.3), k("vibrato", "Vibrato", 0, 1, 0.3), ...SEND_KNOBS],
-  },
-  "drum-kit": {
-    id: "drum-kit",
-    name: "Acoustic Drums",
-    category: "Drums",
-    icon: "drum",
-    desc: "Full acoustic kit",
-    isDrum: true,
-    knobs: [k("tune", "Tune", 0, 1, 0.5), k("snap", "Snap", 0, 1, 0.5), k("decay", "Decay", 0, 1, 0.5), ...SEND_KNOBS],
-  },
-  "808-kit": {
-    id: "808-kit",
-    name: "808 Electronic Kit",
-    category: "Drums",
-    icon: "drum",
-    desc: "Classic drum machine",
-    isDrum: true,
-    knobs: [k("tune", "Tune", 0, 1, 0.5), k("snap", "Snap", 0, 1, 0.4), k("decay", "Decay", 0, 1, 0.5), ...SEND_KNOBS],
-  },
+  "bright-piano": soundfontPatch("bright-piano", "Bright Acoustic Piano", "Piano & Keys", "bright_acoustic_piano", "piano", "Bright, forward acoustic piano"),
+  "stage-epiano": electricPianoPatch("stage-epiano", "Wurlitzer EP-200", "WurlitzerEP200", "Biting, warm sampled Wurlitzer electric piano"),
+  "cp80-ep": electricPianoPatch("cp80-ep", "Yamaha CP-80", "CP80", "Bright sampled CP-80 electric grand"),
+  "pianet-t-ep": electricPianoPatch("pianet-t-ep", "Hohner Pianet T", "PianetT", "Soft, bell-like sampled Pianet electric piano"),
+  "tx81z-ep": electricPianoPatch("tx81z-ep", "FM Electric Piano", "TX81Z", "Sampled FM electric piano from the VCSL library"),
+  "electric-grand": soundfontPatch("electric-grand", "Electric Grand Piano", "Piano & Keys", "electric_grand_piano", "piano", "Clear, bright electric grand piano"),
+  "honky-tonk-piano": soundfontPatch("honky-tonk-piano", "Honky-Tonk Piano", "Piano & Keys", "honkytonk_piano", "piano", "Characterful detuned honky-tonk piano"),
+  harpsichord: soundfontPatch("harpsichord", "Harpsichord", "Piano & Keys", "harpsichord", "piano", "Crisp plucked baroque keyboard"),
+  clavinet: soundfontPatch("clavinet", "Clavinet", "Piano & Keys", "clavinet", "piano", "Percussive funk clavinet"),
+
+  // Synthesizers — ten distinct General MIDI synth programs
+  "saw-lead": soundfontPatch("saw-lead", "Analog Saw Lead", "Synthesizer", "lead_2_sawtooth", "audio-waveform", "Strong sawtooth lead synth", { loop: true, release: 0.32 }),
+  "retro-chip": soundfontPatch("retro-chip", "Square Wave Lead", "Synthesizer", "lead_1_square", "gamepad-2", "Classic square-wave synth lead", { loop: true, release: 0.16 }),
+  "lead-calliope": soundfontPatch("lead-calliope", "Calliope Lead", "Synthesizer", "lead_3_calliope", "audio-waveform", "Bright calliope-style synth"),
+  "lead-chiff": soundfontPatch("lead-chiff", "Chiff Lead", "Synthesizer", "lead_4_chiff", "audio-waveform", "Breathy chiff synth lead"),
+  "lead-charang": soundfontPatch("lead-charang", "Charang Lead", "Synthesizer", "lead_5_charang", "audio-waveform", "Buzzy digital synth lead"),
+  "lead-voice": soundfontPatch("lead-voice", "Voice Lead", "Synthesizer", "lead_6_voice", "audio-waveform", "Vocal-like synth lead"),
+  "lead-fifths": soundfontPatch("lead-fifths", "Fifths Lead", "Synthesizer", "lead_7_fifths", "audio-waveform", "Layered fifths synth voice"),
+  "lead-bass": soundfontPatch("lead-bass", "Bass + Lead", "Synthesizer", "lead_8_bass__lead", "audio-waveform", "Combined bass and lead synthesizer"),
+  "synth-brass-1": soundfontPatch("synth-brass-1", "Synth Brass 1", "Synthesizer", "synth_brass_1", "audio-waveform", "Classic analog-style synth brass", { loop: true }),
+  "synth-brass-2": soundfontPatch("synth-brass-2", "Synth Brass 2", "Synthesizer", "synth_brass_2", "audio-waveform", "Bright layered synth brass", { loop: true }),
+
+  // Worship Keys — ten pads, choirs and ambient keyboard layers
+  "warm-pad": soundfontPatch("warm-pad", "Warm Worship Pad", "Worship Keys", "pad_2_warm", "audio-waveform", "Warm sustained pad for worship arrangements", { loop: true, release: 1.2 }),
+  "choir-ahs": soundfontPatch("choir-ahs", "Choir Aahs", "Worship Keys", "choir_aahs", "music", "Sampled choir vowel ensemble", { loop: true, release: 0.9 }),
+  "voice-oohs": soundfontPatch("voice-oohs", "Voice Oohs", "Worship Keys", "voice_oohs", "music", "Soft sampled vocal ooh texture", { loop: true, release: 0.9 }),
+  "synth-choir": soundfontPatch("synth-choir", "Synth Choir", "Worship Keys", "synth_choir", "music", "Blended synthetic choir texture", { loop: true }),
+  "pad-new-age": soundfontPatch("pad-new-age", "New Age Pad", "Worship Keys", "pad_1_new_age", "audio-waveform", "Soft evolving ambient pad", { loop: true, release: 1.1 }),
+  "pad-polysynth": soundfontPatch("pad-polysynth", "Poly Synth Pad", "Worship Keys", "pad_3_polysynth", "audio-waveform", "Wide polyphonic synth pad", { loop: true }),
+  "pad-choir": soundfontPatch("pad-choir", "Choir Pad", "Worship Keys", "pad_4_choir", "music", "Choir-infused sustained pad", { loop: true, release: 1 }),
+  "pad-bowed": soundfontPatch("pad-bowed", "Bowed Pad", "Worship Keys", "pad_5_bowed", "audio-waveform", "Slow bowed synth texture", { loop: true, release: 1.2 }),
+  "pad-halo": soundfontPatch("pad-halo", "Halo Pad", "Worship Keys", "pad_7_halo", "audio-waveform", "Airy halo-style ambient layer", { loop: true, release: 1.2 }),
+  "pad-sweep": soundfontPatch("pad-sweep", "Sweep Pad", "Worship Keys", "pad_8_sweep", "audio-waveform", "Slow-moving sweeping pad", { loop: true, release: 1.1 }),
+
+  // Organs & Free-Reed — ten keyboard-friendly organ-family sounds
+  "tonewheel-organ": soundfontPatch("tonewheel-organ", "Tonewheel Drawbar Organ", "Organs", "drawbar_organ", "piano", "Drawbar tonewheel organ with a full fundamental", { loop: true, release: 0.12 }),
+  "church-organ": soundfontPatch("church-organ", "Church Pipe Organ", "Organs", "church_organ", "piano", "Sustained pipe-organ registration", { loop: true, release: 0.3 }),
+  "percussive-organ": soundfontPatch("percussive-organ", "Percussive Organ", "Organs", "percussive_organ", "piano", "Percussive organ attack with clear harmonics", { loop: true }),
+  "rock-organ": soundfontPatch("rock-organ", "Rock Organ", "Organs", "rock_organ", "piano", "Bright rock and gospel organ", { loop: true }),
+  "reed-organ": soundfontPatch("reed-organ", "Reed Organ", "Organs", "reed_organ", "piano", "Warm reed-organ keyboard voice", { loop: true }),
+  accordion: soundfontPatch("accordion", "Accordion", "Organs", "accordion", "music", "Sampled accordion reeds", { loop: true }),
+  "tango-accordion": soundfontPatch("tango-accordion", "Tango Accordion", "Organs", "tango_accordion", "music", "Expressive tango accordion samples", { loop: true }),
+  harmonica: soundfontPatch("harmonica", "Harmonica", "Organs", "harmonica", "wind", "Blues harmonica voice"),
+  "jazz-organ": soundfontPatch("jazz-organ", "Jazz Drawbar Organ", "Organs", "drawbar_organ", "piano", "Jazz drawbar registration with a brighter preset", { loop: true, brightness: 0.9 }),
+  "cathedral-organ": soundfontPatch("cathedral-organ", "Cathedral Organ", "Organs", "church_organ", "piano", "Full pipe-organ preset with a longer release", { loop: true, brightness: 0.82, release: 1.5 }),
+
+  // Bass — ten electric, acoustic and synth bass sounds
+  "sub-bass": soundfontPatch("sub-bass", "Deep Synth Bass", "Bass", "synth_bass_1", "speaker", "Deep sampled synthesizer bass"),
+  "pluck-bass": soundfontPatch("pluck-bass", "Fingered Electric Bass", "Bass", "electric_bass_finger", "speaker", "Sampled fingerstyle electric bass"),
+  "808-bass": soundfontPatch("808-bass", "Synth 808 Bass", "Bass", "synth_bass_2", "speaker", "Punchy sampled synth bass"),
+  "acoustic-bass": soundfontPatch("acoustic-bass", "Upright Acoustic Bass", "Bass", "acoustic_bass", "speaker", "Sampled upright bass"),
+  "picked-bass": soundfontPatch("picked-bass", "Picked Electric Bass", "Bass", "electric_bass_pick", "speaker", "Sampled picked electric bass"),
+  "fretless-bass": soundfontPatch("fretless-bass", "Fretless Bass", "Bass", "fretless_bass", "speaker", "Smooth fretless electric bass"),
+  "slap-bass-1": soundfontPatch("slap-bass-1", "Slap Bass 1", "Bass", "slap_bass_1", "speaker", "Punchy slap bass"),
+  "slap-bass-2": soundfontPatch("slap-bass-2", "Slap Bass 2", "Bass", "slap_bass_2", "speaker", "Bright popping slap bass"),
+  "synth-bass-deep": soundfontPatch("synth-bass-deep", "Deep Synth Bass 1", "Bass", "synth_bass_1", "speaker", "Deep-filtered synth bass preset", { brightness: 0.3 }),
+  "contrabass": soundfontPatch("contrabass", "Orchestral Contrabass", "Bass", "contrabass", "speaker", "Sampled orchestral double bass"),
+
+  // Guitars — ten acoustic, electric and world guitar voices
+  "nylon-guitar": soundfontPatch("nylon-guitar", "Nylon-String Guitar", "Guitars", "acoustic_guitar_nylon", "guitar", "Warm sampled nylon-string guitar"),
+  "steel-guitar": soundfontPatch("steel-guitar", "Steel-String Acoustic Guitar", "Guitars", "acoustic_guitar_steel", "guitar", "Bright sampled steel-string acoustic guitar"),
+  "jazz-guitar": soundfontPatch("jazz-guitar", "Jazz Electric Guitar", "Guitars", "electric_guitar_jazz", "guitar", "Round hollow-body jazz guitar"),
+  "clean-guitar": soundfontPatch("clean-guitar", "Clean Electric Guitar", "Guitars", "electric_guitar_clean", "guitar", "Clean electric guitar"),
+  "muted-guitar": soundfontPatch("muted-guitar", "Muted Electric Guitar", "Guitars", "electric_guitar_muted", "guitar", "Tight muted electric guitar"),
+  "overdrive-guitar": soundfontPatch("overdrive-guitar", "Overdriven Guitar", "Guitars", "overdriven_guitar", "guitar", "Driven electric guitar"),
+  "distortion-guitar": soundfontPatch("distortion-guitar", "Distortion Guitar", "Guitars", "distortion_guitar", "guitar", "Saturated electric guitar"),
+  "guitar-harmonics": soundfontPatch("guitar-harmonics", "Guitar Harmonics", "Guitars", "guitar_harmonics", "guitar", "Natural guitar harmonic chimes"),
+  banjo: soundfontPatch("banjo", "Banjo", "Guitars", "banjo", "guitar", "Bright plucked banjo"),
+  sitar: soundfontPatch("sitar", "Sitar", "Guitars", "sitar", "guitar", "Resonant sampled sitar"),
+
+  // Strings & Orchestral — ten sampled orchestral voices
+  "string-ensemble": soundfontPatch("string-ensemble", "String Ensemble", "Strings & Orchestral", "string_ensemble_1", "music", "Layered sampled orchestral strings", { loop: true, release: 1.1 }),
+  "string-ensemble-2": soundfontPatch("string-ensemble-2", "String Ensemble 2", "Strings & Orchestral", "string_ensemble_2", "music", "Second sampled orchestral string ensemble", { loop: true, release: 1.1 }),
+  violin: soundfontPatch("violin", "Solo Violin", "Strings & Orchestral", "violin", "music", "Sampled solo violin", { loop: true, release: 0.65 }),
+  viola: soundfontPatch("viola", "Solo Viola", "Strings & Orchestral", "viola", "music", "Sampled solo viola", { loop: true, release: 0.65 }),
+  cello: soundfontPatch("cello", "Solo Cello", "Strings & Orchestral", "cello", "music", "Sampled solo cello", { loop: true, release: 0.7 }),
+  "tremolo-strings": soundfontPatch("tremolo-strings", "Tremolo Strings", "Strings & Orchestral", "tremolo_strings", "music", "Sampled tremolo string section", { loop: true, release: 0.8 }),
+  "pizzicato-strings": soundfontPatch("pizzicato-strings", "Pizzicato Strings", "Strings & Orchestral", "pizzicato_strings", "music", "Plucked orchestral strings"),
+  "orchestral-harp": soundfontPatch("orchestral-harp", "Orchestral Harp", "Strings & Orchestral", "orchestral_harp", "music", "Sampled concert harp"),
+  "string-fiddle": soundfontPatch("string-fiddle", "Fiddle", "Strings & Orchestral", "fiddle", "music", "Fiddle articulation sample set", { loop: true, release: 0.55 }),
+  timpani: soundfontPatch("timpani", "Timpani", "Strings & Orchestral", "timpani", "drum", "Sampled orchestral timpani"),
+
+  // Bells & Mallets — ten pitched bell and mallet instruments
+  marimba: soundfontPatch("marimba", "Marimba", "Bells & Mallets", "marimba", "grid-3x3", "Warm wooden mallet instrument"),
+  celesta: soundfontPatch("celesta", "Celesta", "Bells & Mallets", "celesta", "bell", "Sparkling sampled celesta"),
+  glockenspiel: soundfontPatch("glockenspiel", "Glockenspiel", "Bells & Mallets", "glockenspiel", "bell", "Bright orchestral glockenspiel"),
+  vibraphone: soundfontPatch("vibraphone", "Vibraphone", "Bells & Mallets", "vibraphone", "bell", "Metallic vibraphone with gentle sustain"),
+  xylophone: soundfontPatch("xylophone", "Xylophone", "Bells & Mallets", "xylophone", "grid-3x3", "Bright wooden xylophone"),
+  "tubular-bells": soundfontPatch("tubular-bells", "Tubular Bells", "Bells & Mallets", "tubular_bells", "bell", "Large sampled tubular bells"),
+  "music-box": soundfontPatch("music-box", "Music Box", "Bells & Mallets", "music_box", "bell", "Delicate music-box tones"),
+  kalimba: soundfontPatch("kalimba", "Kalimba", "Bells & Mallets", "kalimba", "grid-3x3", "Warm thumb-piano tones"),
+  dulcimer: soundfontPatch("dulcimer", "Dulcimer", "Bells & Mallets", "dulcimer", "grid-3x3", "Plucked dulcimer tones"),
+  "steel-drums": soundfontPatch("steel-drums", "Steel Drums", "Bells & Mallets", "steel_drums", "grid-3x3", "Sampled steel pan ensemble"),
+
+  // Brass & Winds — ten sampled acoustic voices
+  "wood-flute": soundfontPatch("wood-flute", "Concert Flute", "Brass & Winds", "flute", "wind", "Sampled concert flute", { loop: true, release: 0.45 }),
+  trumpet: soundfontPatch("trumpet", "Trumpet", "Brass & Winds", "trumpet", "wind", "Sampled trumpet", { loop: true, release: 0.4 }),
+  "muted-trumpet": soundfontPatch("muted-trumpet", "Muted Trumpet", "Brass & Winds", "muted_trumpet", "wind", "Muted sampled trumpet"),
+  trombone: soundfontPatch("trombone", "Trombone", "Brass & Winds", "trombone", "wind", "Sampled trombone", { loop: true, release: 0.45 }),
+  tuba: soundfontPatch("tuba", "Tuba", "Brass & Winds", "tuba", "wind", "Sampled tuba", { loop: true, release: 0.5 }),
+  "french-horn": soundfontPatch("french-horn", "French Horn", "Brass & Winds", "french_horn", "wind", "Sampled French horn", { loop: true, release: 0.5 }),
+  "brass-section": soundfontPatch("brass-section", "Brass Section", "Brass & Winds", "brass_section", "wind", "Layered sampled brass section", { loop: true, release: 0.45 }),
+  "alto-sax": soundfontPatch("alto-sax", "Alto Saxophone", "Brass & Winds", "alto_sax", "wind", "Sampled alto saxophone", { loop: true, release: 0.45 }),
+  "tenor-sax": soundfontPatch("tenor-sax", "Tenor Saxophone", "Brass & Winds", "tenor_sax", "wind", "Sampled tenor saxophone", { loop: true, release: 0.45 }),
+  clarinet: soundfontPatch("clarinet", "Clarinet", "Brass & Winds", "clarinet", "wind", "Sampled clarinet", { loop: true, release: 0.45 }),
+
+  // Drums & Percussion — ten sampled drum machines and percussion patches
+  "drum-kit": drumMachinePatch("drum-kit", "Linn-Style Sampled Drum Kit", "LM-2", "Classic sampled LM-2 drum machine"),
+  "808-kit": drumMachinePatch("808-kit", "Roland TR-808", "TR-808", "Classic sampled TR-808 drum machine"),
+  "casio-rz1-kit": drumMachinePatch("casio-rz1-kit", "Casio RZ-1", "Casio-RZ1", "Sampled Casio RZ-1 drum machine"),
+  "mfb-512-kit": drumMachinePatch("mfb-512-kit", "MFB-512", "MFB-512", "Sampled MFB-512 drum machine"),
+  "cr-8000-kit": drumMachinePatch("cr-8000-kit", "Roland CR-8000", "Roland CR-8000", "Sampled Roland CR-8000 drum machine"),
+  "taiko-drums": soundfontPatch("taiko-drums", "Taiko Drums", "Drums & Percussion", "taiko_drum", "drum", "Sampled Japanese taiko drum", { release: 0.1 }),
+  "melodic-toms": soundfontPatch("melodic-toms", "Melodic Toms", "Drums & Percussion", "melodic_tom", "drum", "Sampled tuned tom drums", { release: 0.1 }),
+  "synth-drums": soundfontPatch("synth-drums", "Synth Drums", "Drums & Percussion", "synth_drum", "drum", "Sampled electronic percussion tones", { release: 0.1 }),
+  "woodblock-drums": soundfontPatch("woodblock-drums", "Woodblock", "Drums & Percussion", "woodblock", "drum", "Sampled woodblock percussion", { release: 0.08 }),
+  "reverse-cymbal": soundfontPatch("reverse-cymbal", "Reverse Cymbal", "Drums & Percussion", "reverse_cymbal", "drum", "Sampled reverse cymbal swell", { release: 0.08 }),
+  // Alchemy Synth — original spectral/additive morph presets, no external samples.
+  "alchemy-glass-orbit": morphSynthPatch(
+    "alchemy-glass-orbit", "Glass Orbit", "Bright inharmonic-style additive shimmer with a soft evolving filter",
+    { morph: 0.82, harmonics: 0.8, cutoff: 9200, resonance: 2.4, attack: 0.08, decay: 1.8, sustain: 0.64, release: 2.4, detune: 7, sub: 0.08, lfoRate: 0.22, lfoDepth: 0.24, noise: 0.02 }
+  ),
+  "alchemy-solar-pad": morphSynthPatch(
+    "alchemy-solar-pad", "Solar Pad", "Wide evolving pad with slow attack, a soft sub layer and gentle motion",
+    { morph: 0.48, harmonics: 0.58, cutoff: 4200, resonance: 1.2, attack: 1.4, decay: 2.8, sustain: 0.82, release: 3.8, detune: 12, sub: 0.22, lfoRate: 0.16, lfoDepth: 0.34, noise: 0.04 }
+  ),
+  "alchemy-prism-keys": morphSynthPatch(
+    "alchemy-prism-keys", "Prism Keys", "Percussive digital keys with a clear harmonic attack and short release",
+    { morph: 0.72, harmonics: 0.72, cutoff: 11200, resonance: 1.8, attack: 0.004, decay: 0.48, sustain: 0.12, release: 0.42, detune: 3, sub: 0.04, lfoRate: 3.2, lfoDepth: 0.08, noise: 0.015 }
+  ),
+  "alchemy-neon-lead": morphSynthPatch(
+    "alchemy-neon-lead", "Neon Lead", "Focused unison lead with bright upper partials and expressive filter movement",
+    { morph: 0.24, harmonics: 0.9, cutoff: 7800, resonance: 4.2, attack: 0.012, decay: 0.52, sustain: 0.76, release: 0.32, detune: 16, sub: 0.12, lfoRate: 5.1, lfoDepth: 0.14, noise: 0.01 }
+  ),
+  "alchemy-sub-motion": morphSynthPatch(
+    "alchemy-sub-motion", "Sub Motion", "Deep bass synth with a restrained harmonic edge and subtle modulation",
+    { morph: 0.12, harmonics: 0.42, cutoff: 1250, resonance: 1.1, attack: 0.006, decay: 0.34, sustain: 0.7, release: 0.22, detune: 2, sub: 0.9, lfoRate: 0.8, lfoDepth: 0.06, noise: 0 }
+  ),
+  "alchemy-crystal-bell": morphSynthPatch(
+    "alchemy-crystal-bell", "Crystal Bell", "Bell-like additive partials with a long decaying metallic tail",
+    { morph: 0.96, harmonics: 0.94, cutoff: 14800, resonance: 2.8, attack: 0.002, decay: 3.4, sustain: 0.04, release: 2.8, detune: 1.5, sub: 0, lfoRate: 0.12, lfoDepth: 0.16, noise: 0.03 }
+  ),
+  "alchemy-vapor-brass": morphSynthPatch(
+    "alchemy-vapor-brass", "Vapor Brass", "Layered synthetic brass with a rising filter envelope and mild unison",
+    { morph: 0.34, harmonics: 0.76, cutoff: 5200, resonance: 2.1, attack: 0.035, decay: 0.62, sustain: 0.72, release: 0.48, detune: 9, sub: 0.18, lfoRate: 0.32, lfoDepth: 0.08, noise: 0.035 }
+  ),
+  "alchemy-choir-flux": morphSynthPatch(
+    "alchemy-choir-flux", "Choir Flux", "Vocal-like additive pad with airy noise and slow spectral motion",
+    { morph: 0.68, harmonics: 0.52, cutoff: 3600, resonance: 1.4, attack: 0.65, decay: 1.5, sustain: 0.84, release: 3.2, detune: 6, sub: 0.08, lfoRate: 0.28, lfoDepth: 0.4, noise: 0.12 }
+  ),
+  "alchemy-spectral-dream": morphSynthPatch(
+    "alchemy-spectral-dream", "Spectral Dream", "Soft ambient texture combining evolving partials, subharmonics and filtered noise",
+    { morph: 0.9, harmonics: 0.62, cutoff: 6200, resonance: 0.9, attack: 1.9, decay: 3.4, sustain: 0.72, release: 5.5, detune: 4, sub: 0.14, lfoRate: 0.09, lfoDepth: 0.52, noise: 0.2 }
+  ),
+  "alchemy-digital-pluck": morphSynthPatch(
+    "alchemy-digital-pluck", "Digital Pluck", "Fast plucked synth tone with a bright morphing spectrum and tight bass foundation",
+    { morph: 0.58, harmonics: 0.88, cutoff: 9800, resonance: 3.1, attack: 0.002, decay: 0.26, sustain: 0.06, release: 0.3, detune: 2, sub: 0.28, lfoRate: 2.4, lfoDepth: 0.1, noise: 0.025 }
+  ),
 };
 
 export const PATCH_CATEGORIES = Array.from(
@@ -1416,13 +1683,33 @@ export function playNote(
   velocity: number,
   when: number,
   dur: number,
-  params: Params
+  params: Params,
+  noteOffControlled = false
 ): VoiceHandle {
   const freq = midiToFreq(pitch);
   const safeVelocity = clamp(velocity, 0.02, 1);
-  if (patchId === "grand-piano" || patchId === "bright-piano" || patchId === "string-ensemble") {
-    const sampled = playSampledNote(ctx, dest, patchId, pitch, safeVelocity, when, dur, params);
-    if (sampled) return sampled;
+  const patch = PATCHES[patchId];
+  if (patch?.synthEngine === "morph-additive") {
+    return playMorphAdditive({ ctx, dest, freq, vel: safeVelocity, when, dur, p: params });
+  }
+  if (patch?.sampled) {
+    const sampled = playSampledNote(
+      ctx,
+      dest,
+      patch,
+      pitch,
+      safeVelocity,
+      when,
+      dur,
+      params,
+      noteOffControlled
+    );
+    // Sample-backed patches deliberately do not fall back to an unrelated
+    // oscillator sound while their real samples are loading or unavailable.
+    return sampled ?? {
+      scheduleStop() { /* sample is not ready yet */ },
+      kill() { /* sample is not ready yet */ },
+    };
   }
   const vc: VoiceCtx = { ctx, dest, freq, vel: safeVelocity, when, dur, p: params };
   switch (patchId) {

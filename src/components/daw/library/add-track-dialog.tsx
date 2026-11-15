@@ -5,6 +5,7 @@
 // patches), Audio, or Drummer. Mounted when ui.modal === 'addTrack'.
 // ============================================================
 
+import { useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import {
   AudioWaveform,
@@ -30,6 +31,8 @@ import {
 } from "@/components/ui/dialog";
 import { useDAW } from "@/lib/daw/store";
 import { PATCHES } from "@/lib/daw/instruments";
+import { engine } from "@/lib/daw/engine";
+import { uid } from "@/lib/daw/types";
 
 const PATCH_ICONS: Record<string, LucideIcon> = {
   piano: Piano,
@@ -48,28 +51,39 @@ const PATCH_ICONS: Record<string, LucideIcon> = {
 const CATEGORY_COLORS: Record<string, string> = {
   "Piano & Keys": "#8fb44a",
   Synthesizer: "#7a6fd0",
+  "Worship Keys": "#9675d6",
+  Organs: "#4ca8a0",
   Bass: "#e08e3c",
-  Orchestral: "#3f9d8b",
-  Guitar: "#e0533d",
-  Mallets: "#c65cb8",
-  Drums: "#d9b13b",
+  Guitars: "#e0533d",
+  "Strings & Orchestral": "#3f9d8b",
+  "Bells & Mallets": "#c65cb8",
+  "Brass & Winds": "#d29a52",
+  "Drums & Percussion": "#d9b13b",
+  "Alchemy Synth": "#65a9d5",
 };
 const FALLBACK_COLOR = "#3f9d8b";
 
 /** Quick-pick patches shown on the Software Instrument card */
 const QUICK_PICKS = [
   "grand-piano",
-  "808-kit",
+  "stage-epiano",
   "saw-lead",
-  "pluck-bass",
   "warm-pad",
-  "marimba",
+  "tonewheel-organ",
+  "pluck-bass",
+  "nylon-guitar",
+  "string-ensemble",
+  "celesta",
+  "808-kit",
+  "alchemy-glass-orbit",
 ] as const;
 
 export function AddTrackDialog() {
   const modal = useDAW((s) => s.ui.modal);
   const addTrack = useDAW((s) => s.addTrack);
   const setModal = useDAW((s) => s.setModal);
+  const sampleInputRef = useRef<HTMLInputElement>(null);
+  const [importingSample, setImportingSample] = useState(false);
 
   const open = modal === "addTrack";
 
@@ -83,6 +97,56 @@ export function AddTrackDialog() {
     addTrack({ type: "audio" });
     setModal("none");
     toast.success("Audio track added");
+  };
+
+  const importQuickSampler = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+
+    if (!file.type.startsWith("audio/")) {
+      toast.error("Choose an audio file for Quick Sampler");
+      return;
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Quick Sampler files must be 25 MB or smaller");
+      return;
+    }
+
+    setImportingSample(true);
+    try {
+      const decoded = await engine.decodeAudioFile(file);
+      const duration = decoded.channels[0]?.length
+        ? decoded.channels[0].length / decoded.sampleRate
+        : 0;
+      if (duration <= 0 || duration > 60) {
+        toast.error("Quick Sampler supports audio samples up to 60 seconds");
+        return;
+      }
+
+      const bufferId = `quick-sampler-${uid()}`;
+      await engine.storeBuffer(bufferId, decoded);
+      const instrument = `quick-sampler-${bufferId}`;
+      const name = file.name.replace(/\.[^.]+$/, "").trim() || "Quick Sampler";
+      addTrack({
+        type: "midi",
+        instrument,
+        name,
+        icon: "audio-waveform",
+        color: "#4a90d9",
+        sampleBufferId: bufferId,
+        sampleRootPitch: 60,
+        samplePlaybackMode: "one-shot",
+        sampleName: file.name,
+      });
+      setModal("none");
+      toast.success(`Loaded ${file.name} into Quick Sampler`);
+    } catch (error) {
+      console.error("Quick Sampler import failed", error);
+      toast.error("Could not decode this audio file. Try WAV, MP3 or OGG.");
+    } finally {
+      setImportingSample(false);
+    }
   };
 
   const addDrummerTrack = () => {
@@ -144,6 +208,22 @@ export function AddTrackDialog() {
                 );
               })}
             </div>
+            <input
+              ref={sampleInputRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={importQuickSampler}
+              aria-label="Choose audio file for Quick Sampler"
+            />
+            <button
+              type="button"
+              disabled={importingSample}
+              onClick={() => sampleInputRef.current?.click()}
+              className="h-8 rounded-md border border-[#4a90d9]/40 bg-[#4a90d9]/10 text-[10px] font-medium text-[#9dc8f0] hover:bg-[#4a90d9]/20 disabled:opacity-50 transition-colors"
+            >
+              {importingSample ? "Loading sample…" : "Create Quick Sampler from Audio"}
+            </button>
           </div>
 
           {/* 2. Audio */}

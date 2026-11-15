@@ -12,6 +12,8 @@ import {
 } from "./types";
 import { playNote, PATCHES, type VoiceHandle } from "./instruments";
 import { warmSampledPatch } from "./sampled-instruments";
+import { applyMidiPlugins } from "./plugins";
+import { selectSamplerZone, shouldReleaseSamplerOnNoteOff } from "./sampler";
 import { useDAW } from "./store";
 import {
   tickToSec,
@@ -21,6 +23,12 @@ import {
 } from "./utils";
 import type { StoredBuffer } from "./idb";
 import { loadBuffer } from "./idb";
+import { toast } from "sonner";
+import {
+  getEffectiveTrackGain,
+  isTrackAudible,
+  resolveOutputBus,
+} from "./routing";
 
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
@@ -30,13 +38,57 @@ interface TrackNodes {
   eqLow: BiquadFilterNode;
   eqMid: BiquadFilterNode;
   eqHigh: BiquadFilterNode;
+  deEsser: BiquadFilterNode;
+  presence: BiquadFilterNode;
+  highPass: BiquadFilterNode;
   comp: DynamicsCompressorNode;
+  saturation: WaveShaperNode;
   gain: GainNode;
   panner: StereoPannerNode;
+  spatialPanner: PannerNode;
+  output: GainNode;
+  routingTarget: AudioNode;
   analyser: AnalyserNode;
   reverbSend: GainNode;
   delaySend: GainNode;
+  chorusDelay: DelayNode;
+  chorusSend: GainNode;
+  chorusLfo: OscillatorNode;
+  chorusDepth: GainNode;
+  flangerDelay: DelayNode;
+  flangerSend: GainNode;
+  flangerFeedback: GainNode;
+  flangerLfo: OscillatorNode;
+  flangerDepth: GainNode;
 }
+
+interface LiveClipRef {
+  trackId: string;
+  regionId: string;
+}
+
+interface LiveMidiClipState {
+  kind: "midi";
+  track: Track;
+  region: Region;
+  regionId: string;
+  notes: Note[];
+  startTime: number;
+  periodTicks: number;
+  periodSec: number;
+  scheduledUntil: number;
+  voices: { handle: VoiceHandle; until: number }[];
+}
+
+interface LiveAudioClipState {
+  kind: "audio";
+  trackId: string;
+  regionId: string;
+  source: AudioBufferSourceNode;
+  gain: GainNode;
+}
+
+type LiveClipState = LiveMidiClipState | LiveAudioClipState;
 
 interface MasterNodes {
   input: GainNode;
@@ -125,30 +177,218 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   eqMid.type = "peaking";
   const eqHigh = ctx.createBiquadFilter();
   eqHigh.type = "highshelf";
+
+  const deEsser = ctx.createBiquadFilter();
+  deEsser.type = "peaking";
+  deEsser.frequency.value = 6800;
+  deEsser.Q.value = 2;
+  const presence = ctx.createBiquadFilter();
+  presence.type = "peaking";
+  presence.frequency.value = 3200;
+  presence.Q.value = 0.8;
+
+  const highPass = ctx.createBiquadFilter();
+  highPass.type = "highpass";
+  highPass.frequency.value = 20;
+  highPass.Q.value = 0.707;
+
   const comp = ctx.createDynamicsCompressor();
   setComp(comp, false);
+  const saturation = ctx.createWaveShaper();
+  saturation.curve = new Float32Array([-1, 1]);
+  saturation.oversample = "4x";
+
   const gain = ctx.createGain();
   const panner = ctx.createStereoPanner();
+  const spatialPanner = ctx.createPanner();
+  spatialPanner.panningModel = "equalpower";
+  spatialPanner.distanceModel = "inverse";
+  spatialPanner.refDistance = 1;
+  spatialPanner.rolloffFactor = 0;
   const analyser = ctx.createAnalyser();
+  const output = ctx.createGain();
   analyser.fftSize = 512;
   const reverbSend = ctx.createGain();
   reverbSend.gain.value = 0;
   const delaySend = ctx.createGain();
   delaySend.gain.value = 0;
 
-  input.connect(eqLow).connect(eqMid).connect(eqHigh).connect(comp);
-  comp.connect(gain).connect(panner).connect(analyser).connect(master.input);
+  const chorusDelay = ctx.createDelay(0.08);
+  chorusDelay.delayTime.value = 0.02;
+  const chorusSend = ctx.createGain();
+  chorusSend.gain.value = 0;
+  const chorusLfo = ctx.createOscillator();
+  chorusLfo.frequency.value = 0.7;
+  const chorusDepth = ctx.createGain();
+  chorusDepth.gain.value = 0.003;
+  chorusLfo.connect(chorusDepth).connect(chorusDelay.delayTime);
+  chorusLfo.start();
+
+  const flangerDelay = ctx.createDelay(0.03);
+  flangerDelay.delayTime.value = 0.004;
+  const flangerSend = ctx.createGain();
+  flangerSend.gain.value = 0;
+  const flangerFeedback = ctx.createGain();
+  flangerFeedback.gain.value = 0;
+  const flangerLfo = ctx.createOscillator();
+  flangerLfo.frequency.value = 0.25;
+  const flangerDepth = ctx.createGain();
+  flangerDepth.gain.value = 0.0015;
+  flangerLfo.connect(flangerDepth).connect(flangerDelay.delayTime);
+  flangerLfo.start();
+
+  input
+    .connect(eqLow)
+    .connect(eqMid)
+    .connect(eqHigh)
+    .connect(deEsser)
+    .connect(presence)
+    .connect(highPass)
+    .connect(comp)
+    .connect(saturation)
+    .connect(gain)
+    .connect(panner)
+    .connect(spatialPanner)
+    .connect(analyser)
+    .connect(output);
+
+  output.connect(master.input);
+
   panner.connect(reverbSend).connect(master.reverbConv);
   panner.connect(delaySend).connect(master.delay);
-  return { input, eqLow, eqMid, eqHigh, comp, gain, panner, analyser, reverbSend, delaySend };
+
+  // Chorus and flanger are parallel, tempo-independent insert sends.
+  panner.connect(chorusDelay);
+  chorusDelay.connect(chorusSend).connect(spatialPanner);
+
+  panner.connect(flangerDelay);
+  flangerDelay.connect(flangerSend).connect(spatialPanner);
+  flangerDelay.connect(flangerFeedback).connect(flangerDelay);
+
+  return {
+    input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
+    gain, panner, spatialPanner, analyser, output, routingTarget: master.input,
+    reverbSend, delaySend, chorusDelay, chorusSend,
+    chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
+    flangerLfo, flangerDepth,
+  };
 }
 
-function setComp(comp: DynamicsCompressorNode, on: boolean) {
-  comp.threshold.value = on ? -18 : 0;
-  comp.ratio.value = on ? 2.5 : 1;
+function applyTrackSpatialPanning(tn: TrackNodes, track: Track) {
+  const enabled = track.spatialEnabled === true;
+  tn.spatialPanner.panningModel = enabled ? "HRTF" : "equalpower";
+  tn.panner.pan.value = enabled ? 0 : clamp(track.pan, -1, 1);
+
+  const x = enabled ? clamp(track.spatialX ?? 0, -5, 5) : 0;
+  const y = enabled ? clamp(track.spatialY ?? 0, -5, 5) : 0;
+  const z = enabled ? clamp(track.spatialZ ?? -1, -5, 5) : -1;
+
+  if (tn.spatialPanner.positionX && tn.spatialPanner.positionY && tn.spatialPanner.positionZ) {
+    tn.spatialPanner.positionX.value = x;
+    tn.spatialPanner.positionY.value = y;
+    tn.spatialPanner.positionZ.value = z;
+  } else {
+    tn.spatialPanner.setPosition(x, y, z);
+  }
+}
+
+function setComp(
+  comp: DynamicsCompressorNode,
+  on: boolean,
+  threshold = -18,
+  ratio = 2.5
+) {
+  comp.threshold.value = on ? threshold : 0;
+  comp.ratio.value = on ? ratio : 1;
   comp.knee.value = on ? 6 : 0;
   comp.attack.value = 0.006;
   comp.release.value = 0.18;
+}
+
+function activeAudioPlugin(track: Track, id: string) {
+  return (track.audioPlugins ?? []).find((plugin) => plugin.pluginId === id) ?? null;
+}
+
+function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
+  const get = (id: string) => activeAudioPlugin(track, id);
+  const eqPlugin = get("eq");
+  const eqEnabled = eqPlugin ? eqPlugin.enabled : true;
+  const eq = track.eq;
+
+  tn.eqLow.frequency.value = eq.lowFreq;
+  const eqMix = eqPlugin?.enabled ? clamp(eqPlugin.params.mix ?? 1, 0, 1) : 1;
+  tn.eqLow.gain.value = eqEnabled ? eq.lowGain * eqMix : 0;
+  tn.eqMid.frequency.value = eq.midFreq;
+  tn.eqMid.Q.value = eq.midQ;
+  tn.eqMid.gain.value = eqEnabled ? eq.midGain * eqMix : 0;
+  tn.eqHigh.frequency.value = eq.highFreq;
+  tn.eqHigh.gain.value = eqEnabled ? eq.highGain * eqMix : 0;
+
+  const compressor = get("compressor");
+  const compressorPluginEnabled = !!compressor?.enabled;
+  setComp(
+    tn.comp,
+    track.compressor || compressorPluginEnabled,
+    compressorPluginEnabled ? compressor?.params.threshold ?? -18 : -18,
+    compressorPluginEnabled ? compressor?.params.ratio ?? 2.5 : 2.5
+  );
+
+  const highPass = get("high-pass");
+  tn.highPass.frequency.value = highPass?.enabled
+    ? clamp(highPass.params.frequency ?? 80, 20, 320)
+    : 20;
+
+  const deEsser = get("de-esser");
+  tn.deEsser.frequency.value = deEsser?.params.frequency ?? 6800;
+  tn.deEsser.gain.value = deEsser?.enabled
+    ? -(deEsser.params.reduction ?? 5)
+    : 0;
+  const presence = get("presence");
+  tn.presence.frequency.value = presence?.params.frequency ?? 3200;
+  tn.presence.gain.value = presence?.enabled ? presence.params.gain ?? 2 : 0;
+
+  const saturation = get("saturation");
+  const drive = saturation?.enabled ? Math.max(0, saturation.params.drive ?? 0.28) : 0;
+  const curve = new Float32Array(1024);
+  const amount = drive * 6;
+  const normalizer = amount > 0 ? Math.tanh(amount) : 1;
+  for (let i = 0; i < curve.length; i++) {
+    const x = (i / (curve.length - 1)) * 2 - 1;
+    curve[i] = amount > 0 ? Math.tanh(x * amount) / normalizer : x;
+  }
+  tn.saturation.curve = curve;
+
+  const chorus = get("chorus");
+  if (chorus?.enabled) {
+    tn.chorusLfo.frequency.value = chorus.params.rate ?? 0.7;
+    tn.chorusDepth.gain.value = 0.001 + (chorus.params.depth ?? 0.45) * 0.006;
+    tn.chorusDelay.delayTime.value = 0.02;
+    tn.chorusSend.gain.value = 0.28;
+  } else {
+    tn.chorusSend.gain.value = 0;
+  }
+
+  const flanger = get("flanger");
+  if (flanger?.enabled) {
+    tn.flangerLfo.frequency.value = flanger.params.rate ?? 0.25;
+    tn.flangerDepth.gain.value = 0.0003 + (flanger.params.feedback ?? 0.35) * 0.002;
+    tn.flangerDelay.delayTime.value = 0.004;
+    tn.flangerFeedback.gain.value = Math.min(0.85, flanger.params.feedback ?? 0.35);
+    tn.flangerSend.gain.value = 0.24;
+  } else {
+    tn.flangerSend.gain.value = 0;
+    tn.flangerFeedback.gain.value = 0;
+  }
+
+  const reverb = get("reverb");
+  const delay = get("delay");
+  tn.reverbSend.gain.value = reverb
+    ? (reverb.enabled ? clamp(reverb.params.amount ?? 0.28, 0, 1) : 0)
+    : clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
+  tn.delaySend.gain.value = delay
+    ? (delay.enabled ? clamp(delay.params.amount ?? 0.22, 0, 1) : 0)
+    : clamp((track.params.delay ?? 0) * 0.9, 0, 1);
+
 }
 
 export class AudioEngine {
@@ -157,6 +397,8 @@ export class AudioEngine {
   private tracks = new Map<string, TrackNodes>();
   private voices: ActiveVoice[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  private playRequestId = 0;
+  private playPending = false;
 
   // transport
   playing = false;
@@ -171,7 +413,7 @@ export class AudioEngine {
   // MIDI live input + recording
   private openInputNotes = new Map<
     number,
-    { voice: VoiceHandle; startTick: number; velocity: number }
+    { voices: VoiceHandle[]; startTick: number; velocity: number }
   >();
   recordedMidi: { pitch: number; velocity: number; start: number; length: number }[] = [];
   private recordTargetTrack: string | null = null;
@@ -188,7 +430,13 @@ export class AudioEngine {
   // buffer cache
   private bufferCache = new Map<string, StoredBuffer>();
   private pendingLoads = new Set<string>();
+  private bufferLoadPromises = new Map<string, Promise<StoredBuffer | undefined>>();
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
+  private auditionDest: GainNode | null = null;
+  private previewTimer: ReturnType<typeof setInterval> | null = null;
+  private liveLoopTimer: ReturnType<typeof setInterval> | null = null;
+  private liveClips = new Map<string, LiveClipState>();
+  private liveGridStartTime = 0;
 
   // loop preview
   private preview: {
@@ -203,6 +451,7 @@ export class AudioEngine {
 
   private unsub: (() => void) | null = null;
   private inited = false;
+  private activeOutputDeviceId: string | null | undefined = undefined;
 
   // ---------------- lifecycle ----------------
 
@@ -238,9 +487,25 @@ export class AudioEngine {
     m.volume.gain.value = clamp(project.masterVolume, 0, 1.25);
     const beat = 60 / project.tempo;
     m.delay.delayTime.value = Math.min(1.9, beat * 0.75); // dotted 8th
+    const requestedOutput = project.audioOutputDeviceId ?? null;
+    if (this.activeOutputDeviceId !== requestedOutput) {
+      this.activeOutputDeviceId = requestedOutput;
+      const contextWithSink = ctx as AudioContext & {
+        setSinkId?: (sinkId: string) => Promise<void>;
+      };
+      if (typeof contextWithSink.setSinkId === "function") {
+        void contextWithSink.setSinkId(requestedOutput ?? "").catch((error: unknown) => {
+          this.activeOutputDeviceId = undefined;
+          console.error("Could not route audio to the selected output device.", error);
+          toast.error("Could not select that audio output device. The default output is still active.");
+        });
+      } else if (requestedOutput) {
+        this.activeOutputDeviceId = undefined;
+        toast.error("This browser does not support selecting an audio output device.");
+      }
+    }
     m.click.gain.value = 0.9;
 
-    const anySolo = project.tracks.some((t) => t.solo);
     const seen = new Set<string>();
     for (const track of project.tracks) {
       seen.add(track.id);
@@ -249,34 +514,46 @@ export class AudioEngine {
         tn = buildTrack(ctx, m);
         this.tracks.set(track.id, tn);
       }
-      if (track.type === "midi") void warmSampledPatch(ctx, tn.input, track.instrument);
-      const eq = track.eq;
-      tn.eqLow.frequency.value = eq.lowFreq;
-      tn.eqLow.gain.value = eq.lowGain;
-      tn.eqMid.frequency.value = eq.midFreq;
-      tn.eqMid.Q.value = eq.midQ;
-      tn.eqMid.gain.value = eq.midGain;
-      tn.eqHigh.frequency.value = eq.highFreq;
-      tn.eqHigh.gain.value = eq.highGain;
-      setComp(tn.comp, track.compressor);
-      const audible = !track.mute && (!anySolo || track.solo);
-      tn.gain.gain.value = audible ? clamp(track.volume, 0, 1.25) : 0;
-      tn.panner.pan.value = clamp(track.pan, -1, 1);
-      tn.reverbSend.gain.value = clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
-      tn.delaySend.gain.value = clamp((track.params.delay ?? 0) * 0.9, 0, 1);
+      if (track.type === "midi") {
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) {
+          // Warm in the background when a track is created or its instrument changes.
+          // Transport start also awaits these promises before scheduling MIDI notes.
+          void warmSampledPatch(ctx, tn.input, patch).catch(() => undefined);
+        }
+      }
+      applyTrackAudioPlugins(tn, track);
+      tn.gain.gain.value = isTrackAudible(track, project.tracks)
+        ? getEffectiveTrackGain(track, project.tracks)
+        : 0;
+      applyTrackSpatialPanning(tn, track);
       // prefetch audio buffers
-      for (const r of track.regions) {
-        if (r.bufferId && !this.bufferCache.has(r.bufferId) && !this.pendingLoads.has(r.bufferId)) {
-          this.pendingLoads.add(r.bufferId);
-          loadBuffer(r.bufferId)
-            .then((b) => {
-              if (b) this.bufferCache.set(r.bufferId as string, b);
-            })
-            .catch(() => undefined)
-            .finally(() => this.pendingLoads.delete(r.bufferId as string));
+      for (const bufferId of [track.sampleBufferId, ...(track.sampleZones ?? []).map((zone) => zone.bufferId), ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
+        if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
+          void this.ensureBufferLoaded(bufferId).catch(() => undefined);
         }
       }
     }
+    // Reconnect channel outputs after every track node exists so an instrument
+    // can safely feed an Aux bus that appears later in the track list.
+    for (const track of project.tracks) {
+      const nodes = this.tracks.get(track.id);
+      if (!nodes || track.role === "vca") continue;
+
+      let target: AudioNode = m.input;
+      const firstBus = resolveOutputBus(track, project.tracks);
+      if (firstBus) {
+        const busNodes = this.tracks.get(firstBus.id);
+        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      }
+
+      if (nodes.routingTarget !== target) {
+        try { nodes.output.disconnect(); } catch { /* noop */ }
+        nodes.output.connect(target);
+        nodes.routingTarget = target;
+      }
+    }
+
     // remove stale track nodes
     for (const id of Array.from(this.tracks.keys())) {
       if (!seen.has(id)) {
@@ -285,8 +562,14 @@ export class AudioEngine {
           try {
             tn.input.disconnect();
             tn.analyser.disconnect();
+            tn.spatialPanner.disconnect();
+            tn.output.disconnect();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
+            tn.chorusSend.disconnect();
+            tn.flangerSend.disconnect();
+            tn.chorusLfo.stop();
+            tn.flangerLfo.stop();
           } catch { /* noop */ }
         }
         this.tracks.delete(id);
@@ -311,16 +594,24 @@ export class AudioEngine {
   }
 
   async ensureBufferLoaded(id: string): Promise<StoredBuffer | undefined> {
-    if (this.bufferCache.has(id)) return this.bufferCache.get(id);
-    if (this.pendingLoads.has(id)) return undefined;
+    const cached = this.bufferCache.get(id);
+    if (cached) return cached;
+
+    const existing = this.bufferLoadPromises.get(id);
+    if (existing) return existing;
+
     this.pendingLoads.add(id);
-    try {
-      const b = await loadBuffer(id);
-      if (b) this.bufferCache.set(id, b);
-      return b;
-    } finally {
-      this.pendingLoads.delete(id);
-    }
+    const pending = loadBuffer(id)
+      .then((buffer) => {
+        if (buffer) this.bufferCache.set(id, buffer);
+        return buffer;
+      })
+      .finally(() => {
+        this.pendingLoads.delete(id);
+        this.bufferLoadPromises.delete(id);
+      });
+    this.bufferLoadPromises.set(id, pending);
+    return pending;
   }
 
   /** Create (and cache per-context) an AudioBuffer for playback */
@@ -335,7 +626,7 @@ export class AudioEngine {
     let buf = perCtx.get(id);
     if (!buf) {
       buf = ctx.createBuffer(stored.channels.length, stored.channels[0].length, stored.sampleRate);
-      stored.channels.forEach((ch, i) => buf!.copyToChannel(ch, i));
+      stored.channels.forEach((ch, i) => buf!.copyToChannel(new Float32Array(ch), i));
       perCtx.set(id, buf);
     }
     return buf;
@@ -357,8 +648,72 @@ export class AudioEngine {
   play(fromTick?: number) {
     const ctx = this.ensure();
     this.stopPreview();
-    const st = useDAW.getState();
-    const project = st.project;
+
+    const requestId = ++this.playRequestId;
+    this.playPending = true;
+
+    // Sample-backed instruments load over the network. Never start the
+    // transport while a MIDI patch is still loading, otherwise the first
+    // notes in a region can be silently dropped.
+    void this.preparePlaybackSamples(requestId, ctx)
+      .then(() => {
+        if (requestId !== this.playRequestId || this.ctx !== ctx) return;
+        this.playPending = false;
+        this.beginPlayback(fromTick, ctx);
+      })
+      .catch((error: unknown) => {
+        if (requestId !== this.playRequestId) return;
+        this.playPending = false;
+        this.recording = false;
+        useDAW.getState().setTransport({ playing: false, recording: false, countInRemaining: 0 });
+        console.error("GarageBand Web Studio could not load one or more instrument samples.", error);
+        toast.error("Some instrument samples could not load. Check your connection and press Play to retry.");
+      });
+  }
+
+  private async preparePlaybackSamples(requestId: number, ctx: AudioContext) {
+    let snapshot: Project;
+    do {
+      if (requestId !== this.playRequestId || this.ctx !== ctx) return;
+
+      snapshot = useDAW.getState().project;
+      this.sync(snapshot);
+
+      const anySolo = snapshot.tracks.some((track) => track.solo);
+      const sampleLoads: Promise<void>[] = [];
+      for (const track of snapshot.tracks) {
+        if (track.type !== "midi" || track.mute || (anySolo && !track.solo)) continue;
+        const patch = PATCHES[track.instrument];
+        const nodes = this.tracks.get(track.id);
+        const customSampleIds = [
+          track.sampleBufferId,
+          ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+        ].filter((id): id is string => !!id);
+        if (customSampleIds.length) {
+          sampleLoads.push(
+            ...[...new Set(customSampleIds)].map(async (sampleId) => {
+              const buffer = await this.ensureBufferLoaded(sampleId);
+              if (!buffer) throw new Error(`Sampler audio is missing for ${track.sampleName ?? track.name}`);
+            })
+          );
+        } else if (patch?.sampled && nodes) {
+          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch));
+        }
+      }
+
+      await Promise.all(sampleLoads);
+      // If the user changed instruments while samples were loading, prepare
+      // the latest project too before allowing playback to begin.
+    } while (
+      snapshot !== useDAW.getState().project &&
+      requestId === this.playRequestId
+    );
+  }
+
+  private beginPlayback(fromTick: number | undefined, ctx: AudioContext) {
+    if (this.ctx !== ctx || !this.master) return;
+
+    const project = useDAW.getState().project;
     const start = fromTick ?? this.stoppedAtTick ?? 0;
     const beatSec = 60 / project.tempo;
     const countIn = this.recording && project.countIn ? project.timeSig[0] : 0;
@@ -382,6 +737,9 @@ export class AudioEngine {
   }
 
   stop() {
+    // Also cancels playback that is waiting for sample downloads.
+    this.playRequestId += 1;
+    this.playPending = false;
     const wasPlaying = this.playing;
     if (!wasPlaying) return;
     const tick = this.currentTick();
@@ -395,7 +753,9 @@ export class AudioEngine {
     for (const [pitch, n] of this.openInputNotes) {
       const len = Math.max(PPQ / 8, tick - n.startTick);
       this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
-      try { n.voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+      for (const voice of n.voices) {
+        try { voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+      }
     }
     this.openInputNotes.clear();
     for (const v of this.voices) v.handle.kill();
@@ -406,7 +766,7 @@ export class AudioEngine {
   }
 
   togglePlay() {
-    if (this.playing) this.stop();
+    if (this.playing || this.playPending) this.stop();
     else this.play(this.stoppedAtTick ?? 0);
   }
 
@@ -418,7 +778,7 @@ export class AudioEngine {
     this.recording = true;
     this.recordedMidi = [];
     if (track?.type === "audio") {
-      this.startAudioCapture(track.id, track.inputMonitor).catch(() => {
+      this.startAudioCapture(track.id, track.inputMonitor, track.inputDeviceId).catch(() => {
         this.recording = false;
       });
     }
@@ -456,7 +816,7 @@ export class AudioEngine {
 
   setPlayhead(tick: number) {
     this.stoppedAtTick = Math.max(0, tick);
-    if (this.playing) {
+    if (this.playing || this.playPending) {
       this.play(Math.max(0, tick));
     }
   }
@@ -564,6 +924,97 @@ export class AudioEngine {
     }
   }
 
+  private playTrackNote(
+    ctx: BaseAudioContext,
+    dest: AudioNode,
+    track: Track,
+    pitch: number,
+    velocity: number,
+    when: number,
+    duration: number,
+    noteOffControlled = false
+  ): VoiceHandle {
+    const matchingZone = selectSamplerZone(track.sampleZones, pitch, velocity * 127);
+    const bufferId = matchingZone?.bufferId ?? track.sampleBufferId;
+    if (!bufferId) {
+      if ((track.sampleZones ?? []).length) {
+        return { scheduleStop() {}, kill() {} };
+      }
+      return playNote(
+        ctx,
+        dest,
+        track.instrument,
+        pitch,
+        velocity,
+        when,
+        duration,
+        track.params,
+        noteOffControlled
+      );
+    }
+
+    const buffer = this.bufferFor(ctx, bufferId);
+    if (!buffer || buffer.duration <= 0) {
+      return { scheduleStop() {}, kill() {} };
+    }
+
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    const mode = matchingZone?.playbackMode ?? track.samplePlaybackMode ?? "one-shot";
+    const rootPitch = matchingZone?.rootPitch ?? track.sampleRootPitch ?? 60;
+    source.buffer = buffer;
+    source.playbackRate.value = clamp(
+      Math.pow(2, (pitch - clamp(rootPitch, 0, 127)) / 12),
+      0.25,
+      4
+    );
+    source.loop = mode === "loop";
+    if (source.loop) {
+      source.loopStart = 0;
+      source.loopEnd = buffer.duration;
+    }
+
+    const level = clamp(velocity, 0, 1);
+    const attack = Math.min(0.008, Math.max(0.002, duration * 0.05));
+    gain.gain.setValueAtTime(0.0001, when);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0001, level), when + attack);
+    source.connect(gain).connect(dest);
+    source.start(when);
+
+    let stopped = false;
+    const stopAt = (at: number, release: number) => {
+      if (stopped) return;
+      stopped = true;
+      const safeAt = Math.max(at, ctx.currentTime);
+      try {
+        gain.gain.cancelScheduledValues(safeAt);
+        gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), safeAt);
+        gain.gain.linearRampToValueAtTime(0.0001, safeAt + release);
+        source.stop(safeAt + release + 0.005);
+      } catch {
+        // The source may already have reached the end of a one-shot sample.
+      }
+    };
+
+    source.onended = () => {
+      try {
+        source.disconnect();
+        gain.disconnect();
+      } catch { /* already disconnected */ }
+    };
+
+    return {
+      scheduleStop(at: number) {
+        // Quick Sampler's one-shot mode plays through even when the MIDI key
+        // is released. Loop mode follows MIDI note-off and fades cleanly.
+        if (shouldReleaseSamplerOnNoteOff(mode)) stopAt(at, 0.045);
+      },
+      kill() {
+        stopAt(ctx.currentTime, 0.005);
+      },
+    };
+  }
+
   private scheduleMidiRegion(
     region: Region,
     track: Track,
@@ -573,7 +1024,12 @@ export class AudioEngine {
     timeAt: (t: number) => number,
     project: Project
   ) {
-    const notes = region.notes ?? [];
+    const notes = applyMidiPlugins(
+      region.notes ?? [],
+      track.midiPlugins ?? [],
+      project.keyTonic,
+      project.keyMode
+    );
     const regionEnd = region.start + region.length;
     if (!notes.length) return;
     const period = region.looped && region.coreLength ? region.coreLength : 0;
@@ -589,17 +1045,21 @@ export class AudioEngine {
         if (durTicks <= 0) continue;
         const when = timeAt(absStart);
         const dur = tickToSec(durTicks, project.tempo);
-        const voice = playNote(
+        const noteStart = Math.max(when, (this.ctx as AudioContext).currentTime);
+        const voice = this.playTrackNote(
           this.ctx as AudioContext,
           tn.input,
-          track.instrument,
+          track,
           n.pitch,
           n.velocity / 127,
-          Math.max(when, (this.ctx as AudioContext).currentTime),
-          dur,
-          track.params
+          noteStart,
+          dur
         );
-        this.voices.push({ handle: voice, until: when + dur + 6 });
+        // All sustained instruments must receive MIDI note-off at the end of
+        // the note. Without this, pads, strings, organs and leads can sustain
+        // until transport stop even though the region/note has already ended.
+        voice.scheduleStop(noteStart + dur);
+        this.voices.push({ handle: voice, until: noteStart + dur + 6 });
       }
     }
   }
@@ -617,7 +1077,9 @@ export class AudioEngine {
     if (!buf) return;
     const regionEnd = region.start + region.length;
     const contentSec = region.sampleLength ?? buf.duration;
-    const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+    const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+    const contentPlaySec = contentSec / playbackRate;
+    const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
     const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
     for (let k = 0; k < reps; k++) {
       const occStart = region.start + k * periodTicks;
@@ -625,7 +1087,7 @@ export class AudioEngine {
       if (occStart < fromTick) continue;
       const when = timeAt(occStart);
       const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-      const durSec = Math.min(contentSec, tickToSec(remainTicks, project.tempo));
+      const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
       if (durSec <= 0.005) continue;
       this.playAudioSlice(region, buf, tn.input, when, 0, durSec);
     }
@@ -643,11 +1105,13 @@ export class AudioEngine {
     const ctx = this.ctx as AudioContext;
     const src = ctx.createBufferSource();
     src.buffer = buf;
+    const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+    src.playbackRate.value = playbackRate;
     const g = ctx.createGain();
     const gainVal = region.gain ?? 1;
     const fi = Math.min(region.fadeIn ?? 0, durSec);
     const fo = Math.min(region.fadeOut ?? 0, durSec);
-    const fiRemain = Math.max(0, fi - offsetIntoContentSec);
+    const fiRemain = Math.max(0, fi - offsetIntoContentSec / playbackRate);
     const end = when + durSec;
     let t = when;
     if (fiRemain > 0) {
@@ -664,7 +1128,7 @@ export class AudioEngine {
     }
     src.connect(g).connect(dest);
     const sampleStart = (region.sampleStart ?? 0) + offsetIntoContentSec;
-    src.start(Math.max(when, ctx.currentTime), sampleStart, durSec + 0.02);
+    src.start(Math.max(when, ctx.currentTime), sampleStart, durSec * playbackRate + 0.02);
     // register for kill
     const voice: VoiceHandle = {
       scheduleStop() { /* scheduled already */ },
@@ -697,14 +1161,16 @@ export class AudioEngine {
         const buf = this.bufferFor(this.ctx as AudioContext, region.bufferId);
         if (!buf) continue;
         const contentSec = region.sampleLength ?? buf.duration;
-        const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+        const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+        const contentPlaySec = contentSec / playbackRate;
+        const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
         let occStart = region.start;
         if (periodTicks) {
           occStart = region.start + Math.floor((atTick - region.start) / periodTicks) * periodTicks;
         }
-        const offsetIntoContent = tickToSec(atTick - occStart, project.tempo);
+        const offsetIntoContent = tickToSec(atTick - occStart, project.tempo) * playbackRate;
         const remainRegionSec = tickToSec(regionEnd - atTick, project.tempo);
-        const durSec = Math.max(0, Math.min(contentSec - offsetIntoContent, remainRegionSec));
+        const durSec = Math.max(0, Math.min((contentSec - offsetIntoContent) / playbackRate, remainRegionSec));
         if (durSec > 0.005) {
           this.playAudioSlice(region, buf, tn.input, atTime, offsetIntoContent, durSec);
         }
@@ -720,9 +1186,127 @@ export class AudioEngine {
     const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
     if (!track || track.type !== "midi") return;
     if (this.openInputNotes.has(pitch)) return;
-    const voice = playNote(ctx, this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination, track.instrument, pitch, velocity / 127, ctx.currentTime, 3600, track.params);
+
+    // Apply immediate note-shaping MIDI effects to live keyboard input. Time-based
+    // processors (arpeggiator, repeater, gate and echo) are rendered on MIDI regions
+    // where the complete note length is known.
+    const livePlugins = (track.midiPlugins ?? []).filter(
+      (plugin) => !["arpeggiator", "note-repeater", "gate", "note-echo"].includes(plugin.pluginId)
+    );
+    const inputNotes = applyMidiPlugins(
+      [{
+        id: uid(),
+        pitch,
+        velocity,
+        start: 0,
+        length: PPQ * 4,
+      }],
+      livePlugins,
+      st.project.keyTonic,
+      st.project.keyMode
+    );
+    const destination = this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination;
     const startTick = this.playing ? this.currentTick() : this.stoppedAtTick ?? 0;
-    this.openInputNotes.set(pitch, { voice, startTick, velocity });
+    const noteState = { voices: [] as VoiceHandle[], startTick, velocity };
+    this.openInputNotes.set(pitch, noteState);
+
+    const playLiveVoices = () => {
+      // A key may have been released, or the selected instrument may have
+      // changed, while its samples were downloading. Never trigger a late note.
+      if (this.openInputNotes.get(pitch) !== noteState) return;
+      const currentTrack = useDAW.getState().project.tracks.find(
+        (item) => item.id === track.id
+      );
+      if (!currentTrack || currentTrack.type !== "midi" || currentTrack.instrument !== track.instrument) {
+        this.openInputNotes.delete(pitch);
+        return;
+      }
+      const currentDestination =
+        this.tracks.get(currentTrack.id)?.input ?? this.master?.input ?? ctx.destination;
+      noteState.voices = inputNotes.slice(0, 16).map((note) =>
+        this.playTrackNote(
+          ctx,
+          currentDestination,
+          currentTrack,
+          note.pitch,
+          note.velocity / 127,
+          ctx.currentTime,
+          3600,
+          true
+        )
+      );
+    };
+
+    if (track.sampleBufferId || (track.sampleZones ?? []).length) {
+      const prepareLiveSampler = async () => {
+        // MIDI effects can transpose a key or turn it into a chord. Load every
+        // zone on the instrument so every transformed output note is ready.
+        // If the user edits the zone map during download, reload the latest map
+        // before allowing the pressed key to sound.
+        let currentTrack = track;
+        for (;;) {
+          const sampleIds = [...new Set([
+            currentTrack.sampleBufferId,
+            ...(currentTrack.sampleZones ?? []).map((zone) => zone.bufferId),
+          ].filter((id): id is string => !!id))];
+          if (!sampleIds.length) throw new Error("No sample is assigned to this sampler");
+
+          const buffers = await Promise.all(
+            sampleIds.map((sampleId) => this.ensureBufferLoaded(sampleId))
+          );
+          if (buffers.some((buffer) => !buffer)) {
+            throw new Error("One or more sampler sources could not be loaded");
+          }
+
+          const latestTrack = useDAW.getState().project.tracks.find(
+            (item) => item.id === track.id
+          );
+          if (!latestTrack || latestTrack.type !== "midi" || latestTrack.instrument !== track.instrument) {
+            return false;
+          }
+          const latestSampleIds = [...new Set([
+            latestTrack.sampleBufferId,
+            ...(latestTrack.sampleZones ?? []).map((zone) => zone.bufferId),
+          ].filter((id): id is string => !!id))];
+          const loadedIds = new Set(sampleIds);
+          if (latestSampleIds.every((id) => loadedIds.has(id))) return true;
+          currentTrack = latestTrack;
+        }
+      };
+
+      void prepareLiveSampler()
+        .then((ready) => {
+          if (!ready) {
+            this.openInputNotes.delete(pitch);
+            return;
+          }
+          playLiveVoices();
+        })
+        .catch((error: unknown) => {
+          if (this.openInputNotes.get(pitch) === noteState) {
+            this.openInputNotes.delete(pitch);
+          }
+          console.error(`Could not load samples for ${track.name}.`, error);
+          toast.error(`Could not load ${track.sampleName ?? track.name}. Please try again.`);
+        });
+      return;
+    }
+
+    const patch = PATCHES[track.instrument];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, destination, patch)
+        .then(playLiveVoices)
+        .catch((error: unknown) => {
+          if (this.openInputNotes.get(pitch) === noteState) {
+            this.openInputNotes.delete(pitch);
+          }
+          console.error(`Could not load samples for ${track.name}.`, error);
+          toast.error(`Could not load ${patch.name} samples. Please try again.`);
+        });
+      return;
+    }
+
+    playLiveVoices();
   }
 
   noteOff(pitch: number) {
@@ -733,7 +1317,7 @@ export class AudioEngine {
       const len = Math.max(PPQ / 8, tick - n.startTick);
       this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
     }
-    n.voice.scheduleStop(this.ctx.currentTime);
+    for (const voice of n.voices) voice.scheduleStop(this.ctx.currentTime);
     this.openInputNotes.delete(pitch);
   }
 
@@ -743,12 +1327,57 @@ export class AudioEngine {
     if (!this.master) return;
     const st = useDAW.getState();
     const p = params ?? st.project.tracks.find((t) => t.instrument === patchId)?.params ?? {};
-    const g = ctx.createGain();
-    g.gain.value = 1;
-    g.connect(this.master.input);
-    const v = playNote(ctx, g, patchId, pitch, velocity / 127, ctx.currentTime, 0.5, p);
-    this.voices.push({ handle: v, until: ctx.currentTime + 6 });
-    setTimeout(() => { try { g.disconnect(); } catch { /* noop */ } }, 6000);
+
+    if (!this.auditionDest) {
+      this.auditionDest = ctx.createGain();
+      this.auditionDest.gain.value = 1;
+      this.auditionDest.connect(this.master.input);
+    }
+
+    const dest = this.auditionDest;
+    const play = () => {
+      const when = ctx.currentTime;
+      const duration = 0.5;
+      const customTrack = st.project.tracks.find(
+        (track) =>
+          track.instrument === patchId &&
+          (!!track.sampleBufferId || (track.sampleZones ?? []).length > 0)
+      );
+      const voice = customTrack
+        ? this.playTrackNote(ctx, dest, customTrack, pitch, velocity / 127, when, duration)
+        : playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p);
+      voice.scheduleStop(when + duration);
+      this.voices.push({ handle: voice, until: when + 6 });
+    };
+
+    const customTrack = st.project.tracks.find(
+      (track) =>
+        track.instrument === patchId &&
+        (!!track.sampleBufferId || (track.sampleZones ?? []).length > 0)
+    );
+    if (customTrack) {
+      const selectedZone = selectSamplerZone(customTrack.sampleZones, pitch, velocity);
+      const sampleId = selectedZone?.bufferId ?? customTrack.sampleBufferId;
+      if (sampleId) {
+        void this.ensureBufferLoaded(sampleId).then((buffer) => {
+          if (!buffer) throw new Error("Sampler audio could not be loaded");
+          play();
+        }).catch((error: unknown) => {
+          console.error("Sampler audition failed", error);
+          toast.error(`Could not load ${customTrack.sampleName ?? customTrack.name}.`);
+        });
+        return;
+      }
+    }
+
+    const patch = PATCHES[patchId];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, dest, patch).then(play).catch(() => {
+        toast.error(`Could not load ${patch.name} samples. Please try again.`);
+      });
+      return;
+    }
+    play();
   }
 
   // ---------------- loop preview ----------------
@@ -761,23 +1390,61 @@ export class AudioEngine {
   ) {
     const ctx = this.ensure();
     this.stopPreview();
-    if (this.playing) this.stop();
+    if (this.playing || this.playPending) this.stop();
     const dest = ctx.createGain();
     dest.gain.value = 0.9;
     dest.connect(this.master?.input ?? ctx.destination);
+    const project = useDAW.getState().project;
+    const sourceTrack = project.tracks.find((track) => track.instrument === patchId);
+    const previewNotes = applyMidiPlugins(
+      notes.map((note, index) => ({
+        id: `preview-${index}`,
+        pitch: note.pitch,
+        velocity: note.velocity,
+        start: note.start,
+        length: note.len,
+      })),
+      sourceTrack?.midiPlugins ?? [],
+      project.keyTonic,
+      project.keyMode
+    ).map((note) => ({
+      pitch: note.pitch,
+      velocity: note.velocity,
+      start: note.start,
+      len: note.length,
+    }));
     this.preview = {
       patchId,
       params: params ?? {},
-      notes,
+      notes: previewNotes,
       periodSec,
       startTime: ctx.currentTime + 0.05,
       scheduledUntil: ctx.currentTime + 0.05,
       dest,
     };
-    this.previewTick();
+
+    const startScheduler = () => {
+      if (this.preview?.dest !== dest) return;
+      this.previewTick();
+      if (this.previewTimer) clearInterval(this.previewTimer);
+      this.previewTimer = setInterval(() => this.previewTick(), TICK_INTERVAL_MS);
+    };
+    const patch = PATCHES[patchId];
+    if (patch?.sampled) {
+      void warmSampledPatch(ctx, dest, patch).then(startScheduler).catch(() => {
+        this.stopPreview();
+        toast.error(`Could not load ${patch.name} samples for the loop preview.`);
+      });
+    } else {
+      startScheduler();
+    }
   }
 
   stopPreview() {
+    if (this.previewTimer) {
+      clearInterval(this.previewTimer);
+      this.previewTimer = null;
+    }
     if (this.preview) {
       try { this.preview.dest.disconnect(); } catch { /* noop */ }
       this.preview = null;
@@ -800,20 +1467,287 @@ export class AudioEngine {
       const base = pv.startTime + r * pv.periodSec;
       for (const n of pv.notes) {
         const when = base + n.start;
-        if (when < ctx.currentTime || when >= horizon) continue;
+        if (when < pv.scheduledUntil || when >= horizon) continue;
         const v = playNote(ctx, pv.dest, pv.patchId, n.pitch, n.velocity / 127, when, n.len, params);
+        v.scheduleStop(when + n.len);
         this.voices.push({ handle: v, until: when + n.len + 4 });
       }
     }
     pv.scheduledUntil = horizon;
   }
 
+  // ---------------- Live Loops clip launcher ----------------
+
+  getLiveClipTrackIds(): string[] {
+    return Array.from(this.liveClips.keys());
+  }
+
+  getLiveClipRefs(): LiveClipRef[] {
+    return Array.from(this.liveClips.values()).map((clip) => ({
+      trackId: clip.kind === "midi" ? clip.track.id : clip.trackId,
+      regionId: clip.regionId,
+    }));
+  }
+
+  isLiveClipActive(trackId: string, regionId: string): boolean {
+    const active = this.liveClips.get(trackId);
+    return !!active && active.regionId === regionId;
+  }
+
+  async launchLiveScene(clips: LiveClipRef[]): Promise<void> {
+    this.stopLiveLoops();
+    const ctx = this.ensure();
+    const project = useDAW.getState().project;
+    this.sync(project);
+    await this.prepareLiveClipAssets(clips, project, ctx);
+    const launchTime = ctx.currentTime + 0.1;
+    this.liveGridStartTime = launchTime;
+    await this.addLiveClips(clips, launchTime, project, ctx);
+  }
+
+  async launchLiveClip(trackId: string, regionId: string): Promise<void> {
+    const ctx = this.ensure();
+    const project = useDAW.getState().project;
+    this.sync(project);
+    const refs = [{ trackId, regionId }];
+    await this.prepareLiveClipAssets(refs, project, ctx);
+    this.stopLiveClip(trackId);
+    const barSeconds = tickToSec(barTicks(project.timeSig), project.tempo);
+    if (this.liveGridStartTime <= 0 || ctx.currentTime < this.liveGridStartTime) {
+      this.liveGridStartTime = ctx.currentTime + 0.05;
+    }
+    const elapsed = Math.max(0, ctx.currentTime - this.liveGridStartTime);
+    const launchTime =
+      this.liveGridStartTime + (Math.floor(elapsed / barSeconds) + 1) * barSeconds;
+    await this.addLiveClips(refs, launchTime, project, ctx);
+  }
+
+  private async prepareLiveClipAssets(
+    clips: LiveClipRef[],
+    project: Project,
+    ctx: AudioContext
+  ) {
+    const loads = clips.map(async (ref) => {
+      const track = project.tracks.find((item) => item.id === ref.trackId);
+      const region = track?.regions.find((item) => item.id === ref.regionId);
+      if (!track || !region) return;
+
+      if (region.type === "audio" && region.bufferId) {
+        const stored = await this.ensureBufferLoaded(region.bufferId);
+        if (!stored) throw new Error(`Could not load audio clip ${region.name}`);
+        return;
+      }
+
+      if (region.type !== "midi") return;
+      const customSampleIds = [
+        track.sampleBufferId,
+        ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+      ].filter((id): id is string => !!id);
+      if (customSampleIds.length) {
+        const buffers = await Promise.all(
+          [...new Set(customSampleIds)].map((id) => this.ensureBufferLoaded(id))
+        );
+        if (buffers.some((buffer) => !buffer)) {
+          throw new Error(`Could not load sampler sources for ${track.name}`);
+        }
+        return;
+      }
+
+      const patch = PATCHES[track.instrument];
+      const nodes = this.tracks.get(track.id);
+      if (patch?.sampled && nodes) await warmSampledPatch(ctx, nodes.input, patch);
+    });
+    await Promise.all(loads);
+  }
+
+  private async addLiveClips(
+    clips: LiveClipRef[],
+    launchTime: number,
+    project: Project,
+    ctx: AudioContext
+  ) {
+    for (const ref of clips) {
+      const track = project.tracks.find((item) => item.id === ref.trackId);
+      const region = track?.regions.find((item) => item.id === ref.regionId);
+      if (!track || !region || region.muted || track.role === "folder" || track.role === "vca" || track.role === "aux") {
+        continue;
+      }
+      const nodes = this.tracks.get(track.id);
+      if (!nodes) continue;
+
+      if (region.type === "audio") {
+        if (!region.bufferId) continue;
+        const stored = await this.ensureBufferLoaded(region.bufferId);
+        if (!stored) {
+          toast.error(`Could not load the audio clip ${region.name}`);
+          continue;
+        }
+        const buffer = this.bufferFor(ctx, region.bufferId);
+        if (!buffer) continue;
+
+        const source = ctx.createBufferSource();
+        const gain = ctx.createGain();
+        const startOffset = clamp(region.sampleStart ?? 0, 0, Math.max(0, buffer.duration - 0.01));
+        const available = Math.max(0.01, buffer.duration - startOffset);
+        const loopLength = clamp(region.sampleLength ?? available, 0.01, available);
+        source.buffer = buffer;
+        source.playbackRate.value = clamp(region.playbackRate ?? 1, 0.5, 2);
+        source.loop = true;
+        source.loopStart = startOffset;
+        source.loopEnd = startOffset + loopLength;
+        gain.gain.setValueAtTime(0.0001, launchTime);
+        gain.gain.linearRampToValueAtTime(clamp(region.gain ?? 1, 0, 2), launchTime + 0.008);
+        source.connect(gain).connect(nodes.input);
+        source.start(launchTime, startOffset);
+        this.liveClips.set(track.id, {
+          kind: "audio",
+          trackId: track.id,
+          regionId: region.id,
+          source,
+          gain,
+        });
+        continue;
+      }
+
+      const customSampleIds = [
+        track.sampleBufferId,
+        ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+      ].filter((id): id is string => !!id);
+      if (customSampleIds.length) {
+        try {
+          const buffers = await Promise.all(
+            [...new Set(customSampleIds)].map((id) => this.ensureBufferLoaded(id))
+          );
+          if (buffers.some((buffer) => !buffer)) throw new Error("Missing sampler source");
+        } catch {
+          toast.error(`Could not load sampler audio for ${track.name}`);
+          continue;
+        }
+      } else {
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) {
+          try {
+            await warmSampledPatch(ctx, nodes.input, patch);
+          } catch {
+            toast.error(`Could not load ${patch.name} samples`);
+            continue;
+          }
+        }
+      }
+
+      const notes = applyMidiPlugins(
+        region.notes ?? [],
+        track.midiPlugins ?? [],
+        project.keyTonic,
+        project.keyMode
+      );
+      const periodTicks = region.looped && region.coreLength ? region.coreLength : region.length;
+      if (periodTicks <= 0 || !notes.length) continue;
+      this.liveClips.set(track.id, {
+        kind: "midi",
+        track,
+        region,
+        regionId: region.id,
+        notes,
+        startTime: launchTime,
+        periodTicks,
+        periodSec: tickToSec(periodTicks, project.tempo),
+        scheduledUntil: launchTime,
+        voices: [],
+      });
+    }
+
+    if (Array.from(this.liveClips.values()).some((clip) => clip.kind === "midi")) {
+      this.scheduleLiveLoops();
+      if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+      this.liveLoopTimer = setInterval(() => this.scheduleLiveLoops(), TICK_INTERVAL_MS);
+    }
+  }
+
+  private scheduleLiveLoops() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const project = useDAW.getState().project;
+    const horizon = ctx.currentTime + LOOKAHEAD_SEC;
+
+    for (const clip of this.liveClips.values()) {
+      if (clip.kind !== "midi") continue;
+      const nodes = this.tracks.get(clip.track.id);
+      if (!nodes) continue;
+
+      const repeats = Math.max(
+        1,
+        Math.ceil((horizon - clip.startTime) / clip.periodSec) + 1
+      );
+      for (let repeat = 0; repeat < repeats; repeat++) {
+        const base = clip.startTime + repeat * clip.periodSec;
+        for (const note of clip.notes) {
+          if (note.start >= clip.periodTicks) continue;
+          const when = base + tickToSec(note.start, project.tempo);
+          if (when < clip.scheduledUntil || when >= horizon) continue;
+          const durationTicks = Math.min(note.length, clip.periodTicks - note.start);
+          if (durationTicks <= 0) continue;
+          const duration = tickToSec(durationTicks, project.tempo);
+          const voice = this.playTrackNote(
+            ctx,
+            nodes.input,
+            clip.track,
+            note.pitch,
+            note.velocity / 127,
+            Math.max(when, ctx.currentTime),
+            duration
+          );
+          voice.scheduleStop(when + duration);
+          clip.voices.push({ handle: voice, until: when + duration + 6 });
+        }
+      }
+      clip.scheduledUntil = horizon;
+      clip.voices = clip.voices.filter((voice) => voice.until > ctx.currentTime - 2);
+    }
+  }
+
+  stopLiveClip(trackId: string) {
+    const clip = this.liveClips.get(trackId);
+    if (!clip) return;
+    if (clip.kind === "audio") {
+      const now = this.ctx?.currentTime ?? 0;
+      try {
+        clip.gain.gain.cancelScheduledValues(now);
+        clip.gain.gain.setValueAtTime(Math.max(0.0001, clip.gain.gain.value), now);
+        clip.gain.gain.linearRampToValueAtTime(0.0001, now + 0.025);
+        clip.source.stop(now + 0.03);
+      } catch { /* already ended */ }
+    } else {
+      for (const voice of clip.voices) voice.handle.kill();
+    }
+    this.liveClips.delete(trackId);
+    if (this.liveClips.size === 0) {
+      if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+      this.liveLoopTimer = null;
+      this.liveGridStartTime = 0;
+    }
+  }
+
+  stopLiveLoops() {
+    for (const trackId of Array.from(this.liveClips.keys())) {
+      this.stopLiveClip(trackId);
+    }
+    if (this.liveLoopTimer) clearInterval(this.liveLoopTimer);
+    this.liveLoopTimer = null;
+    this.liveGridStartTime = 0;
+  }
+
   // ---------------- audio capture ----------------
 
-  async startAudioCapture(trackId: string, monitor: boolean): Promise<void> {
+  async startAudioCapture(
+    trackId: string,
+    monitor: boolean,
+    inputDeviceId?: string | null
+  ): Promise<void> {
     const ctx = this.ensure();
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
+        ...(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : {}),
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
@@ -907,6 +1841,8 @@ export class AudioEngine {
     // load all audio buffers
     const bufferIds = new Set<string>();
     for (const t of project.tracks) {
+      if (t.sampleBufferId) bufferIds.add(t.sampleBufferId);
+      for (const zone of t.sampleZones ?? []) bufferIds.add(zone.bufferId);
       for (const r of t.regions) if (r.bufferId) bufferIds.add(r.bufferId);
     }
     await Promise.all(Array.from(bufferIds).map((id) => this.ensureBufferLoaded(id)));
@@ -916,7 +1852,29 @@ export class AudioEngine {
     for (const t of project.tracks) {
       for (const r of t.regions) endTick = Math.max(endTick, r.start + r.length);
     }
-    const totalSec = tickToSec(endTick, project.tempo) + 3.2; // reverb tail
+    let quickSamplerTailSec = 0;
+    for (const track of project.tracks) {
+      if (track.type !== "midi") continue;
+      for (const region of track.regions) {
+        if (region.type !== "midi") continue;
+        for (const note of region.notes ?? []) {
+          const zone = selectSamplerZone(track.sampleZones, note.pitch, note.velocity);
+          const sampleId = zone?.bufferId ?? track.sampleBufferId;
+          const mode = zone?.playbackMode ?? track.samplePlaybackMode ?? "one-shot";
+          if (!sampleId || mode !== "one-shot") continue;
+          const stored = this.bufferCache.get(sampleId);
+          if (!stored) continue;
+          const sampleDuration = stored.channels[0]?.length
+            ? stored.channels[0].length / stored.sampleRate
+            : 0;
+          const root = clamp(zone?.rootPitch ?? track.sampleRootPitch ?? 60, 0, 127);
+          const rate = clamp(Math.pow(2, (note.pitch - root) / 12), 0.25, 4);
+          quickSamplerTailSec = Math.max(quickSamplerTailSec, sampleDuration / rate);
+        }
+      }
+    }
+    const totalSec =
+      tickToSec(endTick, project.tempo) + Math.max(3.2, quickSamplerTailSec + 0.25);
     const length = Math.ceil(totalSec * sr);
     const offline = new OfflineAudioContext(2, length, sr);
     onProgress?.(0.08);
@@ -925,41 +1883,57 @@ export class AudioEngine {
     master.volume.gain.value = clamp(project.masterVolume, 0, 1.25);
     master.delay.delayTime.value = Math.min(1.9, (60 / project.tempo) * 0.75);
 
-    const anySolo = project.tracks.some((t) => t.solo);
     const trackNodes = new Map<string, TrackNodes>();
     let done = 0;
     const total = project.tracks.reduce((a, t) => a + Math.max(1, t.regions.length), 1);
 
     const timeAt = (tick: number) => tickToSec(tick, project.tempo) + 0.05;
 
+
     for (const track of project.tracks) {
-      if (track.mute || (anySolo && !track.solo)) continue;
+      if (track.role === "folder" || track.role === "vca") continue;
       const tn = buildTrack(offline, master);
-      const eq = track.eq;
-      tn.eqLow.frequency.value = eq.lowFreq;
-      tn.eqLow.gain.value = eq.lowGain;
-      tn.eqMid.frequency.value = eq.midFreq;
-      tn.eqMid.Q.value = eq.midQ;
-      tn.eqMid.gain.value = eq.midGain;
-      tn.eqHigh.frequency.value = eq.highFreq;
-      tn.eqHigh.gain.value = eq.highGain;
-      setComp(tn.comp, track.compressor);
-      tn.gain.gain.value = clamp(track.volume, 0, 1.25);
-      tn.panner.pan.value = clamp(track.pan, -1, 1);
-      tn.reverbSend.gain.value = clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
-      tn.delaySend.gain.value = clamp((track.params.delay ?? 0) * 0.9, 0, 1);
+      applyTrackAudioPlugins(tn, track);
+      tn.gain.gain.value = isTrackAudible(track, project.tracks)
+        ? getEffectiveTrackGain(track, project.tracks)
+        : 0;
+      applyTrackSpatialPanning(tn, track);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
-        // OfflineAudioContext is supported by smplr, so WAV bounces use the same
-        // sampled piano/string patches as live playback (with synth fallback on load failure).
-        await warmSampledPatch(offline, tn.input, track.instrument);
+        // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
+        const patch = PATCHES[track.instrument];
+        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch, true);
       }
 
+    }
+
+    // Route offline channel outputs through the same Aux graph used in live playback.
+    for (const track of project.tracks) {
+      const nodes = trackNodes.get(track.id);
+      if (!nodes) continue;
+      let target: AudioNode = master.input;
+      const bus = resolveOutputBus(track, project.tracks);
+      if (bus) {
+        const busNodes = trackNodes.get(bus.id);
+        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      }
+      try { nodes.output.disconnect(); } catch { /* no previous route */ }
+      nodes.output.connect(target);
+    }
+
+    for (const track of project.tracks) {
+      const tn = trackNodes.get(track.id);
+      if (!tn) continue;
       for (const region of track.regions) {
         if (region.muted) { done++; continue; }
         const regionEnd = region.start + region.length;
         if (region.type === "midi") {
-          const notes = region.notes ?? [];
+          const notes = applyMidiPlugins(
+            region.notes ?? [],
+            track.midiPlugins ?? [],
+            project.keyTonic,
+            project.keyMode
+          );
           const period = region.looped && region.coreLength ? region.coreLength : 0;
           const reps = period ? Math.ceil(region.length / period) + 1 : 1;
           for (let k = 0; k < reps; k++) {
@@ -969,24 +1943,39 @@ export class AudioEngine {
               if (absStart >= regionEnd) continue;
               const durTicks = Math.min(n.length, regionEnd - absStart);
               if (durTicks <= 0) continue;
-              playNote(offline, tn.input, track.instrument, n.pitch, n.velocity / 127, timeAt(absStart), tickToSec(durTicks, project.tempo), track.params);
+              const noteStart = timeAt(absStart);
+              const noteDuration = tickToSec(durTicks, project.tempo);
+              const voice = this.playTrackNote(
+                offline,
+                tn.input,
+                track,
+                n.pitch,
+                n.velocity / 127,
+                noteStart,
+                noteDuration
+              );
+              // Match live playback: release sustained patches at MIDI note-off.
+              voice.scheduleStop(noteStart + noteDuration);
             }
           }
         } else if (region.bufferId) {
           const buf = this.bufferFor(offline, region.bufferId);
           if (buf) {
             const contentSec = region.sampleLength ?? buf.duration;
-            const periodTicks = region.looped ? secToTick(contentSec, project.tempo) : 0;
+            const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
+            const contentPlaySec = contentSec / playbackRate;
+            const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
             const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
             for (let k = 0; k < reps; k++) {
               const occStart = region.start + k * periodTicks;
               if (occStart >= regionEnd) continue;
               const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-              const durSec = Math.min(contentSec, tickToSec(remainTicks, project.tempo));
+              const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
               if (durSec <= 0.005) continue;
-              // offline version of playAudioSlice
+              // Offline varispeed follows the same playback-rate automation as live playback.
               const src = offline.createBufferSource();
               src.buffer = buf;
+              src.playbackRate.value = playbackRate;
               const g = offline.createGain();
               const gainVal = region.gain ?? 1;
               const fi = Math.min(region.fadeIn ?? 0, durSec);
@@ -1007,7 +1996,7 @@ export class AudioEngine {
                 g.gain.linearRampToValueAtTime(0.0001, end);
               }
               src.connect(g).connect(tn.input);
-              src.start(when, region.sampleStart ?? 0, durSec + 0.02);
+              src.start(when, region.sampleStart ?? 0, durSec * playbackRate + 0.02);
             }
           }
         }
@@ -1015,7 +2004,6 @@ export class AudioEngine {
         onProgress?.(0.1 + 0.7 * (done / total));
       }
     }
-
     onProgress?.(0.85);
     const rendered = await offline.startRendering();
     onProgress?.(0.98);

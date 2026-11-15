@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -93,6 +94,19 @@ export function TimelineWorkspace() {
   const rowH = TRACK_SIZES[ui.trackSize];
   const snapGrid = snapTicks(ui.snap, ui.zoom, project.timeSig);
   const bt = barTicks(project.timeSig);
+  const visibleTracks = useMemo(() => {
+    const collapsedFolderIds = new Set(
+      project.tracks
+        .filter((track) => track.role === "folder" && track.collapsed)
+        .map((track) => track.id)
+    );
+    return project.tracks.filter(
+      (track) =>
+        track.role !== "aux" &&
+        track.role !== "vca" &&
+        (!track.parentTrackId || !collapsedFolderIds.has(track.parentTrackId))
+    );
+  }, [project.tracks]);
 
   // content size
   let contentEndTick = 0;
@@ -102,7 +116,7 @@ export function TimelineWorkspace() {
   const minTicks = bt * 16;
   const contentTicks = Math.max(contentEndTick + bt * 4, minTicks, engine.currentTick() + bt * 4);
   const contentW = Math.max(contentTicks * pxPerTick + SCROLL_PAD_X, viewSize.w + HEADER_W);
-  const contentH = project.tracks.reduce((a) => a + rowH, 0) + SCROLL_PAD_Y;
+  const contentH = visibleTracks.length * rowH + SCROLL_PAD_Y;
 
   const tickToX = useCallback((tick: number) => tick * pxPerTick, [pxPerTick]);
   const xToTick = useCallback((x: number) => x / pxPerTick, [pxPerTick]);
@@ -110,12 +124,12 @@ export function TimelineWorkspace() {
   const rowLayout = useCallback(() => {
     const rows: { track: Track; y: number; h: number }[] = [];
     let y = 0;
-    for (const t of project.tracks) {
+    for (const t of visibleTracks) {
       rows.push({ track: t, y, h: rowH });
       y += rowH;
     }
     return rows;
-  }, [project.tracks, rowH]);
+  }, [visibleTracks, rowH]);
 
   // ---------- redraw machinery ----------
 
@@ -217,14 +231,14 @@ export function TimelineWorkspace() {
     if (dragOffsets) {
       const origById = new Map(drag!.orig.map((o) => [o.id, o]));
       const origTrackById = new Map(project.tracks.flatMap((t) => t.regions.map((r) => [r.id, t] as const)));
-      const rowIndexById = new Map(project.tracks.map((t, i) => [t.id, i] as const));
+      const rowIndexById = new Map(visibleTracks.map((t, i) => [t.id, i] as const));
       for (const [regionId, ghost] of dragOffsets) {
         const o = origById.get(regionId);
         if (!o) continue;
         const origTrack = origTrackById.get(regionId);
         if (!origTrack) continue;
         const targetIndex = ghost.trackIndex;
-        const targetTrack = project.tracks[targetIndex] ?? origTrack;
+        const targetTrack = visibleTracks[targetIndex] ?? origTrack;
         const canMove = targetTrack.type === origTrack.type || targetTrack.type === "midi";
         const row2 = rows[canMove ? targetIndex : rowIndexById.get(origTrack.id) ?? 0];
         if (!row2) continue;
@@ -463,7 +477,7 @@ export function TimelineWorkspace() {
         .flatMap((t) => t.regions)
         .filter((r) => ids.includes(r.id))
         .map((r) => ({ id: r.id, trackId: r.trackId, start: r.start, length: r.length }));
-      const rowIndexById = new Map(project.tracks.map((t, i) => [t.id, i] as const));
+      const rowIndexById = new Map(visibleTracks.map((t, i) => [t.id, i] as const));
       dragRef.current = {
         mode: hit.nearRight ? "resize-r" : hit.nearLeft ? "resize-l" : "move",
         startX: pos.x,
@@ -546,21 +560,21 @@ export function TimelineWorkspace() {
           copy.id = uid();
           copy.start = Math.max(0, o.start + drag.deltaTick);
           if (copy.notes) copy.notes = copy.notes.map((n) => ({ ...n, id: uid() }));
-          const targetTrack = project.tracks[drag.toRow];
-          if (targetTrack && (targetTrack.type === "midi") === (src.type === "midi")) {
+          const targetTrack = visibleTracks[drag.toRow];
+          if (targetTrack && targetTrack.role !== "folder" && targetTrack.role !== "vca" && targetTrack.role !== "aux" && (targetTrack.type === "midi") === (src.type === "midi")) {
             copy.trackId = targetTrack.id;
           }
           copies.push(copy);
         }
         if (copies.length) st.addRegions(copies);
       } else {
-        const targetTrack = project.tracks[drag.toRow];
+        const targetTrack = visibleTracks[drag.toRow];
         const anyAudio = drag.orig.some((o) => {
           const src = project.tracks.flatMap((t) => t.regions).find((r) => r.id === o.id);
           return src?.type === "audio";
         });
         const toTrackId =
-          targetTrack && (targetTrack.type === "audio") === anyAudio ? targetTrack.id : undefined;
+          targetTrack && targetTrack.role !== "folder" && targetTrack.role !== "vca" && targetTrack.role !== "aux" && (targetTrack.type === "audio") === anyAudio ? targetTrack.id : undefined;
         st.moveRegions(drag.regionIds, drag.deltaTick, toTrackId);
       }
     } else if (drag.mode === "resize-r") {

@@ -12,6 +12,7 @@ import { PianoRoll, findActiveRegion } from "./piano-roll";
 import { AudioEditor } from "./audio-editor";
 import { SmartControls } from "../mixer/smart-controls";
 import { DrumStepSequencer } from "./drum-step-sequencer";
+import { ScoreEditor } from "./score-editor";
 import { PATCHES } from "@/lib/daw/instruments";
 
 export function EditorPanel() {
@@ -31,7 +32,13 @@ export function EditorPanel() {
   useEffect(() => {
     if (!region || editorMode === "smart") return;
     const want: EditorMode = region.type === "midi"
-      ? (isDrumTrack && editorMode === "steps" ? "steps" : "piano")
+      ? (
+          editorMode === "score"
+            ? "score"
+            : editorMode === "steps"
+              ? "steps"
+              : "piano"
+        )
       : "audio";
     if (editorMode !== want) setEditorMode(want);
   }, [region, isDrumTrack, editorMode, setEditorMode]);
@@ -43,8 +50,9 @@ export function EditorPanel() {
           { id: "smart", label: "Smart Controls" },
         ]
       : [
-          ...(isDrumTrack ? [{ id: "steps" as EditorMode, label: "Step Sequencer" }] : []),
+          { id: "steps", label: isDrumTrack ? "Drum Sequencer" : "Step Sequencer" },
           { id: "piano", label: "Piano Roll" },
+          { id: "score", label: "Score" },
           { id: "smart", label: "Smart Controls" },
         ]
     : [{ id: "smart", label: "Smart Controls" }];
@@ -105,10 +113,12 @@ export function EditorPanel() {
           <SmartControls />
         ) : editorMode === "piano" && region?.type === "midi" ? (
           <PianoRoll />
-        ) : editorMode === "steps" && region?.type === "midi" && isDrumTrack ? (
+        ) : editorMode === "steps" && region?.type === "midi" ? (
           <DrumStepSequencer />
         ) : editorMode === "audio" && region?.type === "audio" ? (
           <AudioEditor />
+        ) : editorMode === "score" && region?.type === "midi" ? (
+          <ScoreEditor />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-xs text-zinc-600 select-none">
             <MousePointerClick className="size-5 text-zinc-700" />

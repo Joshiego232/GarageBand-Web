@@ -1,3 +1,5 @@
+import type { TrackPluginInstance } from "./plugins";
+
 // ============================================================
 // Core type definitions for the WebBand DAW
 // All timing is in MIDI ticks (PPQ = 960 per quarter note)
@@ -33,6 +35,7 @@ export interface Region {
   bufferId?: string; // IndexedDB key for PCM data
   sampleStart?: number; // seconds into the buffer
   sampleLength?: number; // seconds of audio content
+  playbackRate?: number; // varispeed: 0.5..2, changes pitch and duration together
   gain?: number; // linear playback gain
   fadeIn?: number; // seconds
   fadeOut?: number; // seconds
@@ -48,23 +51,94 @@ export interface EqSettings {
   highFreq: number; // Hz 1500..18000
 }
 
+export type TrackRole = "track" | "aux" | "vca" | "folder";
+
+export interface TrackStack {
+  id: string;
+  name: string;
+  type: "folder" | "summing";
+  trackIds: string[];
+  folderTrackId: string;
+  busTrackId?: string;
+}
+
+export interface ProjectAlternative {
+  id: string;
+  name: string;
+  snapshot: string;
+  savedAt: string;
+}
+
+export interface ScreenSet {
+  id: string;
+  name: string;
+  panels: Record<PanelKey, boolean>;
+  editorMode: EditorMode;
+  trackSize: TrackSize;
+  zoom: number;
+}
+
+export interface SamplerZone {
+  id: string;
+  bufferId: string;
+  name: string;
+  rootPitch: number;
+  lowKey: number;
+  highKey: number;
+  velocityLow: number;
+  velocityHigh: number;
+  playbackMode: "one-shot" | "loop";
+}
+
 export interface Track {
   id: string;
+  role?: TrackRole;
+  outputBusId?: string | null;
+  vcaId?: string | null;
+  stackId?: string | null;
+  parentTrackId?: string | null;
+  collapsed?: boolean;
   name: string;
   type: TrackType;
   icon: string; // icon key from INSTRUMENTS or 'mic' for audio
   color: string; // hex
   instrument: string; // patch id for midi tracks
+  /** IndexedDB sample key for a user-created Quick Sampler instrument. */
+  sampleBufferId?: string;
+  sampleRootPitch?: number;
+  samplePlaybackMode?: "one-shot" | "loop";
+  sampleName?: string;
+  sampleZones?: SamplerZone[];
+  sampleDrumKit?: boolean;
   volume: number; // 0..1.25 (1 = 0 dB)
   pan: number; // -1..1
+  /** Enable HRTF binaural 3D panning for stereo headphone playback. */
+  spatialEnabled?: boolean;
+  spatialX?: number; // metres, -5..5
+  spatialY?: number; // metres, -5..5
+  spatialZ?: number; // metres, -5..5 (negative is in front of listener)
   mute: boolean;
   solo: boolean;
   armed: boolean;
   inputMonitor: boolean; // audio input monitoring
+  inputDeviceId?: string | null;
   compressor: boolean;
   eq: EqSettings;
   params: Record<string, number>; // smart-control params (patch knobs + sends)
+  midiPlugins?: TrackPluginInstance[];
+  audioPlugins?: TrackPluginInstance[];
   regions: Region[];
+}
+
+export type MidiCCTarget = "master-volume" | "track-volume" | "track-pan";
+
+export interface MidiCCMapping {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  cc: number;
+  target: MidiCCTarget;
+  trackId?: string;
 }
 
 export interface Project {
@@ -80,7 +154,12 @@ export interface Project {
   countIn: boolean;
   metronome: boolean;
   masterVolume: number; // 0..1.25
+  audioOutputDeviceId?: string | null;
+  midiCCMappings?: MidiCCMapping[];
   tracks: Track[];
+  stacks?: TrackStack[];
+  alternatives?: ProjectAlternative[];
+  screensets?: ScreenSet[];
 }
 
 // ---------- UI state ----------
@@ -88,14 +167,15 @@ export interface Project {
 export type Tool = "pointer" | "pencil";
 export type SnapMode = "smart" | "bar" | "beat" | "8th" | "16th" | "off";
 export type TrackSize = "S" | "M" | "L";
-export type EditorMode = "piano" | "audio" | "steps" | "smart";
+export type EditorMode = "piano" | "audio" | "steps" | "score" | "smart";
 export type PanelKey =
   | "library"
   | "loops"
   | "mixer"
   | "editor"
   | "keyboard"
-  | "help";
+  | "help"
+  | "liveLoops";
 export type ModalKind =
   | "none"
   | "newProject"
@@ -142,7 +222,16 @@ export interface Patch {
   icon: string;
   desc: string;
   knobs: KnobDef[];
-  /** Drum patches map pitches to pieces instead of playing tonal notes */
+  /** Original additive/wavetable synth engine used by the Morph Synth family. */
+  synthEngine?: "morph-additive";
+  /** Sound source used by the sampled-instrument engine. */
+  sampled?: {
+    engine: "soundfont" | "splendid-piano" | "electric-piano" | "drum-machine";
+    instrument: string;
+    kit?: "MusyngKite" | "FluidR3_GM";
+    loop?: boolean;
+  };
+  /** Drum patches map MIDI drum pitches to sampled kit pieces. */
   isDrum?: boolean;
 }
 

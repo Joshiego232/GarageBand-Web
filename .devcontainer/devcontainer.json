@@ -1,0 +1,29 @@
+{
+  "name": "GarageBand Web Studio",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "containerEnv": {
+    "DATABASE_URL": "file:./dev.db",
+    "NEXT_TELEMETRY_DISABLED": "1"
+  },
+  "postCreateCommand": "npm install --no-audit --no-fund && npx prisma generate && npx prisma db push",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "GarageBand Web Studio",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "Prisma.prisma",
+        "bradlc.vscode-tailwindcss"
+      ],
+      "settings": {
+        "typescript.tsdk": "node_modules/typescript/lib"
+      }
+    }
+  }
+}
