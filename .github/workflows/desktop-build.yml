@@ -1,0 +1,117 @@
+name: Desktop Installers
+
+on:
+  push:
+    branches:
+      - codespace-symmetrical-spork-g976wjv9pqph99v6
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/desktop-build.yml"
+      - "desktop/**"
+      - "scripts/prepare-standalone.mjs"
+      - "package.json"
+      - "prisma/**"
+      - "src/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install project dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install desktop packaging tools
+        run: npm install --no-save --no-package-lock --no-audit --no-fund electron@45.3.3 electron-builder@26.18.0
+      - name: Prepare local song database
+        run: npm run db:push
+        env:
+          DATABASE_URL: file:./dev.db
+      - name: Verify project
+        run: |
+          npm run lint
+          npm run test:daw
+          npm run typecheck
+      - name: Build standalone studio and Windows installer
+        run: |
+          npm run build
+          npx electron-builder --win nsis --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GarageBand-Windows-x64
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Chromebook Linux ${{ matrix.arch }} installer
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install project dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install desktop packaging tools
+        run: npm install --no-save --no-package-lock --no-audit --no-fund electron@45.3.3 electron-builder@26.18.0
+      - name: Prepare local song database
+        run: npm run db:push
+        env:
+          DATABASE_URL: file:./dev.db
+      - name: Verify project
+        run: |
+          npm run lint
+          npm run test:daw
+          npm run typecheck
+      - name: Build standalone studio and Chromebook Linux package
+        run: |
+          npm run build
+          npx electron-builder --linux deb --${{ matrix.arch }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GarageBand-Chromebook-Linux-${{ matrix.arch }}
+          path: release/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    name: Publish tagged installers
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - windows
+      - linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
