@@ -31,6 +31,8 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Chord analysis:** detect chord names (including extended chords and inversions) from MIDI notes and recordings, display them in the global Chord Track/LCD, suggest project keys, audition chord regions and sync progressions to keyboard chord strips.
 - **Audio denoising:** learn a noise print from a section of room tone, process an audio region with adjustable noise reduction, optionally apply a 75 Hz high-pass filter, preview the result and switch between the original and processed audio.
 - **Bounce/export:** render a selected range or the project as WAV or MP3; choose 16- or 24-bit WAV, 44.1 or 48 kHz, MP3 bitrates, normalization, stereo mix or individual track stems, and optional effect-tail capture. Multiple output formats and stem exports are packaged as ZIP files.
+- **MIDI FX and Scripter:** apply safe, editable MIDI note transformations to live keyboard input, MIDI regions, Live Loops and offline exports. The Scripter supports transpose, chord intervals, duplicate, repeat, scale lock, velocity scaling/addition, note-length scaling, timing delay and deterministic humanization. It uses a limited command language rather than executing arbitrary JavaScript; invalid scripts leave the incoming notes unchanged. See [docs/MIDI_SCRIPTER.md](docs/MIDI_SCRIPTER.md) for syntax and examples.
+- **Hardware MIDI control surface:** connect a USB/Bluetooth MIDI input, play notes through the selected instrument, and learn physical controller CC messages for master volume, selected-track volume and pan. MIDI CC mappings are saved with the project. Browser/device Web MIDI support is required.
 - **MIDI interchange:** import Standard MIDI File format 0 and 1 tracks, and export project MIDI. Imported tempo and time-signature metadata are applied when starting with an empty project; tempo changes inside an imported file are not merged into the existing project tempo map.
 
 ### Soundstage project interchange
@@ -125,10 +127,10 @@ sudo apt update
 sudo apt install ./GarageBand-Web-Studio-1.0.0-amd64.deb
 ```
 
-Use the `...-arm64.deb` file instead on an ARM64 Chromebook. After installation, open **GarageBand Web Studio** from the ChromeOS app launcher under **Linux apps**. To uninstall it later:
+Use `sudo apt install ./GarageBand-Web-Studio-1.0.0-arm64.deb` instead on an ARM64 Chromebook. After installation, open **GarageBand Web Studio** from the ChromeOS app launcher under **Linux apps**. To uninstall it later:
 
 ```bash
-sudo apt remove garageband-web-studio
+sudo apt remove garageband-web-studio-desktop
 ```
 
 The Chromebook package is a Linux desktop application for devices that support ChromeOS's Linux development environment; it is not a Chrome Web Store extension or a native ChromeOS APK.
