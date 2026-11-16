@@ -28,13 +28,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useDAW } from "@/lib/daw/store";
-import type { Project } from "@/lib/daw/types";
-
-interface SongMeta {
-  id: string;
-  name: string;
-  updatedAt: string;
-}
+import {
+  deleteSavedSong,
+  getSavedSong,
+  listSavedSongs,
+  saveSong,
+  type SavedSong,
+} from "@/lib/daw/saved-songs";
 
 const SCROLLBAR =
   "[scrollbar-color:#3f3f46_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[#3a3a41] [&::-webkit-scrollbar-track]:bg-transparent";
@@ -48,17 +48,14 @@ export function MySongsModal() {
   const open = modal === "mySongs";
 
   // null = loading, [] = loaded but empty
-  const [songs, setSongs] = useState<SongMeta[] | null>(null);
+  const [songs, setSongs] = useState<SavedSong[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/songs");
-      if (!res.ok) throw new Error("list failed");
-      const json = (await res.json()) as SongMeta[];
-      setSongs(Array.isArray(json) ? json : []);
+      setSongs(await listSavedSongs());
     } catch {
       setSongs([]);
       toast.error("Could not load songs");
@@ -71,10 +68,8 @@ export function MySongsModal() {
     let cancelled = false;
     const loadSongs = async () => {
       try {
-        const res = await fetch("/api/songs");
-        if (!res.ok) throw new Error("list failed");
-        const json = (await res.json()) as SongMeta[];
-        if (!cancelled) setSongs(Array.isArray(json) ? json : []);
+        const savedSongs = await listSavedSongs();
+        if (!cancelled) setSongs(savedSongs);
       } catch {
         if (!cancelled) {
           setSongs([]);
@@ -92,16 +87,10 @@ export function MySongsModal() {
   const openSong = async (id: string) => {
     setOpeningId(id);
     try {
-      const res = await fetch(`/api/songs/${id}`);
-      if (!res.ok) throw new Error("load failed");
-      const json = (await res.json()) as {
-        id: string;
-        name: string;
-        data: string;
-      };
-      const parsed = JSON.parse(json.data) as Project;
-      loadProject(parsed); // also closes the modal
-      toast.success(`Opened "${json.name}"`);
+      const song = await getSavedSong(id);
+      if (!song) throw new Error("song not found");
+      loadProject(song.project); // also closes the modal
+      toast.success(`Opened "${song.name}"`);
     } catch {
       toast.error("Could not open that song");
     } finally {
@@ -114,8 +103,7 @@ export function MySongsModal() {
     setDeleteId(null);
     if (!id) return;
     try {
-      const res = await fetch(`/api/songs/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("delete failed");
+      await deleteSavedSong(id);
       setSongs((s) => (s ? s.filter((x) => x.id !== id) : s));
       toast.success("Song deleted");
     } catch {
@@ -126,19 +114,8 @@ export function MySongsModal() {
   const saveCurrent = async () => {
     setSaving(true);
     try {
-      const res = await fetch("/api/songs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: project.id,
-          name: project.name,
-          data: JSON.stringify(project),
-        }),
-      });
-      if (!res.ok) throw new Error("save failed");
-      const json = (await res.json()) as { id: string };
-      // remember the database id so the next save updates this song
-      useDAW.setState((s) => ({ project: { ...s.project, id: json.id } }));
+      const song = await saveSong(project);
+      useDAW.setState((s) => ({ project: { ...s.project, id: song.id } }));
       toast.success("Saved");
       refresh();
     } catch {

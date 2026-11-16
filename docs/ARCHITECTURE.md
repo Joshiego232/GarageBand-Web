@@ -51,6 +51,6 @@ The command palette is backed by the shared `COMMANDS` registry, so menu actions
 
 ## Full-stack persistence
 
-The saved-song API is under `src/app/api/songs`. Prisma uses SQLite for local saved-project JSON metadata/content. The application does not currently provide authenticated multi-user access, per-user authorization, cloud asset storage, or cross-device sync. Those are planned extensions, not implemented features. Do not expose the current API as a shared multi-user service without authentication and authorization.
+Saved project JSON and audio media are stored in separate IndexedDB databases in the user's browser. Project data is neither uploaded nor synchronized across devices.
 
 Audio buffers are kept in browser-managed IndexedDB. They are not committed to this repository and are not uploaded to GitHub.

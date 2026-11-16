@@ -33,13 +33,12 @@ import {
 } from "@/components/ui/dialog";
 import { useDAW } from "@/lib/daw/store";
 import { TEMPLATES, demoProject, type TemplateDef } from "@/lib/daw/loops";
-import type { Project } from "@/lib/daw/types";
-
-interface SongMeta {
-  id: string;
-  name: string;
-  updatedAt: string;
-}
+import {
+  deleteSavedSong,
+  getSavedSong,
+  listSavedSongs,
+  type SavedSong,
+} from "@/lib/daw/saved-songs";
 
 const TEMPLATE_ICONS: Record<string, { icon: LucideIcon; color: string }> = {
   empty: { icon: FilePlus2, color: "#8fb44a" },
@@ -58,18 +57,16 @@ export function NewProjectModal() {
   const loadProject = useDAW((s) => s.loadProject);
   const setModal = useDAW((s) => s.setModal);
 
-  const [recent, setRecent] = useState<SongMeta[] | null>(null);
+  const [recent, setRecent] = useState<SavedSong[] | null>(null);
 
   const open = modal === "newProject";
 
-  // fetch recent songs (section only shows when the request succeeds)
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    fetch("/api/songs")
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("list failed"))))
-      .then((json: SongMeta[]) => {
-        if (alive) setRecent(Array.isArray(json) ? json : []);
+    listSavedSongs()
+      .then((songs) => {
+        if (alive) setRecent(songs);
       })
       .catch(() => {
         if (alive) setRecent(null);
@@ -101,13 +98,11 @@ export function NewProjectModal() {
 
   const openRecent = async (id: string) => {
     try {
-      const res = await fetch(`/api/songs/${id}`);
-      if (!res.ok) throw new Error("load failed");
-      const json = (await res.json()) as { id: string; name: string; data: string };
-      const project = JSON.parse(json.data) as Project;
+      const song = await getSavedSong(id);
+      if (!song) throw new Error("song not found");
       markSeen();
-      loadProject(project);
-      toast.success(`Opened "${json.name}"`);
+      loadProject(song.project);
+      toast.success(`Opened "${song.name}"`);
     } catch {
       toast.error("Could not open that song");
     }
@@ -115,8 +110,7 @@ export function NewProjectModal() {
 
   const deleteRecent = async (id: string) => {
     try {
-      const res = await fetch(`/api/songs/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("delete failed");
+      await deleteSavedSong(id);
       setRecent((r) => (r ? r.filter((s) => s.id !== id) : r));
     } catch {
       toast.error("Could not delete that song");
@@ -219,7 +213,7 @@ export function NewProjectModal() {
           </div>
         </section>
 
-        {/* Recent songs (only when the fetch succeeded and has items) */}
+        {/* Recent songs */}
         {recent !== null && recent.length > 0 && (
           <section>
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">

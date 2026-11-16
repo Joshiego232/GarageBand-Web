@@ -10,7 +10,7 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Soundstage workflow additions:** 16-step drum sequencer for MIDI drum tracks, plus import and export of Soundstage `.soundstage.json` project files.
 - **Shared MIDI model:** step-sequencer hits are stored as MIDI notes, so they remain editable in the piano roll and work with playback and WAV rendering.
 - **Sampled instruments:** 120 SoundFont and sample-backed patches, including 20 stage-keyboard-inspired presets and layered piano/pad/string combinations, plus 10 original additive synth presets. The stage sounds use the credited MusyngKite General MIDI bank; they are not Nord or Yamaha factory recordings.
-- **Full-stack song storage:** Next.js API routes backed by Prisma and SQLite for saving and retrieving project JSON.
+- **Local song storage:** projects are saved in IndexedDB in the current browser; audio media also remains on that device.
 - **Audio output:** Web Audio playback, microphone recording where the browser permits it, WAV bounce, MIDI export, and audio-file import.
 
 ## Technology
@@ -18,28 +18,25 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - Next.js App Router, React, TypeScript
 - Web Audio API and `smplr` sample playback
 - Zustand project state
-- Prisma + SQLite saved-song API
+- IndexedDB for local project and audio storage
 - Tailwind CSS and shadcn-style UI components
 
 ## Run locally
 
 1. Install Node.js 22 or newer.
-2. Copy `.env.example` to `.env` and leave the SQLite URL as-is for a local database.
-3. Install dependencies and generate the Prisma client:
+2. Install dependencies:
 
    ```bash
    npm install
-   npx prisma generate
-   npx prisma db push
    ```
 
-4. Start the development server:
+3. Start the development server:
 
    ```bash
    npm run dev
    ```
 
-5. Open `http://localhost:3000`.
+4. Open `http://localhost:3000`.
 
 Production build:
 
@@ -58,9 +55,9 @@ Use **File → Import Soundstage Project JSON…** or **File → Export Soundsta
 
 Soundstage JSON files do not contain their IndexedDB audio blobs. Audio clips therefore cannot be transferred through the JSON bridge; import the original audio files again after moving a session. Native audio assets stay in the browser's local storage and are not uploaded to GitHub.
 
-## Backend and account security status
+## Storage and account status
 
-The current full-stack backend is a **single-instance Prisma/SQLite saved-song API**. It is suitable for local development or a controlled personal deployment, but it does **not** yet include user authentication, per-user ownership, cloud object storage, multi-device sync, or row-level security. Do not expose the saved-song API as a multi-user public service until authentication and authorization are added. Those account/cloud features remain future work rather than being represented as complete.
+Project JSON and audio media are stored in the browser's IndexedDB. They are not uploaded to the server and are not available across devices or browsers. The saved-song API has been removed; account sign-in and cloud sync are not implemented.
 
 The app is local-first for audio media. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
 
@@ -74,10 +71,9 @@ The instrument library supports text search, categories, favorites and recently 
 
 ## Repository layout
 
-- `src/app` — Next.js application and saved-song API routes
+- `src/app` — Next.js application and remaining API routes
 - `src/components/daw` — timeline, editor, sequencer, mixer and studio UI
 - `src/lib/daw` — project model, state, audio engine, sample-backed instruments, MIDI and Soundstage bridge
-- `prisma` — SQLite schema
 - `docs` — architecture, data interchange and audio attribution
 
 ## Feature status

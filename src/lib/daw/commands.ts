@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { exportSoundstageProject, importSoundstageProject } from "./soundstage-bridge";
 import { analyzeMidiNotesByBar } from "./ChordDetector";
 import { importMidiFiles } from "./midi-import";
+import { saveSong } from "./saved-songs";
 
 export interface Command {
   id: string;
@@ -250,15 +251,8 @@ async function saveProject() {
   const st = useDAW.getState();
   const project = st.project;
   try {
-    const body = JSON.stringify({ id: project.id, name: project.name, data: JSON.stringify(project) });
-    const res = await fetch("/api/songs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    if (!res.ok) throw new Error("save failed");
-    const json = await res.json();
-    useDAW.setState({ project: { ...project, id: json.id } });
+    const savedSong = await saveSong(project);
+    useDAW.setState({ project: { ...project, id: savedSong.id } });
     toast.success(`Saved "${project.name}"`);
   } catch {
     toast.error("Could not save the project");
