@@ -122,7 +122,7 @@ The installer is not code-signed by default. Windows SmartScreen may therefore s
 
 ```bash
 sudo apt update
-sudo apt install ./GarageBand-Web-Studio-1.0.0-x64.deb
+sudo apt install ./GarageBand-Web-Studio-1.0.0-amd64.deb
 ```
 
 Use the `...-arm64.deb` file instead on an ARM64 Chromebook. After installation, open **GarageBand Web Studio** from the ChromeOS app launcher under **Linux apps**. To uninstall it later:
