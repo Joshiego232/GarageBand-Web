@@ -100,8 +100,8 @@ The [Desktop Installers workflow](.github/workflows/desktop-build.yml) builds:
 
 1. Open the repository on GitHub and select **Actions**.
 2. Select **Desktop Installers**.
-3. Choose **Run workflow** and select the `codespace-symmetrical-spork-g976wjv9pqph99v6` branch, or open the workflow run created by a push to that branch.
-4. When both platform jobs finish, download the Windows or Linux artifact from the run's **Artifacts** section. The Linux artifact is built separately for x86_64 and ARM64.
+3. Open the run automatically created by a push to the `codespace-symmetrical-spork-g976wjv9pqph99v6` branch.
+4. When all three platform jobs finish, download the Windows or Linux artifact from the run's **Artifacts** section. The Linux artifact is built separately for x86_64 and ARM64.
 
 Pushing a version tag such as `v1.0.0` also creates a GitHub Release containing the installers.
 
@@ -139,9 +139,9 @@ The Chromebook package is a Linux desktop application for devices that support C
 - Projects saved through the song API use a SQLite database in the operating system's application-data folder.
 - Audio regions, imported SoundFonts and user patches use browser storage (IndexedDB) associated with the desktop app's local address.
 - Built-in procedural synth patches work without downloading sample banks. SoundFont bytes fetched from the remote bank loader are saved in IndexedDB after they have been loaded once. Imported `.sf2` and `.sf3` banks are stored locally as well.
-- Some other sampled instruments still fetch their credited sample sets on first use. For the best offline setup, open and audition the sample-based sounds you plan to use while online, or import a local SoundFont before disconnecting.
+- Some other `smplr`-loaded sample instruments fetch their credited sample sets from their upstream hosts. Their availability across app restarts while offline is not guaranteed. For reliable offline sound, use the built-in procedural synth patches or import a local `.sf2`/`.sf3` bank before disconnecting.
 
-Offline availability therefore depends on which sample banks have already been cached or imported. A fresh installation can launch offline, but remote sample recordings that have never been downloaded will not be available until they are loaded.
+Offline availability therefore depends on the sample engine and what has been cached or imported. A fresh installation can launch offline; remote samples that have never been fetched cannot be loaded without a connection.
 
 ### Build installers locally
 
