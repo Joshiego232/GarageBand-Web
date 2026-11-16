@@ -95,7 +95,20 @@ try {
   const { useDAW } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/store.js")).href
   );
+  const { projectLengthTicks } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/utils.js")).href
+  );
   const smplr = await import("smplr");
+
+  const lengthProject = {
+    lengthBars: 12,
+    timeSig: [4, 4],
+    tracks: [],
+  };
+  expect(projectLengthTicks(lengthProject) === 12 * 4 * 960, "Explicit project bar length should set the song end");
+  useDAW.getState().setProjectLengthBars(1200);
+  expect(useDAW.getState().project.lengthBars === 999, "Project bar length should be capped at 999");
+  useDAW.getState().setProjectLengthBars(16);
 
   // Catalog counts, verified upstream sample IDs, and our original synth engine.
   const categories = new Map();
@@ -120,9 +133,25 @@ try {
 
     if (source.engine === "soundfont") {
       expect(
-        smplr.getSoundfontNames().includes(source.instrument),
-        `Unknown SoundFont instrument ID "${source.instrument}" used by ${patch.id}`,
+        source.loop === true,
+        `SoundFont instrument ${patch.id} should load sustained sample loop data`,
       );
+      const soundfontNames = smplr.getSoundfontNames();
+      for (const instrument of [
+        source.instrument,
+        ...(source.layers ?? []).map((layer) => layer.instrument),
+      ]) {
+        expect(
+          soundfontNames.includes(instrument),
+          `Unknown SoundFont instrument ID "${instrument}" used by ${patch.id}`,
+        );
+      }
+      for (const layer of source.layers ?? []) {
+        expect(
+          Number.isFinite(layer.gain) && layer.gain > 0 && layer.gain <= 1,
+          `Invalid SoundFont layer gain used by ${patch.id}`,
+        );
+      }
       expect(
         smplr.getSoundfontKits().includes(source.kit ?? "MusyngKite"),
         `Unknown SoundFont bank used by ${patch.id}`,
@@ -151,7 +180,14 @@ try {
     expect(count === 10, `Expected 10 instruments in "${category}", found ${count}`);
   }
   expect(categories.size >= 9, `Expected at least 9 instrument families, found ${categories.size}`);
-  expect(sampledCount === 100, `Expected 100 sampled instruments, found ${sampledCount}`);
+  expect(sampledCount === 120, `Expected 120 sampled instruments, found ${sampledCount}`);
+  expect(categories.get("Stage Keys") === 10, "Stage Keys family must contain exactly 10 presets");
+  expect(categories.get("Layered Keys") === 10, "Layered Keys family must contain exactly 10 presets");
+  const layeredKeys = Object.values(PATCHES).filter((patch) => patch.category === "Layered Keys");
+  expect(
+    layeredKeys.length === 10 && layeredKeys.every((patch) => (patch.sampled?.layers?.length ?? 0) === 1),
+    "Layered Keys presets must each combine two sampled SoundFont instruments",
+  );
   expect(morphSynthPatches.length === 10, `Expected 10 original Morph Synth presets, found ${morphSynthPatches.length}`);
   expect(categories.get("Alchemy Synth") === 10, "Alchemy Synth family must contain exactly 10 presets");
 

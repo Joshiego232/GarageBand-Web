@@ -10,13 +10,14 @@ The project model is the canonical state for both the arrangement and the lower 
 
 `src/lib/daw/engine.ts` owns the live `AudioContext`, track nodes, master bus, look-ahead scheduler, audio recording, and offline render. `src/lib/daw/instruments.ts` remains the patch registry and procedural fallback engine.
 
-`src/lib/daw/sampled-instruments.ts` adds sampled piano and orchestral strings through `smplr`:
+`src/lib/daw/sampled-instruments.ts` loads SoundFont, piano, electric-piano and drum samples through `smplr`, including multi-player layers for combined keyboard patches:
 
 - `grand-piano` and `bright-piano` use the multi-velocity Splendid Grand Piano sample set.
 - `string-ensemble` uses General MIDI `string_ensemble_1` from the FluidR3 GM soundfont.
 - Sample loaders are cached per audio context and decoded audio is cached by `smplr`.
 - Track sync starts loading after the browser audio context is unlocked. Until a patch is ready or if loading fails, the existing procedural voice is used.
 - Offline rendering awaits the same sample-backed patch before scheduling notes, so a WAV bounce uses the sampled sound whenever the sample source is available.
+- SoundFont patches may combine additional General MIDI programs. Each layer has its own sample player and gain and receives the same note timing, velocity and release. The library stores favorites and recent auditions locally in the browser.
 
 ## Soundstage compatibility
 

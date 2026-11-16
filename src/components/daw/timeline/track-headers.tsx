@@ -8,7 +8,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Circle, Copy, Trash2, Volume2 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { useDAW } from "@/lib/daw/store";
-import { TRACK_SIZES, type Track, type TrackSize } from "@/lib/daw/types";
+import { trackRowHeight, type Track, type TrackSize } from "@/lib/daw/types";
 import { gainToDb } from "@/lib/daw/utils";
 import { TrackIcon } from "@/components/daw/mixer/mixer-panel";
 import { PATCHES } from "@/lib/daw/instruments";
@@ -44,20 +44,36 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
   const setModal = useDAW((s) => s.setModal);
   const toggleTrackStack = useDAW((s) => s.toggleTrackStack);
 
-  const h = TRACK_SIZES[size];
+  const { positionedTracks, totalHeight } = tracks.reduce<{
+    positionedTracks: { track: Track; top: number; height: number }[];
+    totalHeight: number;
+  }>(
+    (layout, track) => {
+      const height = trackRowHeight(track, size);
+      return {
+        positionedTracks: [
+          ...layout.positionedTracks,
+          { track, top: layout.totalHeight, height },
+        ],
+        totalHeight: layout.totalHeight + height,
+      };
+    },
+    { positionedTracks: [], totalHeight: 0 }
+  );
 
   return (
     <div className="relative h-full overflow-hidden" data-testid="track-headers">
       <div
         className="absolute inset-x-0 top-0 will-change-transform"
-        style={{ transform: `translateY(${-scrollTop}px)` }}
+        style={{ height: totalHeight + 40, transform: `translateY(${-scrollTop}px)` }}
       >
-        {tracks.map((track, i) => (
+        {positionedTracks.map(({ track, top, height }, i) => (
           <TrackHeader
             key={track.id}
             track={track}
             index={i}
-            height={h}
+            top={top}
+            height={height}
             width={width}
             selected={track.id === selectedTrackId}
             size={size}
@@ -73,6 +89,8 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
             onDelete={() => removeTrack(track.id)}
             folderChildCount={project.stacks?.find((stack) => stack.folderTrackId === track.id)?.trackIds.length ?? 0}
             folderCollapsed={!!track.collapsed}
+            collapsed={track.role !== "folder" && !!track.collapsed}
+            onToggleTrackCollapse={() => updateTrack(track.id, { collapsed: !track.collapsed }, false)}
             onToggleCollapse={() => {
               const stack = project.stacks?.find((item) => item.folderTrackId === track.id);
               if (stack) toggleTrackStack(stack.id);
@@ -83,6 +101,7 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
         <button
           onClick={() => setModal("addTrack")}
           className="flex items-center gap-2 px-3 text-[11px] text-zinc-500 hover:text-[#ffb648] transition-colors w-full py-2"
+          style={{ position: "absolute", top: totalHeight, left: 0 }}
         >
           <span className="size-5 rounded-full border border-dashed border-zinc-600 flex items-center justify-center text-sm leading-none">+</span>
           Add Track
@@ -95,6 +114,7 @@ export function TrackHeaders({ scrollTop, width, size }: TrackHeadersProps) {
 interface TrackHeaderProps {
   track: Track;
   index: number;
+  top: number;
   height: number;
   width: number;
   selected: boolean;
@@ -111,11 +131,13 @@ interface TrackHeaderProps {
   onDelete: () => void;
   folderChildCount: number;
   folderCollapsed: boolean;
+  collapsed: boolean;
+  onToggleTrackCollapse: () => void;
   onToggleCollapse: () => void;
 }
 
 function TrackHeader(p: TrackHeaderProps) {
-  const { track, height, selected, size } = p;
+  const { track, height, selected, size, collapsed } = p;
   const [editing, setEditing] = useState(false);
   const [hover, setHover] = useState(false);
   const [name, setName] = useState(track.name);
@@ -124,12 +146,13 @@ function TrackHeader(p: TrackHeaderProps) {
   return (
     <div
       className={cn(
-        "relative border-b border-black/40 flex flex-col justify-center px-2.5 cursor-pointer group transition-colors",
+        "absolute inset-x-0 border-b border-black/40 cursor-pointer group transition-colors",
+        collapsed ? "flex items-center px-2" : "flex flex-col justify-center px-2.5",
         selected ? "bg-[#2c2c33]" : "bg-[#242429] hover:bg-[#28282e]",
         track.parentTrackId && "pl-7",
         track.role === "folder" && "bg-[#292e37]"
       )}
-      style={{ height, width: "100%" }}
+      style={{ top: p.top, height, width: "100%" }}
       onPointerDown={p.onSelect}
       onDoubleClick={(e) => {
         if (e.target instanceof HTMLInputElement) return;
@@ -141,6 +164,33 @@ function TrackHeader(p: TrackHeaderProps) {
     >
       {/* selection accent */}
       {selected && <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-[#ffb648]" />}
+      {collapsed ? (
+        <>
+          <button
+            type="button"
+            aria-label={`Expand ${track.name}`}
+            title={`Expand ${track.name}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              p.onToggleTrackCollapse();
+            }}
+            className="mr-1 size-4 rounded flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 shrink-0"
+          >
+            <ChevronRight size={12} />
+          </button>
+          <div
+            className="size-4 rounded flex items-center justify-center shrink-0 border border-black/40"
+            style={{ background: `linear-gradient(160deg, ${track.color}, ${track.color}bb)` }}
+          >
+            <TrackIcon icon={track.icon} size={11} className="text-black/70" />
+          </div>
+          <span className="ml-2 min-w-0 truncate text-[10px] font-medium text-zinc-300">
+            {track.name}
+          </span>
+        </>
+      ) : (
+        <>
       <div className="flex items-center gap-2 min-w-0">
         {track.role === "folder" && (
           <button
@@ -155,6 +205,21 @@ function TrackHeader(p: TrackHeaderProps) {
             className="size-5 rounded flex items-center justify-center text-[#a8bad7] hover:bg-white/10 shrink-0"
           >
             {p.folderCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+          </button>
+        )}
+        {track.role !== "folder" && (
+          <button
+            type="button"
+            aria-label={`Collapse ${track.name}`}
+            title={`Collapse ${track.name}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              p.onToggleTrackCollapse();
+            }}
+            className="size-5 rounded flex items-center justify-center text-zinc-500 hover:bg-white/10 hover:text-zinc-200 shrink-0"
+          >
+            <ChevronDown size={13} />
           </button>
         )}
         <div
@@ -327,6 +392,8 @@ function TrackHeader(p: TrackHeaderProps) {
             S
           </button>
         </div>
+      )}
+        </>
       )}
     </div>
   );

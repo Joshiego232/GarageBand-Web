@@ -18,7 +18,7 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import {
   PPQ,
-  TRACK_SIZES,
+  trackRowHeight,
   uid,
   type Region,
   type Track,
@@ -30,6 +30,7 @@ import {
   barTicks,
   clamp,
   secToTick,
+  projectLengthTicks,
 } from "@/lib/daw/utils";
 import { computePeaks } from "@/lib/daw/wav";
 import { LOOPS, loopToRegion } from "@/lib/daw/loops";
@@ -76,6 +77,7 @@ export function TimelineWorkspace() {
   const headersScrollRef = useRef<HTMLDivElement>(null);
   const rulerCanvasRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const playheadOverlayRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const dirtyRef = useRef(true);
   const viewportRef = useRef({ w: 800, h: 400 });
@@ -91,7 +93,6 @@ export function TimelineWorkspace() {
   const recording = useDAW((s) => s.transport.recording);
 
   const pxPerTick = ui.zoom / PPQ;
-  const rowH = TRACK_SIZES[ui.trackSize];
   const snapGrid = snapTicks(ui.snap, ui.zoom, project.timeSig);
   const bt = barTicks(project.timeSig);
   const visibleTracks = useMemo(() => {
@@ -114,9 +115,17 @@ export function TimelineWorkspace() {
     for (const r of t.regions) contentEndTick = Math.max(contentEndTick, r.start + r.length);
   }
   const minTicks = bt * 16;
-  const contentTicks = Math.max(contentEndTick + bt * 4, minTicks, engine.currentTick() + bt * 4);
+  const projectEndTick = projectLengthTicks(project);
+  const contentTicks = Math.max(
+    projectEndTick + bt * 4,
+    contentEndTick + bt * 4,
+    minTicks,
+    engine.currentTick() + bt * 4,
+  );
   const contentW = Math.max(contentTicks * pxPerTick + SCROLL_PAD_X, viewSize.w + HEADER_W);
-  const contentH = visibleTracks.length * rowH + SCROLL_PAD_Y;
+  const contentH =
+    visibleTracks.reduce((height, track) => height + trackRowHeight(track, ui.trackSize), 0) +
+    SCROLL_PAD_Y;
 
   const tickToX = useCallback((tick: number) => tick * pxPerTick, [pxPerTick]);
   const xToTick = useCallback((x: number) => x / pxPerTick, [pxPerTick]);
@@ -125,11 +134,12 @@ export function TimelineWorkspace() {
     const rows: { track: Track; y: number; h: number }[] = [];
     let y = 0;
     for (const t of visibleTracks) {
-      rows.push({ track: t, y, h: rowH });
-      y += rowH;
+      const h = trackRowHeight(t, ui.trackSize);
+      rows.push({ track: t, y, h });
+      y += h;
     }
     return rows;
-  }, [visibleTracks, rowH]);
+  }, [visibleTracks, ui.trackSize]);
 
   // ---------- redraw machinery ----------
 
@@ -209,6 +219,20 @@ export function TimelineWorkspace() {
       ctx.fillRect(cx0, 0, cx1 - cx0, h);
     }
 
+    // Arrangement end marker. Regions can remain beyond it, but playback/export stop here.
+    const projectEndX = tickToX(projectLengthTicks(project)) - sx;
+    if (projectEndX >= -1 && projectEndX <= w + 1) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,182,72,0.65)";
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(projectEndX + 0.5, 0);
+      ctx.lineTo(projectEndX + 0.5, h);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // regions
     const selected = new Set(ui.selectedRegionIds);
     const drag = dragRef.current;
@@ -267,16 +291,6 @@ export function TimelineWorkspace() {
     if (recording) {
       ctx.fillStyle = "rgba(229,72,77,0.06)";
       ctx.fillRect(0, 0, px, h);
-    }
-    if (px >= -2 && px <= w + 2) {
-      ctx.fillStyle = recording ? "#e5484d" : "#f2f2f5";
-      ctx.fillRect(px, 0, 1.5, h);
-      ctx.beginPath();
-      ctx.moveTo(px - 5, 0);
-      ctx.lineTo(px + 5, 0);
-      ctx.lineTo(px, 7);
-      ctx.closePath();
-      ctx.fill();
     }
 
     // ---------- ruler ----------
@@ -338,12 +352,19 @@ export function TimelineWorkspace() {
         }
       }
     }
-  }, [project, ui, pxPerTick, rowH, bt, tickToX, recording, rowLayout, snapGrid]);
+  }, [project, ui, pxPerTick, bt, tickToX, recording, rowLayout, snapGrid]);
 
   // rAF loop
   useEffect(() => {
     let raf = 0;
     const loop = () => {
+      const playhead = playheadOverlayRef.current;
+      if (playhead) {
+        const x = engine.currentTick() * pxPerTick - (contentRef.current?.scrollLeft ?? 0);
+        playhead.style.transform = `translateX(${x}px)`;
+        playhead.style.backgroundColor = engine.recording ? "#e5484d" : "#f2f2f5";
+        playhead.style.opacity = x >= -2 && x <= viewportRef.current.w + 2 ? "1" : "0";
+      }
       if (engine.playing || dragRef.current) dirtyRef.current = true;
       if (dirtyRef.current) {
         dirtyRef.current = false;
@@ -354,7 +375,7 @@ export function TimelineWorkspace() {
         const el = contentRef.current;
         if (el) {
           const px = engine.currentTick() * pxPerTick;
-          const view = el.clientWidth - HEADER_W;
+          const view = el.clientWidth;
           if (px < el.scrollLeft + 40 || px > el.scrollLeft + view - 80) {
             el.scrollLeft = Math.max(0, px - view * 0.25);
           }
@@ -526,7 +547,7 @@ export function TimelineWorkspace() {
       const rows = rowLayout();
       let row = 0;
       for (let i = 0; i < rows.length; i++) {
-        if (pos.y >= rows[i].y + rowH * 0.4 && pos.y < rows[i].y + rowH * 0.6 + rowH * 0.5) row = i;
+        if (pos.y >= rows[i].y && pos.y < rows[i].y + rows[i].h) row = i;
       }
       drag.toRow = clamp(row, 0, rows.length - 1);
     } else if (drag.mode === "resize-r") {
@@ -877,14 +898,19 @@ export function TimelineWorkspace() {
           </select>
           <div className="ml-auto flex items-center gap-0.5">
             <button
-              title="Zoom out (Ctrl/Cmd+-)"
+              title="Zoom out timeline (Ctrl/Cmd+-)"
+              aria-label="Zoom out timeline"
               onClick={() => useDAW.getState().setZoom(ui.zoom / 1.35)}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
             >
               <ZoomOut className="size-3.5" />
             </button>
+            <span className="w-8 text-center text-[9px] font-mono tabular-nums text-zinc-600">
+              {Math.round((ui.zoom / 56) * 100)}%
+            </span>
             <button
-              title="Zoom in (Ctrl/Cmd+=)"
+              title="Zoom in timeline (Ctrl/Cmd+=)"
+              aria-label="Zoom in timeline"
               onClick={() => useDAW.getState().setZoom(ui.zoom * 1.35)}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
             >
@@ -893,7 +919,7 @@ export function TimelineWorkspace() {
             <button
               title="Zoom to fit (Ctrl/Cmd+0)"
               onClick={() => {
-                const len = Math.max(contentEndTick, bt * 8);
+                const len = Math.max(projectLengthTicks(project), contentEndTick, bt * 8);
                 useDAW.getState().setZoom((viewSize.w - 40) / (len / PPQ));
               }}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
@@ -909,6 +935,50 @@ export function TimelineWorkspace() {
             style={{ width: "100%", height: RULER_H }}
             onPointerDown={rulerPointer}
           />
+          <div className="absolute right-2 top-1 z-10 flex h-6 items-center gap-1 rounded border border-black/60 bg-[#1d1d21]/95 px-1.5 shadow">
+            <span className="text-[8px] font-semibold uppercase tracking-wider text-zinc-500">
+              Bars
+            </span>
+            <button
+              type="button"
+              aria-label="Shorten project by one bar"
+              title="Shorten project by one bar"
+              disabled={Math.round(projectLengthTicks(project) / bt) <= 1}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => useDAW.getState().setProjectLengthBars(projectLengthTicks(project) / bt - 1)}
+              className="flex size-4 items-center justify-center rounded text-zinc-400 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              aria-label="Project length in bars"
+              title="Project length in bars"
+              min={1}
+              max={999}
+              step={1}
+              value={Math.round(projectLengthTicks(project) / bt)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (event.target.value && Number.isFinite(value)) {
+                  useDAW.getState().setProjectLengthBars(value);
+                }
+              }}
+              className="w-10 bg-transparent text-center font-mono text-[10px] text-zinc-200 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            <button
+              type="button"
+              aria-label="Extend project by one bar"
+              title="Extend project by one bar"
+              disabled={Math.round(projectLengthTicks(project) / bt) >= 999}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => useDAW.getState().setProjectLengthBars(projectLengthTicks(project) / bt + 1)}
+              className="flex size-4 items-center justify-center rounded text-zinc-400 hover:bg-white/10 hover:text-zinc-100 disabled:opacity-30"
+            >
+              +
+            </button>
+          </div>
         </div>
       </div>
 
@@ -928,17 +998,32 @@ export function TimelineWorkspace() {
           onDragLeave={() => setDropHint(null)}
           onDrop={onDrop}
         >
-          <canvas
-            ref={canvasRef}
+          <div
             className="sticky top-0 left-0 z-10"
-            style={{ width: viewSize.w, height: viewSize.h, cursor: dropHint ? "copy" : undefined }}
-            onPointerDown={onCanvasPointerDown}
-            onPointerMove={onCanvasPointerMove}
-            onPointerUp={onCanvasPointerUp}
-            onPointerCancel={onCanvasPointerUp}
-            onDoubleClick={onCanvasDoubleClick}
-            onContextMenu={onCanvasContextMenu}
-          />
+            style={{ width: viewSize.w, height: viewSize.h }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="absolute inset-0"
+              style={{ width: viewSize.w, height: viewSize.h, cursor: dropHint ? "copy" : undefined }}
+              onPointerDown={onCanvasPointerDown}
+              onPointerMove={onCanvasPointerMove}
+              onPointerUp={onCanvasPointerUp}
+              onPointerCancel={onCanvasPointerUp}
+              onDoubleClick={onCanvasDoubleClick}
+              onContextMenu={onCanvasContextMenu}
+            />
+            <div
+              ref={playheadOverlayRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-0 z-20 w-[1.5px] will-change-transform"
+            >
+              <span
+                className="absolute -left-[4.25px] top-0 size-0 border-x-[5px] border-t-[7px] border-x-transparent"
+                style={{ borderTopColor: recording ? "#e5484d" : "#f2f2f5" }}
+              />
+            </div>
+          </div>
           {/* drop hint */}
           {dropHint && (
             <div className="sticky top-2 left-0 z-20 pointer-events-none flex justify-center">

@@ -21,7 +21,12 @@ function isTypingTarget(e: KeyboardEvent): boolean {
 export function useShortcuts() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (isTypingTarget(e)) return;
+      const opensCommandPalette =
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "k";
+      if (isTypingTarget(e) && !opensCommandPalette) return;
       const st = useDAW.getState();
       const hasMods = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
       const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);

@@ -20,6 +20,10 @@ The project may offer **FluidR3_GM** as an alternate lighter bank in a future
 sound-library setting. It is credited separately by its upstream project and
 is not the default bank.
 
+The Stage Keys and Layered Keys presets use programs from this same MusyngKite
+bank. Layered presets combine two of its General MIDI instruments at runtime;
+they do not contain or claim to reproduce Nord or Yamaha factory samples.
+
 ## Concert grand piano
 
 The sampled concert grand uses the Splendid Grand Piano recordings hosted by

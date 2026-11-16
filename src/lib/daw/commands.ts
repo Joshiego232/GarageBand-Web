@@ -145,19 +145,22 @@ async function exportMidi() {
   const { encodeWav } = await import("./wav");
   const st = useDAW.getState();
   const project = st.project;
+  const projectEndTick = projectLengthTicks(project);
   // build a type-1 MIDI file from all MIDI tracks
   const tracksData: { notes: { pitch: number; vel: number; startTick: number; lenTick: number }[] }[] = [];
   for (const t of project.tracks) {
     if (t.type !== "midi") continue;
     const notes: { pitch: number; vel: number; startTick: number; lenTick: number }[] = [];
     for (const r of t.regions) {
+      const regionEnd = Math.min(r.start + r.length, projectEndTick);
+      if (r.start >= projectEndTick) continue;
       const period = r.looped && r.coreLength ? r.coreLength : 0;
-      const reps = period ? Math.ceil(r.length / period) + 1 : 1;
+      const reps = period ? Math.ceil((regionEnd - r.start) / period) + 1 : 1;
       for (let k = 0; k < reps; k++) {
         for (const n of r.notes ?? []) {
           const abs = r.start + k * period + n.start;
-          if (abs >= r.start + r.length) continue;
-          notes.push({ pitch: n.pitch, vel: n.velocity, startTick: abs, lenTick: Math.min(n.length, r.start + r.length - abs) });
+          if (abs >= regionEnd) continue;
+          notes.push({ pitch: n.pitch, vel: n.velocity, startTick: abs, lenTick: Math.min(n.length, regionEnd - abs) });
         }
       }
     }
@@ -497,7 +500,7 @@ export const COMMANDS: Command[] = [
     const st = useDAW.getState();
     st.setUI({ panels: { ...st.ui.panels, editor: true }, editorMode: "smart" });
   }),
-  cmd("view.keyboard", "Musical Typing Keyboard", "View", "K", () => useDAW.getState().togglePanel("keyboard"), { mod: true }),
+  cmd("view.keyboard", "Musical Typing Keyboard", "View", "K", () => useDAW.getState().togglePanel("keyboard"), { alt: true }),
   cmd("view.help", "Keyboard Shortcuts", "View", "?", () => useDAW.getState().togglePanel("help")),
 
   // ---------------- Transport (not in menu bar, shown in Help) ----------------
@@ -556,14 +559,25 @@ function handleStopRecording() {
   const result = engine.stopRecording();
   const st = useDAW.getState();
   if (result.midi.length && result.trackId) {
+    const notes = result.midi.map((n) => ({
+      id: uid(),
+      pitch: n.pitch,
+      velocity: n.velocity,
+      start: n.start - result.startTick,
+      length: n.length,
+    }));
+    const recordedEnd = notes.reduce(
+      (end, note) => Math.max(end, note.start + note.length),
+      0
+    );
     st.addRegion({
       id: uid(),
       trackId: result.trackId,
       type: "midi",
       name: "Recording",
       start: Math.max(0, result.startTick),
-      length: Math.max(result.endTick - result.startTick, PPQ),
-      notes: result.midi.map((n) => ({ id: uid(), pitch: n.pitch, velocity: n.velocity, start: n.start - result.startTick, length: n.length })),
+      length: Math.max(result.endTick - result.startTick, recordedEnd, PPQ),
+      notes,
     });
     toast.success(`Recorded ${result.midi.length} notes`);
   }

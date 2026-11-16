@@ -20,6 +20,7 @@ import {
   secToTick,
   clamp,
   barTicks,
+  projectLengthTicks,
 } from "./utils";
 import type { StoredBuffer } from "./idb";
 import { loadBuffer } from "./idb";
@@ -415,7 +416,9 @@ export class AudioEngine {
     number,
     { voices: VoiceHandle[]; startTick: number; velocity: number }
   >();
+  private sustainedVoices: VoiceHandle[] = [];
   recordedMidi: { pitch: number; velocity: number; start: number; length: number }[] = [];
+  private recordingStartTick = 0;
   private recordTargetTrack: string | null = null;
 
   // audio capture
@@ -742,7 +745,7 @@ export class AudioEngine {
     this.playPending = false;
     const wasPlaying = this.playing;
     if (!wasPlaying) return;
-    const tick = this.currentTick();
+    const tick = Math.min(this.currentTick(), projectLengthTicks(useDAW.getState().project));
     this.stoppedAtTick = tick;
     this.playing = false;
     if (this.timer) {
@@ -758,6 +761,7 @@ export class AudioEngine {
       }
     }
     this.openInputNotes.clear();
+    this.releaseSustainedNotes();
     for (const v of this.voices) v.handle.kill();
     this.voices = [];
     this.countInBeats = 0;
@@ -775,6 +779,9 @@ export class AudioEngine {
     const armed = st.project.tracks.find((t) => t.armed);
     const track = armed ?? st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
     this.recordTargetTrack = track?.id ?? null;
+    this.recordingStartTick = this.playing
+      ? this.currentTick()
+      : this.stoppedAtTick ?? 0;
     this.recording = true;
     this.recordedMidi = [];
     if (track?.type === "audio") {
@@ -787,13 +794,13 @@ export class AudioEngine {
   }
 
   stopRecording() {
-    const startTick = this.passStartTick;
+    const startTick = this.recordingStartTick;
     const endTick = this.currentTick();
-    const midi = [...this.recordedMidi];
-    this.recordedMidi = [];
     const trackId = this.recordTargetTrack;
     this.recording = false;
     this.stop();
+    const midi = [...this.recordedMidi];
+    this.recordedMidi = [];
     let audio: { stored: StoredBuffer; offsetSec: number; durationSec: number } | null = null;
     if (this.captureNode) {
       audio = this.finishAudioCapture();
@@ -850,24 +857,30 @@ export class AudioEngine {
 
     let guard = 0;
     while (guard++ < 16) {
+      const projectEndTick = projectLengthTicks(project);
       const passEndTick = project.cycleOn
-        ? Math.max(project.cycleStart + PPQ, project.cycleEnd)
-        : Infinity;
-      const passEndTime =
-        project.cycleOn && Number.isFinite(passEndTick)
-          ? this.passStartTime + tickToSec(passEndTick - this.passStartTick, project.tempo)
-          : Infinity;
+        ? Math.min(projectEndTick, Math.max(project.cycleStart + PPQ, project.cycleEnd))
+        : projectEndTick;
+      const passEndTime = this.passStartTime +
+        tickToSec(passEndTick - this.passStartTick, project.tempo);
       const sliceEnd = Math.min(horizon, passEndTime);
       const fromTick = this.scheduledUntilTick;
       const toTick =
         Number.isFinite(sliceEnd)
-          ? this.passStartTick + secToTick(sliceEnd - this.passStartTime, project.tempo)
+          ? Math.min(
+              passEndTick,
+              this.passStartTick + secToTick(sliceEnd - this.passStartTime, project.tempo),
+            )
           : fromTick;
       if (toTick > fromTick && Number.isFinite(sliceEnd)) {
         this.scheduleRange(fromTick, toTick, sliceEnd - tickToSec(toTick - fromTick, project.tempo), project);
         this.scheduledUntilTick = toTick;
       }
-      if (horizon < passEndTime || !Number.isFinite(passEndTime)) break;
+      if (horizon < passEndTime) break;
+      if (!project.cycleOn || this.passStartTick >= projectEndTick) {
+        this.stop();
+        break;
+      }
       // wrap cycle
       this.passStartTime = passEndTime;
       this.passStartTick = project.cycleStart;
@@ -1309,7 +1322,7 @@ export class AudioEngine {
     playLiveVoices();
   }
 
-  noteOff(pitch: number) {
+  noteOff(pitch: number, sustain = false) {
     const n = this.openInputNotes.get(pitch);
     if (!n || !this.ctx) return;
     const tick = this.playing ? this.currentTick() : (this.stoppedAtTick ?? 0) + PPQ / 4;
@@ -1317,8 +1330,21 @@ export class AudioEngine {
       const len = Math.max(PPQ / 8, tick - n.startTick);
       this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
     }
-    for (const voice of n.voices) voice.scheduleStop(this.ctx.currentTime);
+    if (sustain) {
+      this.sustainedVoices.push(...n.voices);
+    } else {
+      for (const voice of n.voices) voice.scheduleStop(this.ctx.currentTime);
+    }
     this.openInputNotes.delete(pitch);
+  }
+
+  releaseSustainedNotes() {
+    if (this.ctx) {
+      for (const voice of this.sustainedVoices) {
+        voice.scheduleStop(this.ctx.currentTime);
+      }
+    }
+    this.sustainedVoices = [];
   }
 
   /** One-shot audition (piano roll keys, library preview) */
@@ -1848,10 +1874,7 @@ export class AudioEngine {
     await Promise.all(Array.from(bufferIds).map((id) => this.ensureBufferLoaded(id)));
 
     const sr = 44100;
-    let endTick = 0;
-    for (const t of project.tracks) {
-      for (const r of t.regions) endTick = Math.max(endTick, r.start + r.length);
-    }
+    const endTick = projectLengthTicks(project);
     let quickSamplerTailSec = 0;
     for (const track of project.tracks) {
       if (track.type !== "midi") continue;
@@ -1926,7 +1949,11 @@ export class AudioEngine {
       if (!tn) continue;
       for (const region of track.regions) {
         if (region.muted) { done++; continue; }
-        const regionEnd = region.start + region.length;
+        const regionEnd = Math.min(region.start + region.length, endTick);
+        if (region.start >= endTick) {
+          done++;
+          continue;
+        }
         if (region.type === "midi") {
           const notes = applyMidiPlugins(
             region.notes ?? [],
@@ -1935,7 +1962,7 @@ export class AudioEngine {
             project.keyMode
           );
           const period = region.looped && region.coreLength ? region.coreLength : 0;
-          const reps = period ? Math.ceil(region.length / period) + 1 : 1;
+          const reps = period ? Math.ceil((regionEnd - region.start) / period) + 1 : 1;
           for (let k = 0; k < reps; k++) {
             const base = region.start + k * period;
             for (const n of notes) {
@@ -1965,7 +1992,7 @@ export class AudioEngine {
             const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
             const contentPlaySec = contentSec / playbackRate;
             const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
-            const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
+            const reps = periodTicks ? Math.ceil((regionEnd - region.start) / periodTicks) + 1 : 1;
             for (let k = 0; k < reps; k++) {
               const occStart = region.start + k * periodTicks;
               if (occStart >= regionEnd) continue;

@@ -46,6 +46,7 @@ interface DAWState {
   // project meta
   loadProject: (p: Project) => void;
   setProjectName: (name: string) => void;
+  setProjectLengthBars: (bars: number) => void;
   setTempo: (bpm: number) => void;
   setTimeSig: (n: number, d: number) => void;
   setKey: (tonic: number, mode: "major" | "minor") => void;
@@ -215,6 +216,9 @@ export const useDAW = create<DAWState>((set, get) => ({
   loadProject: (p) => {
     const normalized: Project = {
       ...p,
+      lengthBars: p.lengthBars !== undefined && Number.isFinite(p.lengthBars)
+        ? clamp(Math.round(p.lengthBars), 1, 999)
+        : undefined,
       stacks: p.stacks ?? [],
       alternatives: p.alternatives ?? [],
       screensets: p.screensets ?? [],
@@ -250,6 +254,16 @@ export const useDAW = create<DAWState>((set, get) => ({
   },
 
   setProjectName: (name) => set({ project: { ...get().project, name } }),
+
+  setProjectLengthBars: (bars) => {
+    if (!Number.isFinite(bars)) return;
+    set({
+      project: {
+        ...get().project,
+        lengthBars: clamp(Math.round(bars), 1, 999),
+      },
+    });
+  },
 
   setTempo: (bpm) => {
     set({ project: { ...get().project, tempo: clamp(Math.round(bpm), 30, 260) } });

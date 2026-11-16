@@ -319,6 +319,7 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
 export function emptyProject(name = "My Song"): Project {
   return {
     name,
+    lengthBars: 16,
     tempo: 100,
     timeSig: [4, 4],
     keyTonic: 0,
@@ -344,6 +345,7 @@ export function emptyProject(name = "My Song"): Project {
 
 export function demoProject(): Project {
   const project = emptyProject("Neon Horizon");
+  project.lengthBars = 24;
   project.tempo = 100;
   project.keyTonic = 9; // A
   project.keyMode = "minor";

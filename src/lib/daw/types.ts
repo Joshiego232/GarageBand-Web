@@ -144,6 +144,7 @@ export interface MidiCCMapping {
 export interface Project {
   id?: string; // database id when saved
   name: string;
+  lengthBars?: number; // explicit arrangement end; omitted projects derive it from their regions
   tempo: number; // BPM
   timeSig: [number, number]; // e.g. [4, 4]
   keyTonic: number; // 0=C .. 11=B
@@ -230,6 +231,7 @@ export interface Patch {
     instrument: string;
     kit?: "MusyngKite" | "FluidR3_GM";
     loop?: boolean;
+    layers?: { instrument: string; gain: number }[];
   };
   /** Drum patches map MIDI drum pitches to sampled kit pieces. */
   isDrum?: boolean;
@@ -266,6 +268,17 @@ export const TRACK_SIZES: Record<TrackSize, number> = {
   M: 68,
   L: 96,
 };
+
+export const COLLAPSED_TRACK_HEIGHT = 20;
+
+export function trackRowHeight(
+  track: Pick<Track, "collapsed" | "role">,
+  size: TrackSize
+): number {
+  return track.collapsed && track.role !== "folder"
+    ? COLLAPSED_TRACK_HEIGHT
+    : TRACK_SIZES[size];
+}
 
 export function uid(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {

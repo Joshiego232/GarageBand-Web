@@ -9,7 +9,7 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Multitrack DAW workspace:** timeline, MIDI and audio regions, transport, loop/cycle, piano roll, mixer, EQ, sends, recording, library, and song management.
 - **Soundstage workflow additions:** 16-step drum sequencer for MIDI drum tracks, plus import and export of Soundstage `.soundstage.json` project files.
 - **Shared MIDI model:** step-sequencer hits are stored as MIDI notes, so they remain editable in the piano roll and work with playback and WAV rendering.
-- **Sampled instruments:** velocity-layered Splendid Grand Piano samples for Grand Piano/Bright Piano, and a FluidR3 GM orchestral String Ensemble soundfont. The original Web Audio patches remain as a fallback while samples load or when offline/network loading is unavailable.
+- **Sampled instruments:** 120 SoundFont and sample-backed patches, including 20 stage-keyboard-inspired presets and layered piano/pad/string combinations, plus 10 original additive synth presets. The stage sounds use the credited MusyngKite General MIDI bank; they are not Nord or Yamaha factory recordings.
 - **Full-stack song storage:** Next.js API routes backed by Prisma and SQLite for saving and retrieving project JSON.
 - **Audio output:** Web Audio playback, microphone recording where the browser permits it, WAV bounce, MIDI export, and audio-file import.
 
@@ -70,7 +70,7 @@ The app is local-first for audio media. GitHub stores application source and doc
 - **Orchestral strings:** FluidR3 GM soundfont, credited to Frank Wen and contributors and distributed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/). The sample-loading code requests the `string_ensemble_1` General MIDI program from the FluidR3 GM set.
 - **Sampler engine:** [`smplr`](https://github.com/danigb/smplr), used as a Web Audio sample playback library. See its repository for its own license and notices.
 
-See [`docs/SAMPLE_ATTRIBUTION.md`](docs/SAMPLE_ATTRIBUTION.md) for the asset-level notes.
+The instrument library supports text search, categories, favorites and recently auditioned patches. See [`docs/SAMPLE_ATTRIBUTION.md`](docs/SAMPLE_ATTRIBUTION.md) for the asset-level notes.
 
 ## Repository layout
 

@@ -1241,7 +1241,12 @@ function soundfontPatch(
   instrument: string,
   icon: string,
   desc: string,
-  options: { loop?: boolean; brightness?: number; release?: number } = {}
+  options: {
+    loop?: boolean;
+    brightness?: number;
+    release?: number;
+    layers?: { instrument: string; gain: number }[];
+  } = {}
 ): Patch {
   return {
     id,
@@ -1253,7 +1258,8 @@ function soundfontPatch(
       engine: "soundfont",
       instrument,
       kit: "MusyngKite",
-      loop: options.loop ?? false,
+      loop: options.loop ?? true,
+      ...(options.layers ? { layers: options.layers } : {}),
     },
     knobs: [
       k("brightness", "Tone", 0, 1, options.brightness ?? 0.68),
@@ -1659,6 +1665,30 @@ export const PATCHES: Record<string, Patch> = {
     "alchemy-digital-pluck", "Digital Pluck", "Fast plucked synth tone with a bright morphing spectrum and tight bass foundation",
     { morph: 0.58, harmonics: 0.88, cutoff: 9800, resonance: 3.1, attack: 0.002, decay: 0.26, sustain: 0.06, release: 0.3, detune: 2, sub: 0.28, lfoRate: 2.4, lfoDepth: 0.1, noise: 0.025 }
   ),
+
+  // Stage Keys — original stage-keyboard-inspired presets using MusyngKite.
+  "stage-upright-piano": soundfontPatch("stage-upright-piano", "Soft Upright-Style Piano", "Stage Keys", "acoustic_grand_piano", "piano", "A softened acoustic-piano voice inspired by compact upright stage sounds", { brightness: 0.42, release: 0.22 }),
+  "stage-bright-grand": soundfontPatch("stage-bright-grand", "Bright Stage Grand", "Stage Keys", "bright_acoustic_piano", "piano", "Clear, bright acoustic piano for a cutting stage mix", { brightness: 0.82 }),
+  "stage-electric-grand": soundfontPatch("stage-electric-grand", "Electric Grand Stage", "Stage Keys", "electric_grand_piano", "piano", "Bright electric-grand voice for rhythmic parts"),
+  "stage-rhodes": soundfontPatch("stage-rhodes", "Warm Stage Tines", "Stage Keys", "electric_piano_1", "piano", "Warm tine-style electric piano for chords and leads", { brightness: 0.58, release: 0.42 }),
+  "stage-dyno-rhodes": soundfontPatch("stage-dyno-rhodes", "Bright Stage Tines", "Stage Keys", "electric_piano_2", "piano", "Bell-like electric piano with a bright, focused attack", { brightness: 0.82 }),
+  "stage-soft-ep": soundfontPatch("stage-soft-ep", "Soft Electric Piano", "Stage Keys", "electric_piano_1", "piano", "Rounded electric piano with a mellow tone", { brightness: 0.38, release: 0.55 }),
+  "stage-clavinet": soundfontPatch("stage-clavinet", "Stage Clav", "Stage Keys", "clavinet", "piano", "Percussive clavinet for tight funk parts"),
+  "stage-honkytonk": soundfontPatch("stage-honkytonk", "Honky-Tonk Stage Piano", "Stage Keys", "honkytonk_piano", "piano", "Characterful detuned piano with a lively stage presence"),
+  "stage-celesta": soundfontPatch("stage-celesta", "Celesta Keys", "Stage Keys", "celesta", "bell", "Light, sparkling keyboard voice"),
+  "stage-organ": soundfontPatch("stage-organ", "Stage Drawbar Organ", "Stage Keys", "drawbar_organ", "piano", "Sustained drawbar organ for live keyboard parts", { loop: true, release: 0.18 }),
+
+  // Layered Keys — two independently sampled General MIDI voices per note.
+  "layer-piano-pad": soundfontPatch("layer-piano-pad", "Piano + Warm Pad", "Layered Keys", "acoustic_grand_piano", "piano", "Acoustic piano blended with a sustained warm pad", { loop: true, release: 0.9, layers: [{ instrument: "pad_2_warm", gain: 0.5 }] }),
+  "layer-piano-strings": soundfontPatch("layer-piano-strings", "Piano + Strings", "Layered Keys", "acoustic_grand_piano", "piano", "Acoustic piano supported by a soft string ensemble", { loop: true, release: 0.85, layers: [{ instrument: "string_ensemble_1", gain: 0.48 }] }),
+  "layer-piano-choir": soundfontPatch("layer-piano-choir", "Piano + Choir", "Layered Keys", "acoustic_grand_piano", "piano", "Piano attack with a gentle choir sustain", { loop: true, release: 0.9, layers: [{ instrument: "choir_aahs", gain: 0.4 }] }),
+  "layer-grand-synth-strings": soundfontPatch("layer-grand-synth-strings", "Grand + Synth Strings", "Layered Keys", "bright_acoustic_piano", "piano", "Bright piano layered with a smooth synthetic string bed", { loop: true, release: 0.8, layers: [{ instrument: "synth_strings_1", gain: 0.42 }] }),
+  "layer-piano-cello": soundfontPatch("layer-piano-cello", "Piano + Cello", "Layered Keys", "acoustic_grand_piano", "piano", "Piano reinforced with a mellow cello layer", { loop: true, release: 0.75, layers: [{ instrument: "cello", gain: 0.36 }] }),
+  "layer-piano-bells": soundfontPatch("layer-piano-bells", "Piano + Bells", "Layered Keys", "acoustic_grand_piano", "piano", "Piano with a delicate celesta shimmer", { release: 0.65, layers: [{ instrument: "celesta", gain: 0.35 }] }),
+  "layer-piano-halo": soundfontPatch("layer-piano-halo", "Piano + Halo", "Layered Keys", "bright_acoustic_piano", "piano", "Bright piano with a wide, airy halo pad", { loop: true, release: 1.1, layers: [{ instrument: "pad_7_halo", gain: 0.46 }] }),
+  "layer-rhodes-pad": soundfontPatch("layer-rhodes-pad", "Tines + Warm Pad", "Layered Keys", "electric_piano_1", "piano", "Warm electric piano layered with a slow pad", { loop: true, release: 0.85, layers: [{ instrument: "pad_2_warm", gain: 0.4 }] }),
+  "layer-rhodes-strings": soundfontPatch("layer-rhodes-strings", "Tines + Strings", "Layered Keys", "electric_piano_2", "piano", "Bell-like electric piano with a soft string sustain", { loop: true, release: 0.8, layers: [{ instrument: "string_ensemble_1", gain: 0.4 }] }),
+  "layer-piano-polysynth": soundfontPatch("layer-piano-polysynth", "Piano + Poly Pad", "Layered Keys", "acoustic_grand_piano", "piano", "Acoustic piano layered with a broad, smooth poly-synth pad", { loop: true, release: 0.9, layers: [{ instrument: "pad_3_polysynth", gain: 0.38 }] }),
 };
 
 export const PATCH_CATEGORIES = Array.from(
