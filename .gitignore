@@ -57,3 +57,7 @@ server.log
 /db/*.sqlite
 /db/*.sqlite3
 /prisma/*.db
+
+# desktop installer outputs
+/release/
+/desktop/standalone/
