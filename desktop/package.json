@@ -4,5 +4,6 @@
   "private": true,
   "productName": "GarageBand Web Studio",
   "description": "Local desktop edition of GarageBand Web Studio",
-  "main": "main.cjs"
+  "main": "main.cjs",
+  "author": "Joshiego232 <120331516+Joshiego232@users.noreply.github.com>"
 }
