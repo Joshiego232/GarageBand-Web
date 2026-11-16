@@ -26,6 +26,8 @@ jobs:
   windows:
     name: Windows x64 installer
     runs-on: windows-latest
+    env:
+      DATABASE_URL: file:./dev.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,6 +69,8 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    env:
+      DATABASE_URL: file:./dev.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
