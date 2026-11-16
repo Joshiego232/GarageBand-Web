@@ -10,6 +10,8 @@ import { PPQ, uid } from "./types";
 import { snapTicks, barTicks, projectLengthTicks, clamp } from "./utils";
 import { toast } from "sonner";
 import { exportSoundstageProject, importSoundstageProject } from "./soundstage-bridge";
+import { analyzeMidiNotesByBar } from "./ChordDetector";
+import { importMidiFiles } from "./midi-import";
 
 export interface Command {
   id: string;
@@ -90,6 +92,18 @@ async function importAudioFiles() {
         toast.error(`Could not import ${file.name}: unsupported format`);
       }
     }
+  };
+  input.click();
+}
+
+function importMidiFile() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".mid,.midi,audio/midi,audio/x-midi";
+  input.multiple = true;
+  input.onchange = () => {
+    const files = Array.from(input.files ?? []);
+    if (files.length) void importMidiFiles(files);
   };
   input.click();
 }
@@ -313,8 +327,10 @@ export const COMMANDS: Command[] = [
     }
   }, { mod: true, shift: true }),
   cmd("file.import", "Import Audio File", "File", "I", () => void importAudioFiles(), { mod: true, shift: true, separatorBefore: true }),
+  cmd("file.importMidi", "Import MIDI File…", "File", "", importMidiFile),
   cmd("file.importSoundstage", "Import Soundstage Project JSON…", "File", "", () => importSoundstageJson()),
   cmd("file.exportSoundstage", "Export Soundstage Project JSON…", "File", "", () => exportSoundstageJson()),
+  cmd("file.bounce", "Bounce Project or Section…", "File", "B", () => useDAW.getState().setModal("export"), { mod: true, separatorBefore: true }),
   cmd("file.exportWav", "Export Song as WAV", "File", "E", () => void exportWav(), { mod: true, separatorBefore: true }),
   cmd("file.exportMidi", "Export MIDI File", "File", "M", () => void exportMidi(), { mod: true, shift: true }),
 
@@ -357,6 +373,10 @@ export const COMMANDS: Command[] = [
 
   // ---------------- Track ----------------
   cmd("track.new", "New Track", "Track", "N", () => useDAW.getState().setModal("addTrack"), { mod: true, shift: true }),
+  cmd("track.showMaster", "Show Master Track", "Track", "M", () => {
+    const state = useDAW.getState();
+    state.setUI({ showMasterTrack: !state.ui.showMasterTrack });
+  }, { mod: true, shift: true }),
   cmd("track.newAux", "New Aux Bus", "Track", "", () => {
     useDAW.getState().createAuxBus();
     useDAW.getState().setUI({ panels: { ...useDAW.getState().ui.panels, mixer: true } });
@@ -453,6 +473,10 @@ export const COMMANDS: Command[] = [
     st.saveScreenset(name);
     toast.success("Screenset saved");
   }, { separatorBefore: true }),
+  cmd("view.automation", "Show Automation", "View", "A", () => {
+    const state = useDAW.getState();
+    state.setUI({ automationView: !state.ui.automationView });
+  }),
   cmd("view.loadScreenset", "Recall Screenset…", "View", "", () => {
     const st = useDAW.getState();
     const screensets = st.project.screensets ?? [];
@@ -509,10 +533,13 @@ export const COMMANDS: Command[] = [
     const st = useDAW.getState();
     if (engine.recording) {
       handleStopRecording();
+    } else if (engine.recordPending) {
+      toast.info("Waiting for audio input permissions...");
     } else {
-      const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
-      if (track?.type === "audio" && !engine.ready) engine.ensure();
-      engine.startRecording();
+      void engine.startRecording().catch((error: unknown) => {
+        console.error("Could not start recording.", error);
+        toast.error("Could not start recording. Check the selected input and microphone permissions.");
+      });
     }
   }),
   cmd("transport.stop", "Stop and Go to Beginning", "Transport", "Enter", () => {
@@ -558,54 +585,90 @@ export const COMMANDS: Command[] = [
 function handleStopRecording() {
   const result = engine.stopRecording();
   const st = useDAW.getState();
-  if (result.midi.length && result.trackId) {
-    const notes = result.midi.map((n) => ({
+  const notesByTrack = new Map<string, typeof result.midi>();
+  for (const note of result.midi) {
+    const notes = notesByTrack.get(note.trackId) ?? [];
+    notes.push(note);
+    notesByTrack.set(note.trackId, notes);
+  }
+  const recordedRegions = new Map<string, { id: string; start: number; length: number; notes: typeof result.midi }>();
+  for (const [trackId, recordedNotes] of notesByTrack) {
+    const notes = recordedNotes.map((n) => ({
       id: uid(),
       pitch: n.pitch,
       velocity: n.velocity,
       start: n.start - result.startTick,
       length: n.length,
     }));
-    const recordedEnd = notes.reduce(
-      (end, note) => Math.max(end, note.start + note.length),
-      0
-    );
+    const recordedEnd = notes.reduce((end, note) => Math.max(end, note.start + note.length), 0);
+    const regionId = uid();
+    const start = Math.max(0, result.startTick);
+    const length = Math.max(result.endTick - result.startTick, recordedEnd, PPQ);
     st.addRegion({
-      id: uid(),
-      trackId: result.trackId,
+      id: regionId,
+      trackId,
       type: "midi",
       name: "Recording",
-      start: Math.max(0, result.startTick),
-      length: Math.max(result.endTick - result.startTick, recordedEnd, PPQ),
+      start,
+      length,
       notes,
     });
-    toast.success(`Recorded ${result.midi.length} notes`);
+    recordedRegions.set(trackId, { id: regionId, start, length, notes: recordedNotes });
   }
-  if (result.audio && result.trackId) {
+  if (notesByTrack.size) {
+    const project = useDAW.getState().project;
+    const ticksPerBar = barTicks(project.timeSig);
+    const extracted = [...recordedRegions.values()].flatMap((region) => {
+      const regionNotes = region.notes.map((note) => ({
+        pitch: note.pitch,
+        start: note.start - result.startTick,
+        length: note.length,
+      }));
+      return analyzeMidiNotesByBar(
+        regionNotes,
+        region.start,
+        region.length,
+        ticksPerBar,
+        { tonic: project.keyTonic, mode: project.keyMode },
+      ).map((chord) => ({ ...chord, id: uid(), sourceRegionId: region.id }));
+    });
+    if (extracted.length) {
+      useDAW.getState().setChordRegions([
+        ...(useDAW.getState().project.chordRegions ?? []),
+        ...extracted,
+      ]);
+    }
+  }
+  if (notesByTrack.size) {
+    toast.success(`Recorded ${result.midi.length} MIDI notes on ${notesByTrack.size} track${notesByTrack.size === 1 ? "" : "s"}`);
+  }
+  if (result.audio.length) {
     void (async () => {
-      const bufferId = uid();
-      await engine.storeBuffer(bufferId, result.audio!.stored);
-      const project = useDAW.getState().project;
-      const secPerTick = 60 / project.tempo / PPQ;
-      const lengthTicks = Math.max(PPQ, Math.ceil(result.audio!.durationSec / secPerTick));
-      useDAW.getState().addRegion({
-        id: uid(),
-        trackId: result.trackId!,
-        type: "audio",
-        name: "Recording",
-        start: Math.max(0, result.startTick),
-        length: lengthTicks,
-        bufferId,
-        sampleStart: result.audio!.offsetSec,
-        sampleLength: result.audio!.durationSec,
-        gain: 1,
-        fadeIn: 0.005,
-        fadeOut: 0.01,
-      });
-      toast.success("Audio recording added");
+      for (const audio of result.audio) {
+        const bufferId = uid();
+        await engine.storeBuffer(bufferId, audio.stored);
+        const project = useDAW.getState().project;
+        const secPerTick = 60 / project.tempo / PPQ;
+        const lengthTicks = Math.max(PPQ, Math.ceil(audio.durationSec / secPerTick));
+        useDAW.getState().addRegion({
+          id: uid(),
+          trackId: audio.trackId,
+          type: "audio",
+          name: "Recording",
+          start: Math.max(0, result.startTick),
+          length: lengthTicks,
+          bufferId,
+          sampleStart: audio.offsetSec,
+          sampleLength: audio.durationSec,
+          gain: 1,
+          fadeIn: 0.005,
+          fadeOut: 0.01,
+        });
+      }
+      toast.success(`Audio recorded on ${result.audio.length} track${result.audio.length === 1 ? "" : "s"}`);
     })();
   }
-  if (!result.midi.length && !result.audio) {
+  if (!result.midi.length && !result.audio.length) {
     toast.info("Recording stopped");
   }
 }

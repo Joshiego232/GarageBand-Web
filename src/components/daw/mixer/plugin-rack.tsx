@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Plus, Power, Trash2 } from "lucide-react";
+import { AudioLines, Plus, Power, Trash2 } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import type { Track } from "@/lib/daw/types";
 import { validateMidiScript } from "@/lib/daw/midi-scripter";
@@ -38,6 +38,7 @@ export function PluginRack({ track }: { track: Track }) {
     if (!instance) return;
     updatePlugins([...plugins, instance]);
     setSelectedPlugin("");
+    if (instance.pluginId === "pedalboard") useDAW.getState().setModal("pedalboard");
   };
 
   const togglePlugin = (pluginId: string) => {
@@ -134,6 +135,7 @@ export function PluginRack({ track }: { track: Track }) {
               onRemove={() => removePlugin(plugin.id)}
               onChange={(key, value) => changeParameter(plugin.id, key, value)}
               onScriptChange={(script) => changeScript(plugin.id, script)}
+              onOpenPedalboard={() => useDAW.getState().setModal("pedalboard")}
             />
           );
         })}
@@ -149,6 +151,7 @@ function PluginCard({
   onRemove,
   onChange,
   onScriptChange,
+  onOpenPedalboard,
 }: {
   definition: PluginDefinition;
   instance: TrackPluginInstance;
@@ -156,6 +159,7 @@ function PluginCard({
   onRemove: () => void;
   onChange: (key: string, value: number) => void;
   onScriptChange: (script: string) => void;
+  onOpenPedalboard: () => void;
 }) {
   return (
     <section className={`rounded-md border p-2 transition-colors ${instance.enabled ? "border-[#4d6235]/60 bg-[#24272a]" : "border-black/40 bg-[#222226] opacity-70"}`}>
@@ -183,6 +187,16 @@ function PluginCard({
           <Trash2 size={12} />
         </button>
       </div>
+
+      {definition.id === "pedalboard" && (
+        <button
+          type="button"
+          onClick={onOpenPedalboard}
+          className="mt-2 flex h-8 w-full items-center justify-center gap-2 rounded border border-[#4ca8a0]/35 bg-[#4ca8a0]/10 text-[10px] font-medium text-[#91d5cc] hover:bg-[#4ca8a0]/20"
+        >
+          <AudioLines size={13} /> Open Pedalboard
+        </button>
+      )}
 
       {definition.id === "scripter" && (
         <div className="mt-2 space-y-1.5">

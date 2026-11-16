@@ -7,16 +7,19 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Drum, Headphones, Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
+import { AudioLines, CloudOff, Drum, Headphones, LoaderCircle, Mic, Play, SlidersHorizontal, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useDAW } from "@/lib/daw/store";
-import { PATCHES } from "@/lib/daw/instruments";
+import { trackPatch } from "@/lib/daw/instruments";
 import { uid, type KnobDef, type SamplerZone, type Track } from "@/lib/daw/types";
 import { Knob } from "@/components/daw/controls/knob";
 import { TrackIcon } from "./track-icon";
 import { VisualEQ } from "./visual-eq";
 import { PluginRack } from "./plugin-rack";
 import { engine } from "@/lib/daw/engine";
+import { AUDIO_PLUGIN_DEFS, createPluginInstance } from "@/lib/daw/plugins";
+import { useSoundFontStatus } from "@/hooks/use-soundfont-status";
+import { DenoisePanel } from "@/components/daw/editor/DenoisePanel";
 
 /** Unit-aware readout formatting for patch knobs. */
 function knobFormat(unit?: string): ((v: number) => string) | undefined {
@@ -32,18 +35,38 @@ function knobFormat(unit?: string): ((v: number) => string) | undefined {
 
 const EQ_GAIN_FORMAT = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)} dB`;
 
-export function SmartControls() {
-  const track = useDAW((s) => s.project.tracks.find((t) => t.id === s.ui.selectedTrackId) ?? null);
+export function SmartControls({ controlSize = 52 }: { controlSize?: number }) {
+  const controlTextSize = Math.min(14, 9 + (controlSize - 52) * 0.07);
+  const track = useDAW((s) => {
+    const selected = s.project.tracks.find((item) => item.id === s.ui.selectedTrackId);
+    if (selected?.role === "folder") {
+      const stack = s.project.stacks?.find((item) => item.folderTrackId === selected.id);
+      const bus = stack?.busTrackId
+        ? s.project.tracks.find((item) => item.id === stack.busTrackId)
+        : undefined;
+      if (bus) return bus;
+    }
+    return selected ?? null;
+  });
   const commit = useDAW((s) => s.commit);
+  const soundFontStatus = useSoundFontStatus(track?.id ?? "");
+  const selectedAudioRegion = useDAW((s) => {
+    if (!track || track.type !== "audio") return null;
+    return track.regions.find((region) =>
+      region.type === "audio" && s.ui.selectedRegionIds.includes(region.id),
+    ) ?? null;
+  });
   const [view, setView] = useState<"sound" | "plugins">("sound");
 
   const setParam = useCallback((trackId: string, key: string, v: number) => {
     const t = useDAW.getState().project.tracks.find((x) => x.id === trackId);
+    const params = { ...(t?.params ?? {}), [key]: v };
     useDAW.getState().updateTrack(
       trackId,
-      { params: { ...(t?.params ?? {}), [key]: v } },
+      { params },
       false
     );
+    engine.setSoundFontParams(trackId, params);
   }, []);
 
   const setEqGain = useCallback(
@@ -55,6 +78,21 @@ export function SmartControls() {
     []
   );
 
+  const openPedalboard = () => {
+    if (!track) return;
+    const state = useDAW.getState();
+    const current = state.project.tracks.find((item) => item.id === track.id);
+    if (!current) return;
+    if (!(current.audioPlugins ?? []).some((plugin) => plugin.pluginId === "pedalboard")) {
+      const instance = createPluginInstance("pedalboard", AUDIO_PLUGIN_DEFS);
+      if (!instance) return;
+      state.updateTrack(current.id, {
+        audioPlugins: [...(current.audioPlugins ?? []), instance],
+      });
+    }
+    state.setModal("pedalboard");
+  };
+
   if (!track) {
     return (
       <div className="flex-1 flex flex-col min-h-0 bg-[#1d1d20]">
@@ -65,7 +103,7 @@ export function SmartControls() {
     );
   }
 
-  const patch = track.type === "midi" ? PATCHES[track.instrument] : undefined;
+  const patch = track.type === "midi" ? trackPatch(track) : undefined;
   const displayName = track.sampleBufferId
     ? track.sampleName ?? track.name
     : track.type === "midi"
@@ -93,8 +131,32 @@ export function SmartControls() {
           </p>
           <p className="text-[9px] leading-none text-zinc-500 mt-1 truncate">{category}</p>
         </div>
+        {soundFontStatus?.state === "loading" && (
+          <span className="inline-flex items-center gap-1.5 rounded border border-[#67b7ff]/20 bg-[#67b7ff]/[0.07] px-2 py-1 text-[9px] text-[#9dcfff]" role="status">
+            <LoaderCircle size={11} className="animate-spin" />
+            Streaming SoundFont
+          </span>
+        )}
+        {soundFontStatus?.state === "fallback" && (
+          <span
+            className="inline-flex items-center gap-1.5 rounded border border-amber-500/20 bg-amber-500/[0.07] px-2 py-1 text-[9px] text-amber-300"
+            role="status"
+            title={soundFontStatus.message}
+          >
+            <CloudOff size={11} />
+            Built-in Synth
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={openPedalboard}
+            className="h-6 px-2 inline-flex items-center gap-1.5 rounded-md border border-[#4ca8a0]/35 bg-[#4ca8a0]/10 text-[10px] text-[#91d5cc] hover:bg-[#4ca8a0]/20 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#4ca8a0]/60"
+            title="Open the selected channel's Pedalboard insert"
+          >
+            <AudioLines size={12} /> Pedalboard
+          </button>
           <div className="h-6 p-0.5 flex items-center rounded-md border border-black/50 bg-[#26262b]">
             <button
               type="button"
@@ -131,6 +193,16 @@ export function SmartControls() {
 
       {view === "plugins" ? (
         <PluginRack track={track} />
+      ) : track.type === "audio" ? (
+        <div className="flex-1 min-h-0 overflow-y-auto p-3">
+          {selectedAudioRegion ? (
+            <DenoisePanel region={selectedAudioRegion} compact />
+          ) : (
+            <p className="text-center text-xs text-zinc-500">
+              Select an audio region to adjust denoise.
+            </p>
+          )}
+        </div>
       ) : (
       /* knob grid */
       <div className="flex-1 min-h-0 overflow-y-auto [scrollbar-width:thin] flex flex-wrap items-center justify-center gap-x-6 gap-y-2 py-3">
@@ -140,7 +212,8 @@ export function SmartControls() {
           (patch?.knobs ?? []).map((k: KnobDef) => (
             <Knob
               key={k.id}
-              size={52}
+              size={controlSize}
+              textSize={controlTextSize}
               label={k.label}
               min={k.min}
               max={k.max}
@@ -155,7 +228,8 @@ export function SmartControls() {
         ) : (
           <>
             <Knob
-              size={52}
+              size={controlSize}
+              textSize={controlTextSize}
               label="Low"
               min={-12}
               max={12}
@@ -166,7 +240,8 @@ export function SmartControls() {
               onCommitStart={commit}
             />
             <Knob
-              size={52}
+              size={controlSize}
+              textSize={controlTextSize}
               label="Mid"
               min={-12}
               max={12}
@@ -177,7 +252,8 @@ export function SmartControls() {
               onCommitStart={commit}
             />
             <Knob
-              size={52}
+              size={controlSize}
+              textSize={controlTextSize}
               label="High"
               min={-12}
               max={12}

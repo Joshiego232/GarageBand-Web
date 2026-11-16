@@ -23,6 +23,7 @@ import {
   type Region,
   type Track,
   type SnapMode,
+  getRegionPlaybackBufferId,
 } from "@/lib/daw/types";
 import {
   snapTicks,
@@ -37,6 +38,11 @@ import { LOOPS, loopToRegion } from "@/lib/daw/loops";
 import { TrackHeaders } from "./track-headers";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { mixHex, hexToRgba } from "@/lib/daw/colors";
+import { analyzeMidiNotesByBar } from "@/lib/daw/ChordDetector";
+import { importMidiFiles, isMidiFileForImport } from "@/lib/daw/midi-import";
+import { GlobalChordTrack, extractChordRegions } from "./GlobalChordTrack";
+import { AutomationLaneOverlay } from "./AutomationLaneOverlay";
 
 const HEADER_W = 212;
 const RULER_H = 28;
@@ -86,11 +92,14 @@ export function TimelineWorkspace() {
   const [headerScrollY, setHeaderScrollY] = useState(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; regionId: string } | null>(null);
   const [dropHint, setDropHint] = useState<string | null>(null);
+  const [scrollX, setScrollX] = useState(0);
 
   const project = useDAW((s) => s.project);
   const ui = useDAW((s) => s.ui);
   const playing = useDAW((s) => s.transport.playing);
   const recording = useDAW((s) => s.transport.recording);
+  const automationView = useDAW((s) => s.ui.automationView);
+  const showMasterTrack = useDAW((s) => s.ui.showMasterTrack);
 
   const pxPerTick = ui.zoom / PPQ;
   const snapGrid = snapTicks(ui.snap, ui.zoom, project.timeSig);
@@ -123,9 +132,12 @@ export function TimelineWorkspace() {
     engine.currentTick() + bt * 4,
   );
   const contentW = Math.max(contentTicks * pxPerTick + SCROLL_PAD_X, viewSize.w + HEADER_W);
-  const contentH =
-    visibleTracks.reduce((height, track) => height + trackRowHeight(track, ui.trackSize), 0) +
-    SCROLL_PAD_Y;
+  const masterRowHeight = showMasterTrack ? (automationView ? 94 : 38) : 0;
+  const tracksHeight = visibleTracks.reduce(
+    (height, track) => height + trackRowHeight(track, ui.trackSize) + (automationView ? 56 : 0),
+    0
+  );
+  const contentH = tracksHeight + masterRowHeight + SCROLL_PAD_Y;
 
   const tickToX = useCallback((tick: number) => tick * pxPerTick, [pxPerTick]);
   const xToTick = useCallback((x: number) => x / pxPerTick, [pxPerTick]);
@@ -134,12 +146,12 @@ export function TimelineWorkspace() {
     const rows: { track: Track; y: number; h: number }[] = [];
     let y = 0;
     for (const t of visibleTracks) {
-      const h = trackRowHeight(t, ui.trackSize);
+      const h = trackRowHeight(t, ui.trackSize) + (automationView ? 56 : 0);
       rows.push({ track: t, y, h });
       y += h;
     }
     return rows;
-  }, [visibleTracks, ui.trackSize]);
+  }, [visibleTracks, ui.trackSize, automationView]);
 
   // ---------- redraw machinery ----------
 
@@ -181,11 +193,20 @@ export function TimelineWorkspace() {
       const y = row.y - sy;
       if (y + row.h < 0 || y > h) continue;
       // row bg
-      ctx.fillStyle = row.track.id === selectedTrackId ? "#26262c" : "#222227";
+      ctx.fillStyle = row.track.id === selectedTrackId
+        ? hexToRgba(row.track.color, 0.11)
+        : "#222227";
       ctx.fillRect(0, y, w, row.h);
       // horizontal separator
       ctx.fillStyle = "#161619";
       ctx.fillRect(0, y + row.h - 1, w, 1);
+    }
+    if (showMasterTrack) {
+      const y = rows.reduce((bottom, row) => Math.max(bottom, row.y + row.h), 0) - sy;
+      ctx.fillStyle = "rgba(45,105,125,.18)";
+      ctx.fillRect(0, y, w, masterRowHeight);
+      ctx.fillStyle = "rgba(100,210,235,.25)";
+      ctx.fillRect(0, y + masterRowHeight - 1, w, 1);
     }
 
     // grid lines
@@ -248,6 +269,29 @@ export function TimelineWorkspace() {
         // dragged regions are drawn from ghost positions
         if (dragOffsets?.has(region.id)) continue;
         drawRegion(ctx, region, row, y, sx, w, selected.has(region.id), project.tempo);
+      }
+      if (row.track.role === "folder" && row.track.collapsed) {
+        const stack = project.stacks?.find((item) => item.folderTrackId === row.track.id);
+        const children = project.tracks.filter((track) => stack?.trackIds.includes(track.id));
+        if (children.length) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(2, y + 3, Math.max(0, w - 4), Math.max(0, row.h - 7), 3);
+          ctx.clip();
+          ctx.fillStyle = "rgba(0,0,0,.24)";
+          ctx.fillRect(2, y + 3, w - 4, row.h - 7);
+          const bandHeight = Math.max(2, (row.h - 8) / Math.min(children.length, 6));
+          children.slice(0, 6).forEach((child, childIndex) => {
+            for (const region of child.regions) {
+              const x = region.start * pxPerTick - sx;
+              const width = Math.max(2, region.length * pxPerTick);
+              if (x + width < 0 || x > w) continue;
+              ctx.fillStyle = hexToRgba(child.color, 0.9);
+              ctx.fillRect(x, y + 4 + childIndex * bandHeight, width, Math.max(1, bandHeight - 1));
+            }
+          });
+          ctx.restore();
+        }
       }
     });
 
@@ -352,7 +396,7 @@ export function TimelineWorkspace() {
         }
       }
     }
-  }, [project, ui, pxPerTick, bt, tickToX, recording, rowLayout, snapGrid]);
+  }, [project, ui, pxPerTick, bt, tickToX, recording, rowLayout, snapGrid, showMasterTrack, masterRowHeight]);
 
   // rAF loop
   useEffect(() => {
@@ -419,6 +463,7 @@ export function TimelineWorkspace() {
     const el = contentRef.current;
     if (!el) return;
     scrollRef.current = { x: el.scrollLeft, y: el.scrollTop };
+    setScrollX(el.scrollLeft);
     if (headersScrollRef.current) {
       headersScrollRef.current.scrollTop = el.scrollTop;
     }
@@ -743,7 +788,7 @@ export function TimelineWorkspace() {
     if (hasLoop || hasFiles) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
-      setDropHint(hasFiles ? "Drop to import audio" : "Drop to add loop");
+      setDropHint(hasFiles ? "Drop to import audio or MIDI" : "Drop to add loop");
     }
   };
 
@@ -775,6 +820,10 @@ export function TimelineWorkspace() {
     if (files.length) {
       e.preventDefault();
       for (const file of files) {
+        if (isMidiFileForImport(file)) {
+          await importMidiFiles([file], dropTick);
+          continue;
+        }
         try {
           const stored = await engine.decodeAudioFile(file);
           const bufferId = uid();
@@ -826,6 +875,19 @@ export function TimelineWorkspace() {
       case "edit":
         st.openRegionInEditor(regionId);
         break;
+      case "denoise":
+        if (region.type !== "audio") break;
+        st.openRegionInEditor(regionId);
+        st.commit();
+        st.updateRegion(regionId, {
+          originalAudioBufferId: region.originalAudioBufferId ?? region.bufferId,
+          denoiseEnabled: true,
+          denoiseAmount: 50,
+          denoiseHighPass: true,
+          denoisedAudioBufferId: undefined,
+          denoiseCacheKey: undefined,
+        }, false);
+        break;
       case "split":
         st.splitRegionsAt(engine.currentTick());
         break;
@@ -849,6 +911,28 @@ export function TimelineWorkspace() {
         st.setCycle(true, region.start, region.start + region.length);
         engine.play(region.start);
         break;
+      case "analyze-chords": {
+        if (region.type !== "midi" || !region.notes?.length) {
+          toast.error("This MIDI region has no notes to analyze.");
+          break;
+        }
+        const extracted = analyzeMidiNotesByBar(
+          region.notes,
+          region.start,
+          region.length,
+          bt,
+          { tonic: project.keyTonic, mode: project.keyMode },
+        );
+        if (!extracted.length) {
+          toast.error("No chords could be identified in this region.");
+          break;
+        }
+        st.setChordRegions(
+          extractChordRegions(st.project.chordRegions ?? [], extracted, region.id),
+        );
+        toast.success(`Extracted ${extracted.length} chord${extracted.length === 1 ? "" : "s"} to the Chord Track.`);
+        break;
+      }
     }
     markDirty();
   };
@@ -982,9 +1066,16 @@ export function TimelineWorkspace() {
         </div>
       </div>
 
+      <GlobalChordTrack
+        scrollX={scrollX}
+        pxPerTick={pxPerTick}
+        contentW={contentW}
+        ticksPerBar={bt}
+      />
+
       {/* main row: headers + content */}
-      <div className="flex-1 flex min-h-0">
-        <div className="w-[212px] shrink-0 border-r border-black/60 bg-[#242429] flex flex-col">
+      <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "212px minmax(0, 1fr)" }}>
+        <div className="border-r border-black/60 bg-[#242429] flex flex-col min-w-0">
           <div ref={headersScrollRef} className="flex-1 overflow-hidden">
             <TrackHeaders scrollTop={headerScrollY} width={HEADER_W} size={ui.trackSize} />
           </div>
@@ -1012,6 +1103,27 @@ export function TimelineWorkspace() {
               onPointerCancel={onCanvasPointerUp}
               onDoubleClick={onCanvasDoubleClick}
               onContextMenu={onCanvasContextMenu}
+            />
+            <AutomationLaneOverlay
+              tracks={visibleTracks}
+              rows={rowLayout().map((row) => {
+                const stack = project.stacks?.find((item) => item.folderTrackId === row.track.id);
+                return {
+                  trackId: row.track.id,
+                  ownerId: stack?.type === "summing" && stack.busTrackId ? stack.busTrackId : row.track.id,
+                  y: row.y,
+                  height: row.h,
+                };
+              })}
+              width={viewSize.w}
+              height={viewSize.h}
+              scrollX={scrollX}
+              scrollY={headerScrollY}
+              pxPerTick={pxPerTick}
+              snapGrid={snapGrid}
+              timeSig={project.timeSig}
+              masterTop={showMasterTrack ? tracksHeight : undefined}
+              masterHeight={masterRowHeight}
             />
             <div
               ref={playheadOverlayRef}
@@ -1043,6 +1155,8 @@ export function TimelineWorkspace() {
               >
                 {[
                   ["edit", "Open in Editor"],
+                  ["denoise", "Denoise Audio..."],
+                  ["analyze-chords", "Analyze & Extract Chords to Chord Track"],
                   ["split", "Split at Playhead"],
                   ["loop", "Loop On/Off"],
                   ["duplicate", "Duplicate"],
@@ -1050,6 +1164,12 @@ export function TimelineWorkspace() {
                   ["rename", "Rename"],
                   ["delete", "Delete"],
                 ].map(([action, label]) => (
+                  action === "analyze-chords" &&
+                  !project.tracks.flatMap((track) => track.regions).some((item) => item.id === contextMenu.regionId && item.type === "midi")
+                    ? null :
+                  action === "denoise" &&
+                  !project.tracks.flatMap((track) => track.regions).some((item) => item.id === contextMenu.regionId && item.type === "audio")
+                    ? null :
                   <button
                     key={action}
                     onClick={() => runContextAction(action)}
@@ -1093,6 +1213,7 @@ function drawRegion(
   const h = row.h - 3;
   const headerH = 12;
   const isMidi = region.type === "midi";
+  const trackColor = row.track.color;
   const clipX0 = Math.max(x, -2);
   const clipW = Math.min(w, viewW + 2 - clipX0);
 
@@ -1101,13 +1222,8 @@ function drawRegion(
 
   // body gradient
   const grad = ctx.createLinearGradient(0, y, 0, y + h);
-  if (isMidi) {
-    grad.addColorStop(0, "#7cbf5e");
-    grad.addColorStop(1, "#4f8c3a");
-  } else {
-    grad.addColorStop(0, "#5ca1e6");
-    grad.addColorStop(1, "#3a78bd");
-  }
+  grad.addColorStop(0, mixHex(trackColor, "#ffffff", 0.22));
+  grad.addColorStop(1, mixHex(trackColor, "#000000", 0.22));
   // clip rounded region
   ctx.beginPath();
   const r = 3;
@@ -1118,7 +1234,7 @@ function drawRegion(
   // header strip
   ctx.save();
   ctx.clip();
-  ctx.fillStyle = isMidi ? "#3e7530" : "#2d5f96";
+  ctx.fillStyle = mixHex(trackColor, "#000000", 0.34);
   ctx.fillRect(clipX0, y, clipW, headerH);
   // name
   ctx.fillStyle = "#eaf3e4";
@@ -1130,7 +1246,7 @@ function drawRegion(
 
   // content
   if (isMidi) {
-    drawMidiContent(ctx, region, clipX0, y + headerH, clipW, h - headerH, pxPerTick);
+    drawMidiContent(ctx, region, clipX0, y + headerH, clipW, h - headerH, pxPerTick, trackColor);
   } else {
     drawAudioContent(ctx, region, clipX0, y + headerH, clipW, h - headerH, pxPerTick, tempo);
   }
@@ -1175,7 +1291,8 @@ function drawMidiContent(
   y0: number,
   w: number,
   h: number,
-  pxPerTick: number
+  pxPerTick: number,
+  trackColor: string
 ) {
   const notes = region.notes ?? [];
   if (!notes.length || h < 4) return;
@@ -1200,7 +1317,7 @@ function drawMidiContent(
       const nw = Math.max(1.5, n.length * pxPerTick);
       if (drawX + nw < x0 || drawX > x0 + w) continue;
       const ny = y0 + h - ((n.pitch - lo + 1) / range) * h;
-      ctx.fillStyle = `rgba(234,243,228,${0.45 + (n.velocity / 127) * 0.5})`;
+      ctx.fillStyle = mixHex(trackColor, "#ffffff", 0.42 + (n.velocity / 127) * 0.4);
       ctx.fillRect(drawX, ny, Math.min(nw, x0 + w - drawX), Math.max(1.5, noteH - 0.5));
     }
   }
@@ -1216,7 +1333,7 @@ function drawAudioContent(
   pxPerTick: number,
   tempo: number
 ) {
-  const entry = getPeaks(region.bufferId);
+  const entry = getPeaks(getRegionPlaybackBufferId(region));
   const mid = y0 + h / 2;
   if (!entry) {
     // placeholder stripes

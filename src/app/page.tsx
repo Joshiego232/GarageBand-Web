@@ -5,7 +5,7 @@
 // Works on Windows, Chromebook and Mac
 // ============================================================
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Toaster } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
@@ -13,7 +13,7 @@ import { useShortcuts } from "@/hooks/use-shortcuts";
 import { MenuBar } from "@/components/daw/menu-bar";
 import { TopBar } from "@/components/daw/top-bar";
 import { TimelineWorkspace } from "@/components/daw/timeline/timeline";
-import { LibraryPanel } from "@/components/daw/library/library-panel";
+import { SoundLibraryDrawer } from "@/components/daw/library/SoundLibraryDrawer";
 import { LoopBrowser } from "@/components/daw/library/loop-browser";
 import { EditorPanel } from "@/components/daw/editor/editor-panel";
 import { MixerPanel } from "@/components/daw/mixer/mixer-panel";
@@ -21,17 +21,21 @@ import { OnscreenKeyboard } from "@/components/daw/panels/onscreen-keyboard";
 import { ShortcutsOverlay } from "@/components/daw/panels/shortcuts-overlay";
 import { NewProjectModal } from "@/components/daw/library/new-project-modal";
 import { AddTrackDialog } from "@/components/daw/library/add-track-dialog";
-import { ExportDialog } from "@/components/daw/panels/export-dialog";
+import { BounceModal } from "@/components/daw/panels/BounceModal";
 import { MySongsModal } from "@/components/daw/library/my-songs-modal";
 import { ComposerModal } from "@/components/daw/panels/composer-modal";
 import { StatusBar } from "@/components/daw/status-bar";
 import { CommandPalette } from "@/components/daw/panels/command-palette";
 import { LiveLoopsPanel } from "@/components/daw/panels/live-loops-panel";
+import { PedalboardModal } from "@/components/daw/mixer/pedalboard-modal";
+import { SoundFontImportHost } from "@/components/daw/library/soundfont-import-host";
+import { ResizeHandle } from "@/components/daw/panels/resize-handle";
 
 export default function Home() {
   const panels = useDAW((s) => s.ui.panels);
   const modal = useDAW((s) => s.ui.modal);
   const trackCount = useDAW((s) => s.project.tracks.length);
+  const [libraryWidth, setLibraryWidth] = useState(250);
 
   useShortcuts();
 
@@ -56,36 +60,67 @@ export default function Home() {
     };
   }, []);
 
-  const showLeft = panels.library || panels.loops;
-
   return (
-    <div className="h-screen flex flex-col bg-[#19191b] text-zinc-200 overflow-hidden select-none" style={{ fontFamily: "var(--font-geist-sans), system-ui, sans-serif" }}>
+    <div className="h-screen flex flex-col bg-[#1e1e1e] text-zinc-200 overflow-hidden select-none">
       <MenuBar />
       <TopBar />
 
-      <div className="flex-1 flex min-h-0">
-        {showLeft && (
-          <div className="w-[248px] shrink-0 border-r border-black/60 bg-[#1d1d20] flex flex-col min-h-0">
-            {panels.loops ? <LoopBrowser /> : <LibraryPanel />}
-          </div>
+      <div
+        className="relative grid flex-1 min-h-0 min-w-0 bg-[#1e1e1e]"
+        style={{
+          gridTemplateColumns: `5px ${panels.library ? `minmax(190px, ${libraryWidth}px)` : "0px"} ${panels.library ? "8px" : "0px"} minmax(0, 1fr) ${panels.loops ? "minmax(220px, 286px)" : "0px"} 5px`,
+          gridTemplateRows: "minmax(0, 1fr)",
+        }}
+      >
+        <div aria-hidden className="studio-wood z-20" style={{ gridColumn: 1 }} />
+        <aside
+          aria-hidden={!panels.library}
+          className="overflow-hidden border-r border-black bg-[#222] flex flex-col min-h-0 min-w-0"
+          style={{ gridColumn: 2, visibility: panels.library ? "visible" : "hidden", pointerEvents: panels.library ? "auto" : "none" }}
+        >
+          <SoundLibraryDrawer />
+        </aside>
+        {panels.library && (
+          <ResizeHandle
+            axis="vertical"
+            value={libraryWidth}
+            min={190}
+            max={480}
+            label="Resize sound library width"
+            onChange={setLibraryWidth}
+            gridColumn={3}
+            className="bg-[#1e1e1e]"
+          />
         )}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <main className="flex flex-col min-w-0 min-h-0" style={{ gridColumn: 4 }}>
           {panels.liveLoops ? <LiveLoopsPanel /> : <TimelineWorkspace />}
           {!panels.liveLoops && panels.editor && <EditorPanel />}
           {!panels.liveLoops && panels.mixer && <MixerPanel />}
-        </div>
+        </main>
+        {panels.loops && (
+          <aside className="border-l border-black bg-[#222] flex flex-col min-h-0 min-w-0" style={{ gridColumn: 5 }}>
+            <LoopBrowser />
+          </aside>
+        )}
+        <div aria-hidden className="studio-wood z-20" style={{ gridColumn: 6 }} />
       </div>
 
-      {panels.keyboard && <OnscreenKeyboard />}
+      {panels.keyboard && (
+        <div className="shrink-0 max-h-[50vh] overflow-y-auto border-t border-black/80 bg-[#1c1c1e]">
+          <OnscreenKeyboard />
+        </div>
+      )}
       {panels.help && <ShortcutsOverlay />}
       <StatusBar />
       <CommandPalette />
 
       {modal === "newProject" && <NewProjectModal />}
       {modal === "addTrack" && <AddTrackDialog />}
-      {modal === "export" && <ExportDialog />}
+      {modal === "export" && <BounceModal />}
       {modal === "mySongs" && <MySongsModal />}
       {modal === "composer" && <ComposerModal />}
+      {modal === "pedalboard" && <PedalboardModal />}
+      <SoundFontImportHost />
 
       {trackCount === 0 && modal === "none" && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-none">

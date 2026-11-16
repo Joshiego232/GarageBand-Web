@@ -55,6 +55,13 @@ export function useShortcuts() {
         return;
       }
 
+      if (keyLower === "a") {
+        if (e.repeat) return;
+        e.preventDefault();
+        st.setUI({ automationView: !st.ui.automationView });
+        return;
+      }
+
       // musical typing first when active (single printable chars)
       if (typingActive && keyLower.length === 1) {
         if (handleTypingKeyDown(keyLower)) {

@@ -2,10 +2,12 @@
 // Instrument patches - procedural Web Audio synthesis
 // Every patch works on any BaseAudioContext (live + offline export)
 // ============================================================
-import type { Patch, KnobDef } from "./types";
-import { midiToFreq, clamp } from "./utils";
+import type { Patch, KnobDef, Track } from "./types";
+import { midiToFreq, clamp, makeRng } from "./utils";
 import { playSampledNote } from "./sampled-instruments";
 import { buildMorphSpectrum } from "./morph-synth";
+import { makeImportedSoundFontPatch, SOUNDFONT_PATCHES } from "./soundfont-catalog";
+import { SYNTH_PATCHES } from "./synthCatalog";
 
 export interface VoiceHandle {
   /** Schedule the release at absolute ctx time */
@@ -793,7 +795,8 @@ function playFlute(v: VoiceCtx): VoiceHandle {
   const nlen = Math.floor(ctx.sampleRate * 0.5);
   const nbuf = ctx.createBuffer(1, nlen, ctx.sampleRate);
   const nd = nbuf.getChannelData(0);
-  for (let i = 0; i < nlen; i++) nd[i] = Math.random() * 2 - 1;
+  const random = makeRng(Math.round(freq * 1000));
+  for (let i = 0; i < nlen; i++) nd[i] = random() * 2 - 1;
   nb.buffer = nbuf;
   nb.loop = true;
   const nf = ctx.createBiquadFilter();
@@ -894,9 +897,10 @@ export const DRUM_MAP: Record<number, string> = {
 function noiseBuffer(ctx: BaseAudioContext, seconds: number): AudioBuffer {
   const len = Math.floor(ctx.sampleRate * seconds);
   const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  const random = makeRng((ctx.sampleRate ^ Math.round(seconds * 10000)) >>> 0);
   for (let c = 0; c < 2; c++) {
     const d = buf.getChannelData(c);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    for (let i = 0; i < len; i++) d[i] = random() * 2 - 1;
   }
   return buf;
 }
@@ -1341,6 +1345,7 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
   const { ctx, dest, freq, vel, when, p } = v;
   const morph = clamp(p.morph ?? 0.5, 0, 1);
   const harmonics = clamp(p.harmonics ?? 0.7, 0.1, 1);
+  const waveform = Math.round(clamp(p.waveform ?? 0, 0, 4));
   const cutoff = clamp(p.cutoff ?? 6000, 80, 16000);
   const resonance = clamp(p.resonance ?? 1.2, 0.1, 16);
   const attack = clamp(p.attack ?? 0.03, 0.001, 4);
@@ -1352,6 +1357,20 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
   const lfoRate = clamp(p.lfoRate ?? 0.25, 0.05, 12);
   const lfoDepth = clamp(p.lfoDepth ?? 0.1, 0, 1);
   const noiseLevel = clamp(p.noise ?? 0, 0, 1);
+  const chorus = clamp(p.chorus ?? 0, 0, 1);
+  const glide = clamp(p.glide ?? 0, 0, 1);
+
+  const setVoiceFrequency = (oscillator: OscillatorNode, target: number) => {
+    if (glide > 0) {
+      oscillator.frequency.setValueAtTime(target * 2 ** (-(glide * 2) / 12), when);
+      oscillator.frequency.exponentialRampToValueAtTime(
+        target,
+        when + Math.max(0.025, glide * 0.28),
+      );
+    } else {
+      oscillator.frequency.setValueAtTime(target, when);
+    }
+  };
 
   const filter = ctx.createBiquadFilter();
   filter.type = "lowpass";
@@ -1367,20 +1386,25 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
   amp.gain.setValueAtTime(0.0001, when);
   amp.gain.linearRampToValueAtTime(peak, when + attack);
   amp.gain.exponentialRampToValueAtTime(sustainLevel, when + attack + decay);
-  filter.connect(amp).connect(dest);
+  const output = ctx.createGain();
+  filter.connect(amp).connect(output).connect(dest);
 
   const oscillators: OscillatorNode[] = [];
   const sources: AudioScheduledSourceNode[] = [];
   const main = ctx.createOscillator();
-  main.setPeriodicWave(morphPeriodicWave(ctx, morph, harmonics));
-  main.frequency.value = freq;
+  if (waveform === 0) {
+    main.setPeriodicWave(morphPeriodicWave(ctx, morph, harmonics));
+  } else {
+    main.type = (["sine", "triangle", "square", "sawtooth"] as const)[waveform - 1];
+  }
+  setVoiceFrequency(main, freq);
   main.connect(filter);
   main.start(when);
   oscillators.push(main);
 
   const unison = ctx.createOscillator();
   unison.type = "sawtooth";
-  unison.frequency.value = freq;
+  setVoiceFrequency(unison, freq);
   unison.detune.value = detune;
   const unisonGain = ctx.createGain();
   unisonGain.gain.value = 0.08 + detune * 0.004;
@@ -1391,7 +1415,7 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
   if (subLevel > 0.001) {
     const sub = ctx.createOscillator();
     sub.type = "sine";
-    sub.frequency.value = freq / 2;
+    setVoiceFrequency(sub, freq / 2);
     const subGain = ctx.createGain();
     subGain.gain.value = subLevel * 0.38;
     sub.connect(subGain).connect(filter);
@@ -1422,6 +1446,21 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
     sources.push(noise);
   }
 
+  if (chorus > 0.001) {
+    const delay = ctx.createDelay(0.1);
+    delay.delayTime.value = 0.022;
+    const delayGain = ctx.createGain();
+    delayGain.gain.value = chorus * 0.38;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 0.22 + chorus * 1.25;
+    const depth = ctx.createGain();
+    depth.gain.value = chorus * 0.006;
+    lfo.connect(depth).connect(delay.delayTime);
+    amp.connect(delay).connect(delayGain).connect(dest);
+    lfo.start(when);
+    oscillators.push(lfo);
+  }
+
   const stopSources = (at: number) => {
     for (const source of [...oscillators, ...sources]) {
       try { source.stop(at); } catch { /* already stopped */ }
@@ -1443,52 +1482,6 @@ function playMorphAdditive(v: VoiceCtx): VoiceHandle {
       amp.gain.linearRampToValueAtTime(0.0001, now + 0.018);
       stopSources(now + 0.04);
     },
-  };
-}
-
-function morphSynthPatch(
-  id: string,
-  name: string,
-  desc: string,
-  defaults: {
-    morph: number;
-    harmonics: number;
-    cutoff: number;
-    resonance: number;
-    attack: number;
-    decay: number;
-    sustain: number;
-    release: number;
-    detune: number;
-    sub: number;
-    lfoRate: number;
-    lfoDepth: number;
-    noise: number;
-  }
-): Patch {
-  return {
-    id,
-    name,
-    category: "Alchemy Synth",
-    icon: "audio-waveform",
-    desc,
-    synthEngine: "morph-additive",
-    knobs: [
-      k("morph", "Spectral Morph", 0, 1, defaults.morph),
-      k("harmonics", "Harmonics", 0.1, 1, defaults.harmonics),
-      k("cutoff", "Filter Cutoff", 80, 16000, defaults.cutoff, { curve: "log", unit: "Hz" }),
-      k("resonance", "Resonance", 0.1, 16, defaults.resonance),
-      k("attack", "Attack", 0.001, 4, defaults.attack, { unit: "s" }),
-      k("decay", "Decay", 0.02, 5, defaults.decay, { unit: "s" }),
-      k("sustain", "Sustain", 0, 1, defaults.sustain),
-      k("release", "Release", 0.03, 8, defaults.release, { unit: "s" }),
-      k("detune", "Unison Detune", 0, 40, defaults.detune, { unit: "ct" }),
-      k("sub", "Sub Layer", 0, 1, defaults.sub),
-      k("lfoRate", "LFO Rate", 0.05, 12, defaults.lfoRate, { unit: "Hz" }),
-      k("lfoDepth", "LFO Depth", 0, 1, defaults.lfoDepth),
-      k("noise", "Noise Layer", 0, 1, defaults.noise),
-      ...SEND_KNOBS,
-    ],
   };
 }
 
@@ -1625,46 +1618,7 @@ export const PATCHES: Record<string, Patch> = {
   "woodblock-drums": soundfontPatch("woodblock-drums", "Woodblock", "Drums & Percussion", "woodblock", "drum", "Sampled woodblock percussion", { release: 0.08 }),
   "reverse-cymbal": soundfontPatch("reverse-cymbal", "Reverse Cymbal", "Drums & Percussion", "reverse_cymbal", "drum", "Sampled reverse cymbal swell", { release: 0.08 }),
   // Alchemy Synth — original spectral/additive morph presets, no external samples.
-  "alchemy-glass-orbit": morphSynthPatch(
-    "alchemy-glass-orbit", "Glass Orbit", "Bright inharmonic-style additive shimmer with a soft evolving filter",
-    { morph: 0.82, harmonics: 0.8, cutoff: 9200, resonance: 2.4, attack: 0.08, decay: 1.8, sustain: 0.64, release: 2.4, detune: 7, sub: 0.08, lfoRate: 0.22, lfoDepth: 0.24, noise: 0.02 }
-  ),
-  "alchemy-solar-pad": morphSynthPatch(
-    "alchemy-solar-pad", "Solar Pad", "Wide evolving pad with slow attack, a soft sub layer and gentle motion",
-    { morph: 0.48, harmonics: 0.58, cutoff: 4200, resonance: 1.2, attack: 1.4, decay: 2.8, sustain: 0.82, release: 3.8, detune: 12, sub: 0.22, lfoRate: 0.16, lfoDepth: 0.34, noise: 0.04 }
-  ),
-  "alchemy-prism-keys": morphSynthPatch(
-    "alchemy-prism-keys", "Prism Keys", "Percussive digital keys with a clear harmonic attack and short release",
-    { morph: 0.72, harmonics: 0.72, cutoff: 11200, resonance: 1.8, attack: 0.004, decay: 0.48, sustain: 0.12, release: 0.42, detune: 3, sub: 0.04, lfoRate: 3.2, lfoDepth: 0.08, noise: 0.015 }
-  ),
-  "alchemy-neon-lead": morphSynthPatch(
-    "alchemy-neon-lead", "Neon Lead", "Focused unison lead with bright upper partials and expressive filter movement",
-    { morph: 0.24, harmonics: 0.9, cutoff: 7800, resonance: 4.2, attack: 0.012, decay: 0.52, sustain: 0.76, release: 0.32, detune: 16, sub: 0.12, lfoRate: 5.1, lfoDepth: 0.14, noise: 0.01 }
-  ),
-  "alchemy-sub-motion": morphSynthPatch(
-    "alchemy-sub-motion", "Sub Motion", "Deep bass synth with a restrained harmonic edge and subtle modulation",
-    { morph: 0.12, harmonics: 0.42, cutoff: 1250, resonance: 1.1, attack: 0.006, decay: 0.34, sustain: 0.7, release: 0.22, detune: 2, sub: 0.9, lfoRate: 0.8, lfoDepth: 0.06, noise: 0 }
-  ),
-  "alchemy-crystal-bell": morphSynthPatch(
-    "alchemy-crystal-bell", "Crystal Bell", "Bell-like additive partials with a long decaying metallic tail",
-    { morph: 0.96, harmonics: 0.94, cutoff: 14800, resonance: 2.8, attack: 0.002, decay: 3.4, sustain: 0.04, release: 2.8, detune: 1.5, sub: 0, lfoRate: 0.12, lfoDepth: 0.16, noise: 0.03 }
-  ),
-  "alchemy-vapor-brass": morphSynthPatch(
-    "alchemy-vapor-brass", "Vapor Brass", "Layered synthetic brass with a rising filter envelope and mild unison",
-    { morph: 0.34, harmonics: 0.76, cutoff: 5200, resonance: 2.1, attack: 0.035, decay: 0.62, sustain: 0.72, release: 0.48, detune: 9, sub: 0.18, lfoRate: 0.32, lfoDepth: 0.08, noise: 0.035 }
-  ),
-  "alchemy-choir-flux": morphSynthPatch(
-    "alchemy-choir-flux", "Choir Flux", "Vocal-like additive pad with airy noise and slow spectral motion",
-    { morph: 0.68, harmonics: 0.52, cutoff: 3600, resonance: 1.4, attack: 0.65, decay: 1.5, sustain: 0.84, release: 3.2, detune: 6, sub: 0.08, lfoRate: 0.28, lfoDepth: 0.4, noise: 0.12 }
-  ),
-  "alchemy-spectral-dream": morphSynthPatch(
-    "alchemy-spectral-dream", "Spectral Dream", "Soft ambient texture combining evolving partials, subharmonics and filtered noise",
-    { morph: 0.9, harmonics: 0.62, cutoff: 6200, resonance: 0.9, attack: 1.9, decay: 3.4, sustain: 0.72, release: 5.5, detune: 4, sub: 0.14, lfoRate: 0.09, lfoDepth: 0.52, noise: 0.2 }
-  ),
-  "alchemy-digital-pluck": morphSynthPatch(
-    "alchemy-digital-pluck", "Digital Pluck", "Fast plucked synth tone with a bright morphing spectrum and tight bass foundation",
-    { morph: 0.58, harmonics: 0.88, cutoff: 9800, resonance: 3.1, attack: 0.002, decay: 0.26, sustain: 0.06, release: 0.3, detune: 2, sub: 0.28, lfoRate: 2.4, lfoDepth: 0.1, noise: 0.025 }
-  ),
+  ...SYNTH_PATCHES,
 
   // Stage Keys — original stage-keyboard-inspired presets using MusyngKite.
   "stage-upright-piano": soundfontPatch("stage-upright-piano", "Soft Upright-Style Piano", "Stage Keys", "acoustic_grand_piano", "piano", "A softened acoustic-piano voice inspired by compact upright stage sounds", { brightness: 0.42, release: 0.22 }),
@@ -1689,11 +1643,20 @@ export const PATCHES: Record<string, Patch> = {
   "layer-rhodes-pad": soundfontPatch("layer-rhodes-pad", "Tines + Warm Pad", "Layered Keys", "electric_piano_1", "piano", "Warm electric piano layered with a slow pad", { loop: true, release: 0.85, layers: [{ instrument: "pad_2_warm", gain: 0.4 }] }),
   "layer-rhodes-strings": soundfontPatch("layer-rhodes-strings", "Tines + Strings", "Layered Keys", "electric_piano_2", "piano", "Bell-like electric piano with a soft string sustain", { loop: true, release: 0.8, layers: [{ instrument: "string_ensemble_1", gain: 0.4 }] }),
   "layer-piano-polysynth": soundfontPatch("layer-piano-polysynth", "Piano + Poly Pad", "Layered Keys", "acoustic_grand_piano", "piano", "Acoustic piano layered with a broad, smooth poly-synth pad", { loop: true, release: 0.9, layers: [{ instrument: "pad_3_polysynth", gain: 0.38 }] }),
+  ...SOUNDFONT_PATCHES,
 };
 
 export const PATCH_CATEGORIES = Array.from(
   new Set(Object.values(PATCHES).map((p) => p.category))
 );
+
+export function trackPatch(
+  track: Pick<Track, "instrument" | "soundFontPreset">,
+): Patch | undefined {
+  return track.soundFontPreset
+    ? makeImportedSoundFontPatch(track.soundFontPreset)
+    : PATCHES[track.instrument];
+}
 
 /** Default param values for a patch */
 export function defaultParams(patchId: string): Record<string, number> {
@@ -1702,6 +1665,49 @@ export function defaultParams(patchId: string): Record<string, number> {
   const p: Record<string, number> = {};
   for (const kn of patch.knobs) p[kn.id] = kn.def;
   return p;
+}
+
+function playSoundFontFallback(v: VoiceCtx): VoiceHandle {
+  const { ctx, dest, freq, vel, when, p } = v;
+  const oscillator = ctx.createOscillator();
+  oscillator.type = "sawtooth";
+  oscillator.frequency.setValueAtTime(freq, when);
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(Math.min(18000, p.cutoff ?? 12000), when);
+  filter.Q.setValueAtTime(Math.min(10, Math.max(0.1, p.resonance ?? 0.7)), when);
+  const gain = ctx.createGain();
+  const peak = 0.22 * vel;
+  const attack = Math.min(3, Math.max(0.001, p.attack ?? 0.02));
+  gain.gain.setValueAtTime(0.0001, when);
+  gain.gain.linearRampToValueAtTime(peak, when + attack);
+  oscillator.connect(filter).connect(gain).connect(dest);
+  oscillator.start(when);
+  let stopped = false;
+  const release = (at: number) => {
+    if (stopped) return;
+    stopped = true;
+    const stopAt = Math.max(at, ctx.currentTime);
+    const releaseTime = Math.min(4, Math.max(0.01, p.release ?? 0.28));
+    gain.gain.cancelScheduledValues(stopAt);
+    gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), stopAt);
+    gain.gain.linearRampToValueAtTime(0.0001, stopAt + releaseTime);
+    oscillator.stop(stopAt + releaseTime + 0.01);
+  };
+  return {
+    scheduleStop: release,
+    kill() {
+      const now = ctx.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), now);
+      gain.gain.linearRampToValueAtTime(0.0001, now + 0.015);
+      try {
+        oscillator.stop(now + 0.02);
+      } catch {
+        // The voice has already ended.
+      }
+    },
+  };
 }
 
 /** Play one note on any patch. Returns a voice handle. */
@@ -1714,11 +1720,12 @@ export function playNote(
   when: number,
   dur: number,
   params: Params,
-  noteOffControlled = false
+  noteOffControlled = false,
+  patchOverride?: Patch
 ): VoiceHandle {
   const freq = midiToFreq(pitch);
   const safeVelocity = clamp(velocity, 0.02, 1);
-  const patch = PATCHES[patchId];
+  const patch = patchOverride ?? PATCHES[patchId];
   if (patch?.synthEngine === "morph-additive") {
     return playMorphAdditive({ ctx, dest, freq, vel: safeVelocity, when, dur, p: params });
   }
@@ -1734,9 +1741,11 @@ export function playNote(
       params,
       noteOffControlled
     );
-    // Sample-backed patches deliberately do not fall back to an unrelated
-    // oscillator sound while their real samples are loading or unavailable.
-    return sampled ?? {
+    if (sampled) return sampled;
+    if (patch.sampled.engine === "soundfont-worklet") {
+      return playSoundFontFallback({ ctx, dest, freq, vel: safeVelocity, when, dur, p: params });
+    }
+    return {
       scheduleStop() { /* sample is not ready yet */ },
       kill() { /* sample is not ready yet */ },
     };

@@ -11,6 +11,10 @@ import {
 } from "smplr";
 import type { Patch } from "./types";
 import type { VoiceHandle } from "./instruments";
+import {
+  playSoundFontNote,
+  prepareSoundFontPatch,
+} from "./soundfont-engine";
 
 type SampleStartOptions = {
   note: string | number;
@@ -98,14 +102,36 @@ export function warmSampledPatch(
   dest: AudioNode,
   patch: Patch,
   offline = false,
+  trackId = patch.id,
 ): Promise<void> {
   const source = patch.sampled;
   if (!source) return Promise.resolve();
 
   const byPatch = instrumentMapFor(ctx, dest);
   const existing = byPatch.get(patch.id);
-  if (existing) {
+  if (existing && source.engine !== "soundfont-worklet") {
     return existing.readyPromise;
+  }
+
+  if (source.engine === "soundfont-worklet") {
+    const entry: SampleEntry = existing ?? {
+      players: [],
+      ready: false,
+      failed: false,
+      readyPromise: Promise.resolve(),
+      tones: [],
+    };
+    entry.ready = false;
+    entry.failed = false;
+    byPatch.set(patch.id, entry);
+    entry.readyPromise = prepareSoundFontPatch(ctx, dest, trackId, patch)
+      .then(() => {
+        entry.ready = true;
+      })
+      .catch(() => {
+        entry.ready = true;
+      });
+    return entry.readyPromise;
   }
 
   const loader = loaderFor(ctx);
@@ -279,6 +305,9 @@ export function playSampledNote(
 ): VoiceHandle | null {
   const source = patch.sampled;
   if (!source) return null;
+  if (source.engine === "soundfont-worklet") {
+    return playSoundFontNote(ctx, dest, patch, pitch, velocity, when, params);
+  }
 
   const entry = entryFor(ctx, dest, patch.id);
   if (!entry?.ready || entry.failed) return null;

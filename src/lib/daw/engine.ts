@@ -8,11 +8,21 @@ import {
   type Track,
   type Region,
   type Note,
+  type Patch,
+  type AutomationLane,
   uid,
+  getRegionPlaybackBufferId,
 } from "./types";
-import { playNote, PATCHES, type VoiceHandle } from "./instruments";
+import { playNote, PATCHES, trackPatch, type VoiceHandle } from "./instruments";
 import { warmSampledPatch } from "./sampled-instruments";
+import {
+  clearSoundFontStatus,
+  disposeSoundFontTrack,
+  pitchBendSoundFontTrack,
+  updateSoundFontPatchControls,
+} from "./soundfont-engine";
 import { applyMidiPlugins } from "./plugins";
+import { PedalboardProcessor } from "./pedalboard-engine";
 import { selectSamplerZone, shouldReleaseSamplerOnNoteOff } from "./sampler";
 import { useDAW } from "./store";
 import {
@@ -20,16 +30,19 @@ import {
   secToTick,
   clamp,
   barTicks,
+  makeRng,
   projectLengthTicks,
 } from "./utils";
 import type { StoredBuffer } from "./idb";
-import { loadBuffer } from "./idb";
+import { loadBuffer, saveBuffer } from "./idb";
 import { toast } from "sonner";
 import {
   getEffectiveTrackGain,
+  getVcaMultiplier,
   isTrackAudible,
   resolveOutputBus,
 } from "./routing";
+import { AutomationEngine, automationEngine, automationValueAt } from "./AutomationEngine";
 
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
@@ -45,11 +58,14 @@ interface TrackNodes {
   comp: DynamicsCompressorNode;
   saturation: WaveShaperNode;
   gain: GainNode;
+  groupGain: GainNode;
+  muteGain: GainNode;
   panner: StereoPannerNode;
   spatialPanner: PannerNode;
   output: GainNode;
   routingTarget: AudioNode;
   analyser: AnalyserNode;
+  pedalboard: PedalboardProcessor;
   reverbSend: GainNode;
   delaySend: GainNode;
   chorusDelay: DelayNode;
@@ -61,6 +77,32 @@ interface TrackNodes {
   flangerFeedback: GainNode;
   flangerLfo: OscillatorNode;
   flangerDepth: GainNode;
+}
+
+interface AudioInputSession {
+  stream: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  monitorGain: GainNode;
+  captureNode: ScriptProcessorNode | null;
+  sink: GainNode | null;
+  chunks: Float32Array[];
+  sampleRate: number;
+  startCtxTime: number;
+}
+
+interface RecordedAudio {
+  trackId: string;
+  stored: StoredBuffer;
+  offsetSec: number;
+  durationSec: number;
+}
+
+interface RecordedMidiNote {
+  trackId: string;
+  pitch: number;
+  velocity: number;
+  start: number;
+  length: number;
 }
 
 interface LiveClipRef {
@@ -95,6 +137,8 @@ interface MasterNodes {
   input: GainNode;
   limiter: DynamicsCompressorNode;
   volume: GainNode;
+  filter: BiquadFilterNode;
+  panner: StereoPannerNode;
   analyser: AnalyserNode;
   reverbConv: ConvolverNode;
   reverbReturn: GainNode;
@@ -110,17 +154,27 @@ interface ActiveVoice {
   until: number; // ctx time when it can be pruned
 }
 
+export interface OfflineRenderOptions {
+  startTick?: number;
+  endTick?: number;
+  sampleRate?: number;
+  tailSeconds?: number;
+  includeTrackIds?: string[];
+  signal?: AbortSignal;
+}
+
 function makeImpulse(ctx: BaseAudioContext, seconds = 2.6): AudioBuffer {
   const sr = ctx.sampleRate;
   const len = Math.floor(sr * seconds);
   const buf = ctx.createBuffer(2, len, sr);
+  const random = makeRng(0x475542);
   for (let c = 0; c < 2; c++) {
     const d = buf.getChannelData(c);
     let lp = 0;
     for (let i = 0; i < len; i++) {
       const t = i / len;
       const decay = Math.pow(1 - t, 2.4) * Math.exp(-2.2 * t);
-      const white = Math.random() * 2 - 1;
+      const white = random() * 2 - 1;
       lp = lp + 0.28 * (white - lp); // dark tail
       d[i] = lp * decay * 1.4;
       // early reflections
@@ -140,10 +194,14 @@ function buildMaster(ctx: BaseAudioContext): MasterNodes {
   limiter.attack.value = 0.003;
   limiter.release.value = 0.25;
   const volume = ctx.createGain();
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 20000;
+  const panner = ctx.createStereoPanner();
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
 
-  input.connect(limiter).connect(volume).connect(analyser);
+  input.connect(limiter).connect(volume).connect(filter).connect(panner).connect(analyser);
   analyser.connect(ctx.destination);
 
   const reverbConv = ctx.createConvolver();
@@ -167,7 +225,7 @@ function buildMaster(ctx: BaseAudioContext): MasterNodes {
   click.gain.value = 0.9;
   click.connect(ctx.destination);
 
-  return { input, limiter, volume, analyser, reverbConv, reverbReturn, delay, delayFb, delayFilter, delayReturn, click };
+  return { input, limiter, volume, filter, panner, analyser, reverbConv, reverbReturn, delay, delayFb, delayFilter, delayReturn, click };
 }
 
 function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
@@ -200,6 +258,8 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   saturation.oversample = "4x";
 
   const gain = ctx.createGain();
+  const groupGain = ctx.createGain();
+  const muteGain = ctx.createGain();
   const panner = ctx.createStereoPanner();
   const spatialPanner = ctx.createPanner();
   spatialPanner.panningModel = "equalpower";
@@ -208,6 +268,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   spatialPanner.rolloffFactor = 0;
   const analyser = ctx.createAnalyser();
   const output = ctx.createGain();
+  const pedalboard = new PedalboardProcessor(ctx);
   analyser.fftSize = 512;
   const reverbSend = ctx.createGain();
   reverbSend.gain.value = 0;
@@ -248,10 +309,13 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
     .connect(comp)
     .connect(saturation)
     .connect(gain)
+    .connect(groupGain)
+    .connect(muteGain)
     .connect(panner)
     .connect(spatialPanner)
     .connect(analyser)
-    .connect(output);
+    .connect(pedalboard.input);
+  pedalboard.output.connect(output);
 
   output.connect(master.input);
 
@@ -268,7 +332,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
 
   return {
     input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
-    gain, panner, spatialPanner, analyser, output, routingTarget: master.input,
+    gain, groupGain, muteGain, panner, spatialPanner, analyser, output, routingTarget: master.input, pedalboard,
     reverbSend, delaySend, chorusDelay, chorusSend,
     chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
     flangerLfo, flangerDepth,
@@ -396,6 +460,7 @@ export class AudioEngine {
   ctx: AudioContext | null = null;
   private master: MasterNodes | null = null;
   private tracks = new Map<string, TrackNodes>();
+  private pedalAutomationUnbinds = new Map<string, (() => void)[]>();
   private voices: ActiveVoice[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private playRequestId = 0;
@@ -404,6 +469,7 @@ export class AudioEngine {
   // transport
   playing = false;
   recording = false;
+  recordPending = false;
   private passStartTime = 0;
   private passStartTick = 0;
   private scheduledUntilTick = 0;
@@ -412,23 +478,15 @@ export class AudioEngine {
   private stoppedAtTick = 0;
 
   // MIDI live input + recording
-  private openInputNotes = new Map<
-    number,
-    { voices: VoiceHandle[]; startTick: number; velocity: number }
-  >();
+  private openInputNotes = new Map<number, Map<string, { voices: VoiceHandle[]; startTick: number; velocity: number }>>();
   private sustainedVoices: VoiceHandle[] = [];
-  recordedMidi: { pitch: number; velocity: number; start: number; length: number }[] = [];
+  recordedMidi: RecordedMidiNote[] = [];
   private recordingStartTick = 0;
-  private recordTargetTrack: string | null = null;
+  private recordingMidiTrackIds = new Set<string>();
+  private recordingAudioTrackIds = new Set<string>();
 
   // audio capture
-  private mediaStream: MediaStream | null = null;
-  private micSource: MediaStreamAudioSourceNode | null = null;
-  private monitorGain: GainNode | null = null;
-  private captureNode: ScriptProcessorNode | null = null;
-  private captureChunks: Float32Array[] = [];
-  captureStartCtxTime = 0;
-  captureSampleRate = 44100;
+  private audioInputs = new Map<string, AudioInputSession>();
 
   // buffer cache
   private bufferCache = new Map<string, StoredBuffer>();
@@ -440,6 +498,8 @@ export class AudioEngine {
   private liveLoopTimer: ReturnType<typeof setInterval> | null = null;
   private liveClips = new Map<string, LiveClipState>();
   private liveGridStartTime = 0;
+  private lastAutomationPersistTime = 0;
+  private pendingAutomationPoints: ReturnType<typeof automationEngine.recordContinuous> = [];
 
   // loop preview
   private preview: {
@@ -455,6 +515,11 @@ export class AudioEngine {
   private unsub: (() => void) | null = null;
   private inited = false;
   private activeOutputDeviceId: string | null | undefined = undefined;
+  private tempoMapSource: AutomationLane | undefined;
+  private tempoMapPoints: AutomationLane["points"] | undefined;
+  private tempoMapBase = -1;
+  private tempoMapEnabled = false;
+  private tempoKnots: { tick: number; seconds: number }[] = [];
 
   // ---------------- lifecycle ----------------
 
@@ -465,7 +530,22 @@ export class AudioEngine {
     this.master = buildMaster(this.ctx);
     // sync whenever the project changes
     this.unsub = useDAW.subscribe((state, prev) => {
-      if (state.project !== prev.project) this.sync(state.project);
+      if (
+        state.project.tracks !== prev.project.tracks ||
+        state.project.stacks !== prev.project.stacks ||
+        state.project.masterVolume !== prev.project.masterVolume ||
+        state.project.tempo !== prev.project.tempo ||
+        state.project.audioOutputDeviceId !== prev.project.audioOutputDeviceId
+      ) this.sync(state.project);
+    });
+    window.addEventListener("pointerup", () => {
+      const state = useDAW.getState();
+      state.appendAutomationPoints(
+        automationEngine.finishTouches(
+          state.project.automationLanes ?? [],
+          state.project.automationModes ?? {}
+        )
+      );
     });
     this.sync(useDAW.getState().project);
     void this.ctx.resume();
@@ -488,6 +568,10 @@ export class AudioEngine {
     const ctx = this.ctx;
     const m = this.master;
     m.volume.gain.value = clamp(project.masterVolume, 0, 1.25);
+    automationEngine.bindParameter("master", "volume", m.volume.gain);
+    automationEngine.bindParameter("master", "pan", m.panner.pan);
+    automationEngine.bindParameter("master", "filterCutoff", m.filter.frequency);
+    automationEngine.bindParameter("master", "reverbWet", m.reverbReturn.gain);
     const beat = 60 / project.tempo;
     m.delay.delayTime.value = Math.min(1.9, beat * 0.75); // dotted 8th
     const requestedOutput = project.audioOutputDeviceId ?? null;
@@ -518,20 +602,64 @@ export class AudioEngine {
         this.tracks.set(track.id, tn);
       }
       if (track.type === "midi") {
-        const patch = PATCHES[track.instrument];
+        const patch = trackPatch(track);
         if (patch?.sampled) {
           // Warm in the background when a track is created or its instrument changes.
           // Transport start also awaits these promises before scheduling MIDI notes.
-          void warmSampledPatch(ctx, tn.input, patch).catch(() => undefined);
+          void warmSampledPatch(ctx, tn.input, patch, false, track.id).catch(() => undefined);
+        } else {
+          clearSoundFontStatus(track.id);
         }
       }
       applyTrackAudioPlugins(tn, track);
-      tn.gain.gain.value = isTrackAudible(track, project.tracks)
-        ? getEffectiveTrackGain(track, project.tracks)
-        : 0;
+      const folderStack = track.role === "folder"
+        ? project.stacks?.find((stack) => stack.folderTrackId === track.id)
+        : undefined;
+      tn.gain.gain.value = folderStack?.type === "folder" ? 1 : track.volume;
+      const parentVolume = track.parentTrackId
+        ? project.tracks.find((item) => item.id === track.parentTrackId)?.volume ?? 1
+        : 1;
+      tn.groupGain.gain.value = folderStack?.type === "folder"
+        ? 1
+        : parentVolume * getVcaMultiplier(track, project.tracks);
+      tn.muteGain.gain.value = folderStack?.type === "folder"
+        ? track.mute ? 0 : 1
+        : isTrackAudible(track, project.tracks) ? 1 : 0;
+      automationEngine.bindParameter(track.id, "volume", tn.gain.gain);
+      automationEngine.bindParameter(track.id, "pan", tn.panner.pan);
+      automationEngine.bindParameter(track.id, "mute", tn.muteGain.gain);
+      automationEngine.bindParameter(track.id, "filterCutoff", tn.highPass.frequency);
+      automationEngine.bindParameter(track.id, "param:cutoff", tn.highPass.frequency);
+      automationEngine.bindParameter(track.id, "param:resonance", tn.highPass.Q);
+      automationEngine.bindParameter(track.id, "param:chorusDepth", tn.chorusDepth.gain);
+      automationEngine.bindParameter(track.id, "param:reverb", tn.reverbSend.gain);
+      automationEngine.bindParameter(track.id, "param:delay", tn.delaySend.gain);
+      automationEngine.bindParameter(track.id, "eq:lowGain", tn.eqLow.gain);
+      automationEngine.bindParameter(track.id, "eq:midGain", tn.eqMid.gain);
+      automationEngine.bindParameter(track.id, "eq:highGain", tn.eqHigh.gain);
+      automationEngine.bindParameter(track.id, "send:reverb", tn.reverbSend.gain);
+      automationEngine.bindParameter(track.id, "send:delay", tn.delaySend.gain);
+      const pedalboardSlot = activeAudioPlugin(track, "pedalboard");
+      tn.pedalboard.sync(track.pedalboard ?? [], pedalboardSlot?.enabled === true);
+      this.pedalAutomationUnbinds.get(track.id)?.forEach((unbind) => unbind());
+      const pedalUnbinds = tn.pedalboard
+        .getAutomationBindings(track.pedalboard ?? [])
+        .map((binding) =>
+          automationEngine.bindParameter(
+            track.id,
+            binding.parameterId,
+            binding.parameter,
+            binding.transform,
+          ),
+        );
+      this.pedalAutomationUnbinds.set(track.id, pedalUnbinds);
       applyTrackSpatialPanning(tn, track);
       // prefetch audio buffers
-      for (const bufferId of [track.sampleBufferId, ...(track.sampleZones ?? []).map((zone) => zone.bufferId), ...track.regions.map((region) => region.bufferId)].filter((id): id is string => !!id)) {
+      for (const bufferId of [
+        track.sampleBufferId,
+        ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+        ...track.regions.map(getRegionPlaybackBufferId),
+      ].filter((id): id is string => !!id)) {
         if (bufferId && !this.bufferCache.has(bufferId) && !this.pendingLoads.has(bufferId)) {
           void this.ensureBufferLoaded(bufferId).catch(() => undefined);
         }
@@ -544,10 +672,20 @@ export class AudioEngine {
       if (!nodes || track.role === "vca") continue;
 
       let target: AudioNode = m.input;
-      const firstBus = resolveOutputBus(track, project.tracks);
-      if (firstBus) {
-        const busNodes = this.tracks.get(firstBus.id);
-        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      const parentStack = track.parentTrackId
+        ? project.stacks?.find((stack) =>
+            stack.folderTrackId === track.parentTrackId && stack.type === "folder",
+          )
+        : undefined;
+      if (parentStack && track.id !== parentStack.folderTrackId) {
+        const parentNodes = this.tracks.get(parentStack.folderTrackId);
+        if (parentNodes && parentNodes !== nodes) target = parentNodes.input;
+      } else {
+        const firstBus = resolveOutputBus(track, project.tracks);
+        if (firstBus) {
+          const busNodes = this.tracks.get(firstBus.id);
+          if (busNodes && busNodes !== nodes) target = busNodes.input;
+        }
       }
 
       if (nodes.routingTarget !== target) {
@@ -560,6 +698,10 @@ export class AudioEngine {
     // remove stale track nodes
     for (const id of Array.from(this.tracks.keys())) {
       if (!seen.has(id)) {
+        this.pedalAutomationUnbinds.get(id)?.forEach((unbind) => unbind());
+        this.pedalAutomationUnbinds.delete(id);
+        automationEngine.unbindOwner(id);
+        disposeSoundFontTrack(id);
         const tn = this.tracks.get(id);
         if (tn) {
           try {
@@ -567,6 +709,7 @@ export class AudioEngine {
             tn.analyser.disconnect();
             tn.spatialPanner.disconnect();
             tn.output.disconnect();
+            tn.pedalboard.dispose();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
             tn.chorusSend.disconnect();
@@ -585,6 +728,11 @@ export class AudioEngine {
   async storeBuffer(id: string, buf: StoredBuffer) {
     this.bufferCache.set(id, buf);
     await saveBufferQuiet(id, buf);
+  }
+
+  async storePersistentBuffer(id: string, buf: StoredBuffer) {
+    this.bufferCache.set(id, buf);
+    await saveBuffer(id, buf);
   }
 
   hasBuffer(id: string): boolean {
@@ -686,7 +834,7 @@ export class AudioEngine {
       const sampleLoads: Promise<void>[] = [];
       for (const track of snapshot.tracks) {
         if (track.type !== "midi" || track.mute || (anySolo && !track.solo)) continue;
-        const patch = PATCHES[track.instrument];
+        const patch = trackPatch(track);
         const nodes = this.tracks.get(track.id);
         const customSampleIds = [
           track.sampleBufferId,
@@ -700,7 +848,7 @@ export class AudioEngine {
             })
           );
         } else if (patch?.sampled && nodes) {
-          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch));
+          sampleLoads.push(warmSampledPatch(ctx, nodes.input, patch, false, track.id));
         }
       }
 
@@ -718,7 +866,7 @@ export class AudioEngine {
 
     const project = useDAW.getState().project;
     const start = fromTick ?? this.stoppedAtTick ?? 0;
-    const beatSec = 60 / project.tempo;
+    const beatSec = 60 / this.tempoAtTick(fromTick ?? this.stoppedAtTick ?? 0, project);
     const countIn = this.recording && project.countIn ? project.timeSig[0] : 0;
     const now = ctx.currentTime + 0.08;
     this.countInBeats = countIn;
@@ -727,6 +875,7 @@ export class AudioEngine {
     this.passStartTick = start;
     this.scheduledUntilTick = start;
     this.playing = true;
+    automationEngine.setClock(start, true);
     // schedule count-in clicks
     for (let i = 0; i < countIn; i++) {
       this.click(now + i * beatSec, i === 0);
@@ -744,20 +893,40 @@ export class AudioEngine {
     this.playRequestId += 1;
     this.playPending = false;
     const wasPlaying = this.playing;
-    if (!wasPlaying) return;
+    if (!wasPlaying) {
+      if (this.recording || useDAW.getState().transport.recording) {
+        this.recording = false;
+        this.countInBeats = 0;
+        useDAW.getState().setTransport({ playing: false, recording: false, countInRemaining: 0 });
+      }
+      return;
+    }
     const tick = Math.min(this.currentTick(), projectLengthTicks(useDAW.getState().project));
+    useDAW.getState().appendAutomationPoints(this.pendingAutomationPoints);
+    this.pendingAutomationPoints = [];
     this.stoppedAtTick = tick;
     this.playing = false;
+    automationEngine.setClock(tick, false);
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     // finalize open input notes
-    for (const [pitch, n] of this.openInputNotes) {
-      const len = Math.max(PPQ / 8, tick - n.startTick);
-      this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
-      for (const voice of n.voices) {
-        try { voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+    for (const [pitch, notes] of this.openInputNotes) {
+      for (const [trackId, note] of notes) {
+        const len = Math.max(PPQ / 8, tick - note.startTick);
+        if (this.recording && this.recordingMidiTrackIds.has(trackId)) {
+          this.recordedMidi.push({
+            trackId,
+            pitch,
+            velocity: note.velocity,
+            start: note.startTick,
+            length: len,
+          });
+        }
+        for (const voice of note.voices) {
+          try { voice.scheduleStop(this.ctx ? this.ctx.currentTime : 0); } catch { /* noop */ }
+        }
       }
     }
     this.openInputNotes.clear();
@@ -774,38 +943,69 @@ export class AudioEngine {
     else this.play(this.stoppedAtTick ?? 0);
   }
 
-  startRecording() {
+  async startRecording() {
+    if (this.recording || this.recordPending) return;
+    this.recordPending = true;
     const st = useDAW.getState();
-    const armed = st.project.tracks.find((t) => t.armed);
-    const track = armed ?? st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
-    this.recordTargetTrack = track?.id ?? null;
+    const armed = st.project.tracks.filter((track) => track.armed);
+    const selected = st.project.tracks.find((track) => track.id === st.ui.selectedTrackId);
+    const targets = armed.length ? armed : selected ? [selected] : [];
+    const expandedTargets = new Set(targets.map((track) => track.id));
+    for (const parent of targets.filter((track) => track.role === "folder")) {
+      const stack = st.project.stacks?.find((item) => item.folderTrackId === parent.id);
+      for (const childId of stack?.trackIds ?? []) expandedTargets.add(childId);
+    }
+    this.recordingMidiTrackIds = new Set(
+      st.project.tracks
+        .filter((track) => track.type === "midi" && expandedTargets.has(track.id))
+        .map((track) => track.id)
+    );
+    this.recordingAudioTrackIds = new Set(
+      st.project.tracks
+        .filter((track) => track.type === "audio" && expandedTargets.has(track.id) && track.role === "track")
+        .map((track) => track.id)
+    );
+    try {
+      await Promise.all([...this.recordingAudioTrackIds].map(async (trackId) => {
+        const track = st.project.tracks.find((item) => item.id === trackId);
+        if (!track) return;
+        try {
+          await this.startAudioCapture(track.id, track.inputMonitor, track.inputDeviceId);
+        } catch (error) {
+          console.error(`Could not start recording on ${track.name}.`, error);
+          toast.error(`Could not start recording on ${track.name}. Check microphone permissions.`);
+          this.recordingAudioTrackIds.delete(track.id);
+        }
+      }));
+    } finally {
+      this.recordPending = false;
+    }
     this.recordingStartTick = this.playing
       ? this.currentTick()
       : this.stoppedAtTick ?? 0;
     this.recording = true;
     this.recordedMidi = [];
-    if (track?.type === "audio") {
-      this.startAudioCapture(track.id, track.inputMonitor, track.inputDeviceId).catch(() => {
-        this.recording = false;
-      });
-    }
     useDAW.getState().setTransport({ recording: true });
-    this.play(this.stoppedAtTick ?? 0);
+    if (!this.playing) this.play(this.recordingStartTick);
   }
 
-  stopRecording() {
+  stopRecording(): { midi: RecordedMidiNote[]; audio: RecordedAudio[]; trackIds: string[]; startTick: number; endTick: number } {
     const startTick = this.recordingStartTick;
     const endTick = this.currentTick();
-    const trackId = this.recordTargetTrack;
-    this.recording = false;
+    const trackIds = [...new Set([...this.recordingMidiTrackIds, ...this.recordingAudioTrackIds])];
+    for (const pitch of this.openInputNotes.keys()) this.noteOff(pitch);
     this.stop();
+    this.recording = false;
     const midi = [...this.recordedMidi];
     this.recordedMidi = [];
-    let audio: { stored: StoredBuffer; offsetSec: number; durationSec: number } | null = null;
-    if (this.captureNode) {
-      audio = this.finishAudioCapture();
+    const audio: RecordedAudio[] = [];
+    for (const trackId of this.recordingAudioTrackIds) {
+      const result = this.finishAudioCapture(trackId);
+      if (result) audio.push({ trackId, ...result });
     }
-    return { midi, audio, trackId, startTick, endTick };
+    this.recordingMidiTrackIds.clear();
+    this.recordingAudioTrackIds.clear();
+    return { midi, audio, trackIds, startTick, endTick };
   }
 
   currentTick(): number {
@@ -813,12 +1013,101 @@ export class AudioEngine {
     if (!this.playing) return this.stoppedAtTick ?? 0;
     const now = this.ctx.currentTime;
     const project = useDAW.getState().project;
-    const tps = (project.tempo / 60) * PPQ; // ticks per second
     if (now < this.passStartTime) {
       // during count-in
       return this.passStartTick;
     }
-    return this.passStartTick + (now - this.passStartTime) * tps;
+    return this.tickAtTransportSeconds(now - this.passStartTime, this.passStartTick, project);
+  }
+
+  private tempoAtTick(tick: number, project: Project): number {
+    const lane = this.activeTempoLane(project);
+    if (!lane) {
+      return project.tempo;
+    }
+    return clamp(automationValueAt(lane.points, tick), 30, 260);
+  }
+
+  private activeTempoLane(project: Project): AutomationLane | undefined {
+    const lane = project.automationLanes?.find(
+      (item) => item.ownerId === "master" && item.parameterId === "tempo" && item.scope === "track"
+    );
+    return lane?.points.length && (project.automationModes?.master ?? "off") !== "off"
+      ? lane
+      : undefined;
+  }
+
+  private integrateTempo(start: number, end: number, project: Project, lane: AutomationLane): number {
+    if (end <= start) return 0;
+    const steps = 8;
+    let seconds = 0;
+    for (let step = 0; step < steps; step++) {
+      const a = start + (end - start) * step / steps;
+      const b = start + (end - start) * (step + 1) / steps;
+      seconds += tickToSec(b - a, clamp(automationValueAt(lane.points, (a + b) / 2), 30, 260));
+    }
+    return seconds;
+  }
+
+  private ensureTempoMap(project: Project, lane: AutomationLane): void {
+    const enabled = this.tempoMapEnabled;
+    if (
+      this.tempoMapSource === lane &&
+      this.tempoMapPoints === lane.points &&
+      this.tempoMapBase === project.tempo &&
+      enabled
+    ) return;
+    this.tempoMapSource = lane;
+    this.tempoMapPoints = lane.points;
+    this.tempoMapBase = project.tempo;
+    this.tempoMapEnabled = true;
+    this.tempoKnots = [{ tick: 0, seconds: 0 }];
+    let previousTick = 0;
+    let elapsed = 0;
+    for (const point of lane.points) {
+      if (point.tick <= previousTick) continue;
+      elapsed += this.integrateTempo(previousTick, point.tick, project, lane);
+      this.tempoKnots.push({ tick: point.tick, seconds: elapsed });
+      previousTick = point.tick;
+    }
+  }
+
+  private tempoMapSecondsAt(tick: number, project: Project, lane: AutomationLane): number {
+    this.ensureTempoMap(project, lane);
+    if (tick <= 0) return 0;
+    let low = 0;
+    let high = this.tempoKnots.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (this.tempoKnots[mid].tick <= tick) low = mid;
+      else high = mid - 1;
+    }
+    const knot = this.tempoKnots[low];
+    return knot.seconds + this.integrateTempo(knot.tick, tick, project, lane);
+  }
+
+  private transportSeconds(fromTick: number, toTick: number, project: Project): number {
+    if (toTick <= fromTick) return 0;
+    const lane = this.activeTempoLane(project);
+    if (!lane) {
+      this.tempoMapEnabled = false;
+      return tickToSec(toTick - fromTick, project.tempo);
+    }
+    this.tempoMapEnabled = true;
+    return this.tempoMapSecondsAt(toTick, project, lane) -
+      this.tempoMapSecondsAt(fromTick, project, lane);
+  }
+
+  private tickAtTransportSeconds(seconds: number, startTick: number, project: Project): number {
+    if (seconds <= 0) return startTick;
+    let low = startTick;
+    let high = startTick + seconds * PPQ * (260 / 60);
+    for (let i = 0; i < 32; i++) {
+      const mid = (low + high) / 2;
+      if (this.transportSeconds(startTick, mid, project) < seconds) low = mid;
+      else high = mid;
+    }
+    return (low + high) / 2;
   }
 
   setPlayhead(tick: number) {
@@ -847,6 +1136,53 @@ export class AudioEngine {
     if (!this.ctx || !this.playing || !this.master) return;
     const ctx = this.ctx;
     const project = useDAW.getState().project;
+    const currentTick = this.currentTick();
+    automationEngine.setClock(currentTick, true);
+    this.pendingAutomationPoints.push(
+      ...automationEngine.recordContinuous(
+        project.automationLanes ?? [],
+        project.automationModes ?? {},
+        (lane) => {
+          if (lane.ownerId === "master") {
+            if (lane.parameterId === "volume") return project.masterVolume;
+            if (lane.parameterId === "pan") return this.master?.panner.pan.value;
+            if (lane.parameterId === "tempo") return this.tempoAtTick(currentTick, project);
+            if (lane.parameterId === "filterCutoff") return this.master?.filter.frequency.value;
+            if (lane.parameterId === "reverbWet") return this.master?.reverbReturn.gain.value;
+            return undefined;
+          }
+          const track = project.tracks.find((item) => item.id === lane.ownerId);
+          if (!track) return undefined;
+          if (lane.parameterId === "volume") return track.volume;
+          if (lane.parameterId === "pan") return track.pan;
+          if (lane.parameterId === "mute") return track.mute ? 1 : 0;
+          if (lane.parameterId.startsWith("param:")) {
+            const parameterId = lane.parameterId.slice("param:".length);
+            if (parameterId.startsWith("pedal:")) {
+              const [, pedalId, key] = parameterId.split(":");
+              return track.pedalboard?.find((pedal) => pedal.id === pedalId)?.params[key];
+            }
+            return track.params[parameterId];
+          }
+          if (lane.parameterId.startsWith("eq:")) {
+            return track.eq[lane.parameterId.slice(3) as keyof Track["eq"]];
+          }
+          if (lane.parameterId.startsWith("pedal:")) {
+            const [, pedalId, parameterId] = lane.parameterId.split(":");
+            return track.pedalboard?.find((pedal) => pedal.id === pedalId)?.params[parameterId];
+          }
+          return undefined;
+        },
+        (lane) => lane.scope === "region" && lane.regionId
+          ? project.tracks.flatMap((track) => track.regions).find((region) => region.id === lane.regionId)?.start ?? 0
+          : 0
+      )
+    );
+    if (ctx.currentTime - this.lastAutomationPersistTime >= 0.2) {
+      useDAW.getState().appendAutomationPoints(this.pendingAutomationPoints);
+      this.pendingAutomationPoints = [];
+      this.lastAutomationPersistTime = ctx.currentTime;
+    }
     const horizon = ctx.currentTime + LOOKAHEAD_SEC;
     // prune old voices
     if (this.voices.length > 0) {
@@ -862,18 +1198,18 @@ export class AudioEngine {
         ? Math.min(projectEndTick, Math.max(project.cycleStart + PPQ, project.cycleEnd))
         : projectEndTick;
       const passEndTime = this.passStartTime +
-        tickToSec(passEndTick - this.passStartTick, project.tempo);
+        this.transportSeconds(this.passStartTick, passEndTick, project);
       const sliceEnd = Math.min(horizon, passEndTime);
       const fromTick = this.scheduledUntilTick;
       const toTick =
         Number.isFinite(sliceEnd)
           ? Math.min(
               passEndTick,
-              this.passStartTick + secToTick(sliceEnd - this.passStartTime, project.tempo),
+              this.tickAtTransportSeconds(sliceEnd - this.passStartTime, this.passStartTick, project),
             )
           : fromTick;
       if (toTick > fromTick && Number.isFinite(sliceEnd)) {
-        this.scheduleRange(fromTick, toTick, sliceEnd - tickToSec(toTick - fromTick, project.tempo), project);
+        this.scheduleRange(fromTick, toTick, sliceEnd - this.transportSeconds(fromTick, toTick, project), project);
         this.scheduledUntilTick = toTick;
       }
       if (horizon < passEndTime) break;
@@ -909,7 +1245,20 @@ export class AudioEngine {
 
   /** Schedule all events whose start is inside [fromTick, toTick) */
   private scheduleRange(fromTick: number, toTick: number, timeAtFrom: number, project: Project) {
-    const timeAt = (tick: number) => timeAtFrom + tickToSec(tick - fromTick, project.tempo);
+    const timeAt = (tick: number) => timeAtFrom + this.transportSeconds(fromTick, tick, project);
+    automationEngine.scheduleWindow(
+      project.automationLanes ?? [],
+      project.automationModes ?? {},
+      fromTick,
+      toTick,
+      timeAt,
+      (regionId) => {
+        const region = project.tracks
+        .flatMap((track) => track.regions)
+        .find((item) => item.id === regionId);
+        return region ? { start: region.start, end: region.start + region.length } : undefined;
+      }
+    );
 
     // metronome
     if (project.metronome) {
@@ -923,7 +1272,10 @@ export class AudioEngine {
 
     const anySolo = project.tracks.some((t) => t.solo);
     for (const track of project.tracks) {
-      if (track.mute || (anySolo && !track.solo)) continue;
+      const muteAutomation = (project.automationLanes ?? []).some(
+        (lane) => lane.ownerId === track.id && lane.parameterId === "mute"
+      ) && (project.automationModes?.[track.id] ?? "off") !== "off";
+      if ((track.mute && !muteAutomation) || (anySolo && !track.solo)) continue;
       const tn = this.tracks.get(track.id);
       if (!tn) continue;
       for (const region of track.regions) {
@@ -953,6 +1305,7 @@ export class AudioEngine {
       if ((track.sampleZones ?? []).length) {
         return { scheduleStop() {}, kill() {} };
       }
+      const patch = trackPatch(track);
       return playNote(
         ctx,
         dest,
@@ -962,7 +1315,8 @@ export class AudioEngine {
         when,
         duration,
         track.params,
-        noteOffControlled
+        noteOffControlled,
+        patch
       );
     }
 
@@ -1057,7 +1411,7 @@ export class AudioEngine {
         const durTicks = Math.min(n.length, regionEnd - absStart);
         if (durTicks <= 0) continue;
         const when = timeAt(absStart);
-        const dur = tickToSec(durTicks, project.tempo);
+        const dur = this.transportSeconds(absStart, absStart + durTicks, project);
         const noteStart = Math.max(when, (this.ctx as AudioContext).currentTime);
         const voice = this.playTrackNote(
           this.ctx as AudioContext,
@@ -1085,14 +1439,17 @@ export class AudioEngine {
     timeAt: (t: number) => number,
     project: Project
   ) {
-    if (!region.bufferId) return;
-    const buf = this.bufferFor(this.ctx as AudioContext, region.bufferId);
+    const bufferId = getRegionPlaybackBufferId(region);
+    if (!bufferId) return;
+    const buf = this.bufferFor(this.ctx as AudioContext, bufferId);
     if (!buf) return;
     const regionEnd = region.start + region.length;
     const contentSec = region.sampleLength ?? buf.duration;
     const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
     const contentPlaySec = contentSec / playbackRate;
-    const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
+    const periodTicks = region.looped
+      ? secToTick(contentPlaySec, this.tempoAtTick(region.start, project))
+      : 0;
     const reps = periodTicks ? Math.ceil(region.length / periodTicks) + 1 : 1;
     for (let k = 0; k < reps; k++) {
       const occStart = region.start + k * periodTicks;
@@ -1100,7 +1457,7 @@ export class AudioEngine {
       if (occStart < fromTick) continue;
       const when = timeAt(occStart);
       const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-      const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
+      const durSec = Math.min(contentPlaySec, this.transportSeconds(occStart, occStart + remainTicks, project));
       if (durSec <= 0.005) continue;
       this.playAudioSlice(region, buf, tn.input, when, 0, durSec);
     }
@@ -1169,20 +1526,23 @@ export class AudioEngine {
       for (const region of track.regions) {
         if (region.muted) continue;
         const regionEnd = region.start + region.length;
-        if (region.type !== "audio" || !region.bufferId) continue;
+        const bufferId = getRegionPlaybackBufferId(region);
+        if (region.type !== "audio" || !bufferId) continue;
         if (atTick <= region.start || atTick >= regionEnd) continue;
-        const buf = this.bufferFor(this.ctx as AudioContext, region.bufferId);
+        const buf = this.bufferFor(this.ctx as AudioContext, bufferId);
         if (!buf) continue;
         const contentSec = region.sampleLength ?? buf.duration;
         const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
         const contentPlaySec = contentSec / playbackRate;
-        const periodTicks = region.looped ? secToTick(contentPlaySec, project.tempo) : 0;
+        const periodTicks = region.looped
+          ? secToTick(contentPlaySec, this.tempoAtTick(region.start, project))
+          : 0;
         let occStart = region.start;
         if (periodTicks) {
           occStart = region.start + Math.floor((atTick - region.start) / periodTicks) * periodTicks;
         }
-        const offsetIntoContent = tickToSec(atTick - occStart, project.tempo) * playbackRate;
-        const remainRegionSec = tickToSec(regionEnd - atTick, project.tempo);
+        const offsetIntoContent = this.transportSeconds(occStart, atTick, project) * playbackRate;
+        const remainRegionSec = this.transportSeconds(atTick, regionEnd, project);
         const durSec = Math.max(0, Math.min((contentSec - offsetIntoContent) / playbackRate, remainRegionSec));
         if (durSec > 0.005) {
           this.playAudioSlice(region, buf, tn.input, atTime, offsetIntoContent, durSec);
@@ -1193,149 +1553,139 @@ export class AudioEngine {
 
   // ---------------- live input (musical typing / onscreen keys) ----------------
 
+  private publishLiveNotes() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent<number[]>(
+        "webband:live-notes",
+        { detail: [...this.openInputNotes.keys()] },
+      ));
+    }
+  }
+
+  private liveMidiTargets() {
+    const st = useDAW.getState();
+    const active = st.project.tracks.filter(
+      (track) => track.type === "midi" && track.role === "track" && (track.armed || track.inputMonitor)
+    );
+    const activeIds = new Set(active.map((track) => track.id));
+    for (const parent of st.project.tracks.filter(
+      (track) => track.role === "folder" && (track.armed || track.inputMonitor)
+    )) {
+      const stack = st.project.stacks?.find((item) => item.folderTrackId === parent.id);
+      for (const id of stack?.trackIds ?? []) activeIds.add(id);
+    }
+    if (activeIds.size) {
+      return st.project.tracks.filter((track) => activeIds.has(track.id) && track.type === "midi");
+    }
+    const selected = st.project.tracks.find((track) => track.id === st.ui.selectedTrackId);
+    if (selected?.role === "folder") {
+      const stack = st.project.stacks?.find((item) => item.folderTrackId === selected.id);
+      return st.project.tracks.filter((track) => stack?.trackIds.includes(track.id) && track.type === "midi");
+    }
+    return selected?.type === "midi" ? [selected] : [];
+  }
+
   noteOn(pitch: number, velocity: number) {
     const ctx = this.ensure();
     const st = useDAW.getState();
-    const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
-    if (!track || track.type !== "midi") return;
-    if (this.openInputNotes.has(pitch)) return;
-
-    // Apply immediate note-shaping MIDI effects to live keyboard input. Time-based
-    // processors (arpeggiator, repeater, gate and echo) are rendered on MIDI regions
-    // where the complete note length is known.
-    const livePlugins = (track.midiPlugins ?? []).filter(
-      (plugin) => !["arpeggiator", "note-repeater", "gate", "note-echo"].includes(plugin.pluginId)
-    );
-    const inputNotes = applyMidiPlugins(
-      [{
-        id: uid(),
-        pitch,
-        velocity,
-        start: 0,
-        length: PPQ * 4,
-      }],
-      livePlugins,
-      st.project.keyTonic,
-      st.project.keyMode
-    );
-    const destination = this.tracks.get(track.id)?.input ?? this.master?.input ?? ctx.destination;
+    const targets = this.liveMidiTargets();
+    if (!targets.length) return;
     const startTick = this.playing ? this.currentTick() : this.stoppedAtTick ?? 0;
-    const noteState = { voices: [] as VoiceHandle[], startTick, velocity };
-    this.openInputNotes.set(pitch, noteState);
-
-    const playLiveVoices = () => {
-      // A key may have been released, or the selected instrument may have
-      // changed, while its samples were downloading. Never trigger a late note.
-      if (this.openInputNotes.get(pitch) !== noteState) return;
-      const currentTrack = useDAW.getState().project.tracks.find(
-        (item) => item.id === track.id
+    let pitchTracks = this.openInputNotes.get(pitch);
+    if (!pitchTracks) {
+      pitchTracks = new Map();
+      this.openInputNotes.set(pitch, pitchTracks);
+    }
+    const noteStates = pitchTracks;
+    for (const track of targets) {
+      if (noteStates.has(track.id)) continue;
+      const noteState = { voices: [] as VoiceHandle[], startTick, velocity };
+      noteStates.set(track.id, noteState);
+      const livePlugins = (track.midiPlugins ?? []).filter(
+        (plugin) => !["arpeggiator", "note-repeater", "gate", "note-echo"].includes(plugin.pluginId)
       );
-      if (!currentTrack || currentTrack.type !== "midi" || currentTrack.instrument !== track.instrument) {
-        this.openInputNotes.delete(pitch);
-        return;
-      }
-      const currentDestination =
-        this.tracks.get(currentTrack.id)?.input ?? this.master?.input ?? ctx.destination;
-      noteState.voices = inputNotes.slice(0, 16).map((note) =>
-        this.playTrackNote(
-          ctx,
-          currentDestination,
-          currentTrack,
-          note.pitch,
-          note.velocity / 127,
-          ctx.currentTime,
-          3600,
-          true
-        )
+      const inputNotes = applyMidiPlugins(
+        [{ id: uid(), pitch, velocity, start: 0, length: PPQ * 4 }],
+        livePlugins,
+        st.project.keyTonic,
+        st.project.keyMode
       );
-    };
 
-    if (track.sampleBufferId || (track.sampleZones ?? []).length) {
-      const prepareLiveSampler = async () => {
-        // MIDI effects can transpose a key or turn it into a chord. Load every
-        // zone on the instrument so every transformed output note is ready.
-        // If the user edits the zone map during download, reload the latest map
-        // before allowing the pressed key to sound.
-        let currentTrack = track;
-        for (;;) {
-          const sampleIds = [...new Set([
-            currentTrack.sampleBufferId,
-            ...(currentTrack.sampleZones ?? []).map((zone) => zone.bufferId),
-          ].filter((id): id is string => !!id))];
-          if (!sampleIds.length) throw new Error("No sample is assigned to this sampler");
-
-          const buffers = await Promise.all(
-            sampleIds.map((sampleId) => this.ensureBufferLoaded(sampleId))
-          );
-          if (buffers.some((buffer) => !buffer)) {
-            throw new Error("One or more sampler sources could not be loaded");
-          }
-
-          const latestTrack = useDAW.getState().project.tracks.find(
-            (item) => item.id === track.id
-          );
-          if (!latestTrack || latestTrack.type !== "midi" || latestTrack.instrument !== track.instrument) {
-            return false;
-          }
-          const latestSampleIds = [...new Set([
-            latestTrack.sampleBufferId,
-            ...(latestTrack.sampleZones ?? []).map((zone) => zone.bufferId),
-          ].filter((id): id is string => !!id))];
-          const loadedIds = new Set(sampleIds);
-          if (latestSampleIds.every((id) => loadedIds.has(id))) return true;
-          currentTrack = latestTrack;
+      const playLiveVoices = () => {
+        if (noteStates.get(track.id) !== noteState) return;
+        const currentTrack = useDAW.getState().project.tracks.find((item) => item.id === track.id);
+        if (!currentTrack || currentTrack.type !== "midi" || currentTrack.instrument !== track.instrument) {
+          noteStates.delete(track.id);
+          return;
         }
+        const destination = this.tracks.get(currentTrack.id)?.input ?? this.master?.input ?? ctx.destination;
+        noteState.voices = inputNotes.slice(0, 16).map((note) =>
+          this.playTrackNote(ctx, destination, currentTrack, note.pitch, note.velocity / 127, ctx.currentTime, 3600, true)
+        );
       };
 
-      void prepareLiveSampler()
-        .then((ready) => {
-          if (!ready) {
-            this.openInputNotes.delete(pitch);
-            return;
+      const prepareTrack = async () => {
+        if (track.sampleBufferId || (track.sampleZones ?? []).length) {
+          const sampleIds = [...new Set([
+            track.sampleBufferId,
+            ...(track.sampleZones ?? []).map((zone) => zone.bufferId),
+          ].filter((id): id is string => !!id))];
+          const buffers = await Promise.all(sampleIds.map((sampleId) => this.ensureBufferLoaded(sampleId)));
+          if (!sampleIds.length || buffers.some((buffer) => !buffer)) {
+            throw new Error(`Sampler audio is missing for ${track.name}`);
           }
-          playLiveVoices();
-        })
-        .catch((error: unknown) => {
-          if (this.openInputNotes.get(pitch) === noteState) {
-            this.openInputNotes.delete(pitch);
+        } else {
+          const patch = trackPatch(track);
+          if (patch?.sampled) {
+            await warmSampledPatch(
+              ctx,
+              this.tracks.get(track.id)?.input ?? ctx.destination,
+              patch,
+              false,
+              track.id,
+            );
           }
-          console.error(`Could not load samples for ${track.name}.`, error);
-          toast.error(`Could not load ${track.sampleName ?? track.name}. Please try again.`);
-        });
-      return;
+        }
+        playLiveVoices();
+      };
+      void prepareTrack().catch((error: unknown) => {
+        noteStates.delete(track.id);
+        this.publishLiveNotes();
+        console.error(`Could not load samples for ${track.name}.`, error);
+        toast.error(`Could not load ${track.sampleName ?? track.name}. Please try again.`);
+      });
     }
-
-    const patch = PATCHES[track.instrument];
-    if (patch?.sampled) {
-      void warmSampledPatch(ctx, destination, patch)
-        .then(playLiveVoices)
-        .catch((error: unknown) => {
-          if (this.openInputNotes.get(pitch) === noteState) {
-            this.openInputNotes.delete(pitch);
-          }
-          console.error(`Could not load samples for ${track.name}.`, error);
-          toast.error(`Could not load ${patch.name} samples. Please try again.`);
-        });
-      return;
-    }
-
-    playLiveVoices();
+    this.publishLiveNotes();
   }
 
   noteOff(pitch: number, sustain = false) {
-    const n = this.openInputNotes.get(pitch);
-    if (!n || !this.ctx) return;
+    const notes = this.openInputNotes.get(pitch);
+    if (!notes || !this.ctx) return;
     const tick = this.playing ? this.currentTick() : (this.stoppedAtTick ?? 0) + PPQ / 4;
-    if (this.recording && this.playing) {
-      const len = Math.max(PPQ / 8, tick - n.startTick);
-      this.recordedMidi.push({ pitch, velocity: n.velocity, start: n.startTick, length: len });
-    }
-    if (sustain) {
-      this.sustainedVoices.push(...n.voices);
-    } else {
-      for (const voice of n.voices) voice.scheduleStop(this.ctx.currentTime);
+    for (const [trackId, note] of notes) {
+      if (this.recording && this.playing && this.recordingMidiTrackIds.has(trackId)) {
+        const len = Math.max(PPQ / 8, tick - note.startTick);
+        this.recordedMidi.push({ trackId, pitch, velocity: note.velocity, start: note.startTick, length: len });
+      }
+      if (sustain) this.sustainedVoices.push(...note.voices);
+      else for (const voice of note.voices) voice.scheduleStop(this.ctx.currentTime);
     }
     this.openInputNotes.delete(pitch);
+    this.publishLiveNotes();
+  }
+
+  pitchBend(value: number) {
+    for (const track of this.liveMidiTargets()) {
+      pitchBendSoundFontTrack(track.id, value);
+    }
+  }
+
+  setSoundFontParams(trackId: string, params: Record<string, number>) {
+    const track = useDAW.getState().project.tracks.find((item) => item.id === trackId);
+    const patch = track ? trackPatch(track) : undefined;
+    if (patch?.sampled?.engine === "soundfont-worklet") {
+      updateSoundFontPatchControls(trackId, patch, params);
+    }
   }
 
   releaseSustainedNotes() {
@@ -1348,11 +1698,19 @@ export class AudioEngine {
   }
 
   /** One-shot audition (piano roll keys, library preview) */
-  auditionNote(patchId: string, pitch: number, velocity = 100, params?: Record<string, number>) {
+  auditionNote(
+    patchId: string,
+    pitch: number,
+    velocity = 100,
+    params?: Record<string, number>,
+    patchOverride?: Patch,
+  ) {
     const ctx = this.ensure();
     if (!this.master) return;
     const st = useDAW.getState();
-    const p = params ?? st.project.tracks.find((t) => t.instrument === patchId)?.params ?? {};
+    const sourceTrack = st.project.tracks.find((t) => t.instrument === patchId);
+    const p = params ?? sourceTrack?.params ?? {};
+    const patch = patchOverride ?? (sourceTrack ? trackPatch(sourceTrack) : PATCHES[patchId]);
 
     if (!this.auditionDest) {
       this.auditionDest = ctx.createGain();
@@ -1371,7 +1729,7 @@ export class AudioEngine {
       );
       const voice = customTrack
         ? this.playTrackNote(ctx, dest, customTrack, pitch, velocity / 127, when, duration)
-        : playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p);
+        : playNote(ctx, dest, patchId, pitch, velocity / 127, when, duration, p, false, patch);
       voice.scheduleStop(when + duration);
       this.voices.push({ handle: voice, until: when + 6 });
     };
@@ -1396,9 +1754,8 @@ export class AudioEngine {
       }
     }
 
-    const patch = PATCHES[patchId];
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch).then(play).catch(() => {
+      void warmSampledPatch(ctx, dest, patch, false, sourceTrack?.id ?? patch.id).then(play).catch(() => {
         toast.error(`Could not load ${patch.name} samples. Please try again.`);
       });
       return;
@@ -1558,8 +1915,9 @@ export class AudioEngine {
       const region = track?.regions.find((item) => item.id === ref.regionId);
       if (!track || !region) return;
 
-      if (region.type === "audio" && region.bufferId) {
-        const stored = await this.ensureBufferLoaded(region.bufferId);
+      const bufferId = getRegionPlaybackBufferId(region);
+      if (region.type === "audio" && bufferId) {
+        const stored = await this.ensureBufferLoaded(bufferId);
         if (!stored) throw new Error(`Could not load audio clip ${region.name}`);
         return;
       }
@@ -1579,9 +1937,9 @@ export class AudioEngine {
         return;
       }
 
-      const patch = PATCHES[track.instrument];
+      const patch = trackPatch(track);
       const nodes = this.tracks.get(track.id);
-      if (patch?.sampled && nodes) await warmSampledPatch(ctx, nodes.input, patch);
+      if (patch?.sampled && nodes) await warmSampledPatch(ctx, nodes.input, patch, false, track.id);
     });
     await Promise.all(loads);
   }
@@ -1602,13 +1960,14 @@ export class AudioEngine {
       if (!nodes) continue;
 
       if (region.type === "audio") {
-        if (!region.bufferId) continue;
-        const stored = await this.ensureBufferLoaded(region.bufferId);
+        const bufferId = getRegionPlaybackBufferId(region);
+        if (!bufferId) continue;
+        const stored = await this.ensureBufferLoaded(bufferId);
         if (!stored) {
           toast.error(`Could not load the audio clip ${region.name}`);
           continue;
         }
-        const buffer = this.bufferFor(ctx, region.bufferId);
+        const buffer = this.bufferFor(ctx, bufferId);
         if (!buffer) continue;
 
         const source = ctx.createBufferSource();
@@ -1650,10 +2009,10 @@ export class AudioEngine {
           continue;
         }
       } else {
-        const patch = PATCHES[track.instrument];
+        const patch = trackPatch(track);
         if (patch?.sampled) {
           try {
-            await warmSampledPatch(ctx, nodes.input, patch);
+            await warmSampledPatch(ctx, nodes.input, patch, false, track.id);
           } catch {
             toast.error(`Could not load ${patch.name} samples`);
             continue;
@@ -1768,8 +2127,15 @@ export class AudioEngine {
   async startAudioCapture(
     trackId: string,
     monitor: boolean,
-    inputDeviceId?: string | null
+    inputDeviceId?: string | null,
+    capture = true
   ): Promise<void> {
+    const existing = this.audioInputs.get(trackId);
+    if (existing) {
+      existing.monitorGain.gain.setTargetAtTime(monitor ? 1 : 0, this.ctx!.currentTime, 0.01);
+      if (capture && !existing.captureNode) this.attachCaptureNode(trackId, existing);
+      return;
+    }
     const ctx = this.ensure();
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -1779,55 +2145,105 @@ export class AudioEngine {
         autoGainControl: false,
       },
     });
-    this.mediaStream = stream;
-    this.micSource = ctx.createMediaStreamSource(stream);
-    this.monitorGain = ctx.createGain();
-    this.monitorGain.gain.value = monitor ? 1 : 0;
+    const source = ctx.createMediaStreamSource(stream);
+    const monitorGain = ctx.createGain();
+    monitorGain.gain.value = monitor ? 1 : 0;
     const tn = this.tracks.get(trackId);
-    this.micSource.connect(this.monitorGain);
-    if (tn) this.monitorGain.connect(tn.input);
-    // capture via ScriptProcessor (universal support)
-    this.captureNode = ctx.createScriptProcessor(4096, 1, 1);
-    this.captureChunks = [];
-    this.captureSampleRate = ctx.sampleRate;
-    this.captureStartCtxTime = ctx.currentTime;
-    this.captureNode.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      this.captureChunks.push(new Float32Array(input));
+    source.connect(monitorGain);
+    if (tn) monitorGain.connect(tn.input);
+    const session: AudioInputSession = {
+      stream,
+      source,
+      monitorGain,
+      captureNode: null,
+      sink: null,
+      chunks: [],
+      sampleRate: ctx.sampleRate,
+      startCtxTime: ctx.currentTime,
     };
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    this.micSource.connect(this.captureNode);
-    this.captureNode.connect(sink);
-    sink.connect(ctx.destination);
+    this.audioInputs.set(trackId, session);
+    if (capture) this.attachCaptureNode(trackId, session);
   }
 
-  finishAudioCapture(): { stored: StoredBuffer; offsetSec: number; durationSec: number } | null {
-    if (!this.captureNode || !this.ctx) return null;
-    const total = this.captureChunks.reduce((a, c) => a + c.length, 0);
+  setTrackInputMonitor(trackId: string, enabled: boolean) {
+    const track = useDAW.getState().project.tracks.find((item) => item.id === trackId);
+    if (!track || track.type !== "audio") return;
+    if (enabled) {
+      void this.startAudioCapture(track.id, true, track.inputDeviceId, false).catch((error: unknown) => {
+        console.error(`Could not monitor ${track.name}.`, error);
+        toast.error(`Could not monitor ${track.name}. Check microphone permissions.`);
+        useDAW.getState().updateTrack(track.id, { inputMonitor: false }, false);
+      });
+    } else {
+      const session = this.audioInputs.get(trackId);
+      if (session) {
+        session.monitorGain.gain.setTargetAtTime(0, this.ctx?.currentTime ?? 0, 0.01);
+        if (!this.recordingAudioTrackIds.has(trackId)) this.finishAudioCapture(trackId);
+      }
+    }
+  }
+
+  private attachCaptureNode(trackId: string, session: AudioInputSession) {
+    if (!this.ctx || session.captureNode) return;
+    const node = this.ctx.createScriptProcessor(4096, 1, 1);
+    session.chunks = [];
+    session.startCtxTime = this.ctx.currentTime;
+    node.onaudioprocess = (event) => {
+      session.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+    };
+    const sink = this.ctx.createGain();
+    sink.gain.value = 0;
+    session.source.connect(node);
+    node.connect(sink);
+    sink.connect(this.ctx.destination);
+    session.captureNode = node;
+    session.sink = sink;
+    this.audioInputs.set(trackId, session);
+  }
+
+  finishAudioCapture(trackId: string): Omit<RecordedAudio, "trackId"> | null {
+    const session = this.audioInputs.get(trackId);
+    if (!session || !this.ctx) return null;
+    const { captureNode, chunks, sampleRate, startCtxTime } = session;
+    if (!captureNode) {
+      this.disposeAudioInput(trackId, session);
+      return null;
+    }
+    const total = chunks.reduce((a, c) => a + c.length, 0);
     const mono = new Float32Array(total);
     let off = 0;
-    for (const c of this.captureChunks) {
+    for (const c of chunks) {
       mono.set(c, off);
       off += c.length;
     }
-    const offsetSec = Math.max(0, this.passStartTime - this.captureStartCtxTime);
+    const offsetSec = Math.max(0, this.passStartTime - startCtxTime);
     // gentle stereo: duplicate mono
     const stored: StoredBuffer = {
-      sampleRate: this.captureSampleRate,
+      sampleRate,
       channels: [mono, mono],
       name: "Recording",
     };
     try {
-      this.captureNode.disconnect();
-      this.micSource?.disconnect();
-      this.monitorGain?.disconnect();
-    } catch { /* noop */ }
-    this.mediaStream?.getTracks().forEach((t) => t.stop());
-    this.captureNode = null;
-    this.micSource = null;
-    this.mediaStream = null;
-    return { stored, offsetSec, durationSec: total / this.captureSampleRate - offsetSec };
+      captureNode.disconnect();
+      session.sink?.disconnect();
+    } catch { /* nodes may already be disconnected */ }
+    session.captureNode = null;
+    session.sink = null;
+    session.chunks = [];
+    const track = useDAW.getState().project.tracks.find((item) => item.id === trackId);
+    if (!track?.inputMonitor) this.disposeAudioInput(trackId, session);
+    return { stored, offsetSec, durationSec: total / sampleRate - offsetSec };
+  }
+
+  private disposeAudioInput(trackId: string, session: AudioInputSession) {
+    try {
+      session.captureNode?.disconnect();
+      session.sink?.disconnect();
+      session.source.disconnect();
+      session.monitorGain.disconnect();
+    } catch { /* nodes may already be disconnected */ }
+    session.stream.getTracks().forEach((track) => track.stop());
+    this.audioInputs.delete(trackId);
   }
 
   // ---------------- levels ----------------
@@ -1860,27 +2276,57 @@ export class AudioEngine {
   // ---------------- offline render ----------------
 
   async renderProject(
-    project: Project,
-    onProgress?: (p: number) => void
+    sourceProject: Project,
+    onProgress?: (p: number) => void,
+    options: OfflineRenderOptions = {},
   ): Promise<{ channels: Float32Array[]; sampleRate: number } | null> {
     onProgress?.(0.02);
+    options.signal?.throwIfAborted();
+    const projectEnd = projectLengthTicks(sourceProject);
+    const startTick = clamp(options.startTick ?? 0, 0, projectEnd);
+    const endTick = clamp(options.endTick ?? projectEnd, startTick + 1, projectEnd);
+    if (endTick <= startTick) throw new RangeError("Bounce range must end after it starts.");
+    const includeTrackIds = options.includeTrackIds
+      ? new Set(options.includeTrackIds)
+      : undefined;
+    const project: Project = includeTrackIds
+      ? {
+          ...sourceProject,
+          tracks: sourceProject.tracks.map((track) => ({
+            ...track,
+            solo: false,
+            ...((track.role ?? "track") === "track"
+              ? { mute: track.mute || !includeTrackIds.has(track.id) }
+              : {}),
+          })),
+        }
+      : sourceProject;
+    const tempoLane = this.activeTempoLane(project);
+    const renderSeconds = (from: number, to: number) => tempoLane
+      ? this.integrateTempo(from, to, project, tempoLane)
+      : tickToSec(to - from, project.tempo);
     // load all audio buffers
     const bufferIds = new Set<string>();
     for (const t of project.tracks) {
       if (t.sampleBufferId) bufferIds.add(t.sampleBufferId);
       for (const zone of t.sampleZones ?? []) bufferIds.add(zone.bufferId);
-      for (const r of t.regions) if (r.bufferId) bufferIds.add(r.bufferId);
+      for (const r of t.regions) {
+        const bufferId = getRegionPlaybackBufferId(r);
+        if (bufferId) bufferIds.add(bufferId);
+      }
     }
     await Promise.all(Array.from(bufferIds).map((id) => this.ensureBufferLoaded(id)));
+    options.signal?.throwIfAborted();
 
-    const sr = 44100;
-    const endTick = projectLengthTicks(project);
+    const sr = options.sampleRate ?? 44100;
     let quickSamplerTailSec = 0;
     for (const track of project.tracks) {
       if (track.type !== "midi") continue;
       for (const region of track.regions) {
         if (region.type !== "midi") continue;
         for (const note of region.notes ?? []) {
+          const noteStart = region.start + note.start;
+          if (noteStart + note.length <= startTick || noteStart >= endTick) continue;
           const zone = selectSamplerZone(track.sampleZones, note.pitch, note.velocity);
           const sampleId = zone?.bufferId ?? track.sampleBufferId;
           const mode = zone?.playbackMode ?? track.samplePlaybackMode ?? "one-shot";
@@ -1896,10 +2342,13 @@ export class AudioEngine {
         }
       }
     }
+    const tailSeconds = options.tailSeconds ?? 3.2;
     const totalSec =
-      tickToSec(endTick, project.tempo) + Math.max(3.2, quickSamplerTailSec + 0.25);
+      renderSeconds(startTick, endTick) +
+      Math.max(tailSeconds, quickSamplerTailSec + 0.25) + 0.1;
     const length = Math.ceil(totalSec * sr);
     const offline = new OfflineAudioContext(2, length, sr);
+    const offlineAutomation = new AutomationEngine();
     onProgress?.(0.08);
 
     const master = buildMaster(offline);
@@ -1910,35 +2359,100 @@ export class AudioEngine {
     let done = 0;
     const total = project.tracks.reduce((a, t) => a + Math.max(1, t.regions.length), 1);
 
-    const timeAt = (tick: number) => tickToSec(tick, project.tempo) + 0.05;
+    const timeAt = (tick: number) => renderSeconds(startTick, tick) + 0.05;
 
 
     for (const track of project.tracks) {
-      if (track.role === "folder" || track.role === "vca") continue;
+      options.signal?.throwIfAborted();
+      const folderStack = track.role === "folder"
+        ? project.stacks?.find((stack) => stack.folderTrackId === track.id)
+        : undefined;
+      if (track.role === "vca" || (track.role === "folder" && folderStack?.type !== "folder")) continue;
       const tn = buildTrack(offline, master);
       applyTrackAudioPlugins(tn, track);
-      tn.gain.gain.value = isTrackAudible(track, project.tracks)
-        ? getEffectiveTrackGain(track, project.tracks)
-        : 0;
+      tn.gain.gain.value = folderStack?.type === "folder"
+        ? track.mute ? 0 : 1
+        : isTrackAudible(track, project.tracks)
+          ? getEffectiveTrackGain(track, project.tracks)
+          : 0;
+      tn.pedalboard.sync(
+        track.pedalboard ?? [],
+        activeAudioPlugin(track, "pedalboard")?.enabled === true,
+      );
       applyTrackSpatialPanning(tn, track);
       trackNodes.set(track.id, tn);
       if (track.type === "midi") {
         // WAV bounces use the same SoundFont and multi-sampled patches as live playback.
-        const patch = PATCHES[track.instrument];
-        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch, true);
+        const patch = trackPatch(track);
+        if (patch?.sampled) await warmSampledPatch(offline, tn.input, patch, true, track.id);
       }
 
     }
 
-    // Route offline channel outputs through the same Aux graph used in live playback.
+    offlineAutomation.bindParameter("master", "volume", master.volume.gain);
+    offlineAutomation.bindParameter("master", "pan", master.panner.pan);
+    offlineAutomation.bindParameter("master", "filterCutoff", master.filter.frequency);
+    offlineAutomation.bindParameter("master", "reverbWet", master.reverbReturn.gain);
+    for (const [trackId, tn] of trackNodes) {
+      offlineAutomation.bindParameter(trackId, "volume", tn.gain.gain);
+      offlineAutomation.bindParameter(trackId, "pan", tn.panner.pan);
+      offlineAutomation.bindParameter(trackId, "mute", tn.muteGain.gain);
+      offlineAutomation.bindParameter(trackId, "filterCutoff", tn.highPass.frequency);
+      offlineAutomation.bindParameter(trackId, "param:cutoff", tn.highPass.frequency);
+      offlineAutomation.bindParameter(trackId, "param:resonance", tn.highPass.Q);
+      offlineAutomation.bindParameter(trackId, "param:chorusDepth", tn.chorusDepth.gain);
+      offlineAutomation.bindParameter(trackId, "param:reverb", tn.reverbSend.gain);
+      offlineAutomation.bindParameter(trackId, "param:delay", tn.delaySend.gain);
+      offlineAutomation.bindParameter(trackId, "eq:lowGain", tn.eqLow.gain);
+      offlineAutomation.bindParameter(trackId, "eq:midGain", tn.eqMid.gain);
+      offlineAutomation.bindParameter(trackId, "eq:highGain", tn.eqHigh.gain);
+      offlineAutomation.bindParameter(trackId, "send:reverb", tn.reverbSend.gain);
+      offlineAutomation.bindParameter(trackId, "send:delay", tn.delaySend.gain);
+      for (const binding of tn.pedalboard.getAutomationBindings(
+        project.tracks.find((track) => track.id === trackId)?.pedalboard ?? [],
+      )) {
+        offlineAutomation.bindParameter(
+          trackId,
+          binding.parameterId,
+          binding.parameter,
+          binding.transform,
+        );
+      }
+    }
+
+    offlineAutomation.scheduleWindow(
+      project.automationLanes ?? [],
+      project.automationModes ?? {},
+      startTick,
+      endTick + 1,
+      timeAt,
+      (regionId) => {
+        const region = project.tracks.flatMap((track) => track.regions)
+          .find((item) => item.id === regionId);
+        return region ? { start: region.start, end: region.start + region.length } : undefined;
+      },
+    );
+
+    // Route offline channels through the same Aux and folder buses as live playback.
     for (const track of project.tracks) {
+      options.signal?.throwIfAborted();
       const nodes = trackNodes.get(track.id);
       if (!nodes) continue;
       let target: AudioNode = master.input;
-      const bus = resolveOutputBus(track, project.tracks);
-      if (bus) {
-        const busNodes = trackNodes.get(bus.id);
-        if (busNodes && busNodes !== nodes) target = busNodes.input;
+      const parentStack = track.parentTrackId
+        ? project.stacks?.find((stack) =>
+            stack.folderTrackId === track.parentTrackId && stack.type === "folder",
+          )
+        : undefined;
+      if (parentStack && track.id !== parentStack.folderTrackId) {
+        const parentNodes = trackNodes.get(parentStack.folderTrackId);
+        if (parentNodes && parentNodes !== nodes) target = parentNodes.input;
+      } else {
+        const bus = resolveOutputBus(track, project.tracks);
+        if (bus) {
+          const busNodes = trackNodes.get(bus.id);
+          if (busNodes && busNodes !== nodes) target = busNodes.input;
+        }
       }
       try { nodes.output.disconnect(); } catch { /* no previous route */ }
       nodes.output.connect(target);
@@ -1950,7 +2464,8 @@ export class AudioEngine {
       for (const region of track.regions) {
         if (region.muted) { done++; continue; }
         const regionEnd = Math.min(region.start + region.length, endTick);
-        if (region.start >= endTick) {
+        const playbackBufferId = getRegionPlaybackBufferId(region);
+        if (region.start >= endTick || regionEnd <= startTick) {
           done++;
           continue;
         }
@@ -1967,11 +2482,13 @@ export class AudioEngine {
             const base = region.start + k * period;
             for (const n of notes) {
               const absStart = base + n.start;
-              if (absStart >= regionEnd) continue;
-              const durTicks = Math.min(n.length, regionEnd - absStart);
+              const absEnd = Math.min(absStart + n.length, regionEnd);
+              const scheduledStart = Math.max(absStart, startTick);
+              if (scheduledStart >= absEnd) continue;
+              const durTicks = absEnd - scheduledStart;
               if (durTicks <= 0) continue;
-              const noteStart = timeAt(absStart);
-              const noteDuration = tickToSec(durTicks, project.tempo);
+              const noteStart = timeAt(scheduledStart);
+              const noteDuration = renderSeconds(scheduledStart, scheduledStart + durTicks);
               const voice = this.playTrackNote(
                 offline,
                 tn.input,
@@ -1985,8 +2502,8 @@ export class AudioEngine {
               voice.scheduleStop(noteStart + noteDuration);
             }
           }
-        } else if (region.bufferId) {
-          const buf = this.bufferFor(offline, region.bufferId);
+        } else if (playbackBufferId) {
+          const buf = this.bufferFor(offline, playbackBufferId);
           if (buf) {
             const contentSec = region.sampleLength ?? buf.duration;
             const playbackRate = clamp(region.playbackRate ?? 1, 0.5, 2);
@@ -1995,9 +2512,12 @@ export class AudioEngine {
             const reps = periodTicks ? Math.ceil((regionEnd - region.start) / periodTicks) + 1 : 1;
             for (let k = 0; k < reps; k++) {
               const occStart = region.start + k * periodTicks;
-              if (occStart >= regionEnd) continue;
-              const remainTicks = Math.min(regionEnd - occStart, periodTicks || regionEnd - occStart);
-              const durSec = Math.min(contentPlaySec, tickToSec(remainTicks, project.tempo));
+              const occEnd = Math.min(regionEnd, occStart + (periodTicks || regionEnd - occStart));
+              const playStart = Math.max(occStart, startTick);
+              if (playStart >= occEnd) continue;
+              const elapsedSec = tickToSec(playStart - occStart, project.tempo);
+              const remainTicks = occEnd - playStart;
+              const durSec = Math.min(contentPlaySec - elapsedSec, tickToSec(remainTicks, project.tempo));
               if (durSec <= 0.005) continue;
               // Offline varispeed follows the same playback-rate automation as live playback.
               const src = offline.createBufferSource();
@@ -2005,9 +2525,9 @@ export class AudioEngine {
               src.playbackRate.value = playbackRate;
               const g = offline.createGain();
               const gainVal = region.gain ?? 1;
-              const fi = Math.min(region.fadeIn ?? 0, durSec);
+              const fi = Math.min(Math.max(0, (region.fadeIn ?? 0) - elapsedSec), durSec);
               const fo = Math.min(region.fadeOut ?? 0, durSec);
-              const when = timeAt(occStart);
+              const when = timeAt(playStart);
               const end = when + durSec;
               let t = when;
               if (fi > 0) {
@@ -2023,7 +2543,7 @@ export class AudioEngine {
                 g.gain.linearRampToValueAtTime(0.0001, end);
               }
               src.connect(g).connect(tn.input);
-              src.start(when, region.sampleStart ?? 0, durSec * playbackRate + 0.02);
+              src.start(when, (region.sampleStart ?? 0) + elapsedSec * playbackRate, durSec * playbackRate + 0.02);
             }
           }
         }
@@ -2033,6 +2553,7 @@ export class AudioEngine {
     }
     onProgress?.(0.85);
     const rendered = await offline.startRendering();
+    options.signal?.throwIfAborted();
     onProgress?.(0.98);
     const channels: Float32Array[] = [];
     for (let c = 0; c < rendered.numberOfChannels; c++) {

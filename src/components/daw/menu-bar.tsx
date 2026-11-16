@@ -7,7 +7,7 @@
 // ============================================================
 
 import { useMemo } from "react";
-import { Music } from "lucide-react";
+import { Apple } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,14 +38,14 @@ export function MenuBar() {
   }, []);
 
   return (
-    <header className="h-9 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/60 bg-[#232327] select-none">
+    <header className="studio-metal h-9 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/80 select-none shadow-[inset_0_-1px_rgba(255,255,255,.035)]">
       {/* app identity */}
       <div className="flex items-center gap-2 pr-1 shrink-0">
         <div
           className="h-5 w-5 rounded-[5px] bg-gradient-to-br from-[#ffb648] to-[#d98b1f] flex items-center justify-center shadow-sm"
           aria-hidden
         >
-          <Music className="h-3 w-3 text-[#19191b]" strokeWidth={2.5} />
+          <Apple className="h-3 w-3 text-white fill-white" strokeWidth={2} />
         </div>
         <span className="text-[12px] font-semibold text-zinc-200">GarageBand Web</span>
         <span className="hidden sm:inline text-[9px] leading-none px-1.5 py-[3px] rounded bg-[#ffb648]/15 text-[#ffb648] border border-[#ffb648]/30 tracking-wide uppercase">

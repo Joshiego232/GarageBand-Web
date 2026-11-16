@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="ebony" x1="227" y1="490" x2="786" y2="733" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34383C"/>
+      <stop offset=".12" stop-color="#101315"/>
+      <stop offset=".38" stop-color="#282C30"/>
+      <stop offset=".56" stop-color="#050607"/>
+      <stop offset=".83" stop-color="#202428"/>
+      <stop offset="1" stop-color="#07090A"/>
+    </linearGradient>
+    <linearGradient id="front" x1="250" y1="695" x2="769" y2="812" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#202428"/>
+      <stop offset=".19" stop-color="#080A0B"/>
+      <stop offset=".5" stop-color="#191D20"/>
+      <stop offset=".78" stop-color="#050607"/>
+      <stop offset="1" stop-color="#292D31"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="332" y1="255" x2="696" y2="440" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4B5054"/>
+      <stop offset=".1" stop-color="#16191C"/>
+      <stop offset=".48" stop-color="#050607"/>
+      <stop offset=".78" stop-color="#282C30"/>
+      <stop offset="1" stop-color="#0B0D0F"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="322" y1="360" x2="715" y2="581" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE28A"/>
+      <stop offset=".26" stop-color="#B88632"/>
+      <stop offset=".52" stop-color="#E9C365"/>
+      <stop offset=".77" stop-color="#A27027"/>
+      <stop offset="1" stop-color="#F3D479"/>
+    </linearGradient>
+    <linearGradient id="keywhite" x1="349" y1="639" x2="676" y2="750" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset=".78" stop-color="#ECEAE4"/>
+      <stop offset="1" stop-color="#C8C8C5"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="0" cy="0" r="1" gradientTransform="matrix(0 452 -452 0 510 352)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A0A3A6" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#232426" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="100" y="607" width="824" height="290" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="25"/>
+    </filter>
+    <filter id="lidGlow" x="300" y="224" width="460" height="348" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="17"/>
+    </filter>
+    <pattern id="keyDividers" width="25.2" height="102" patternUnits="userSpaceOnUse">
+      <path d="M24.6 0V102" stroke="#A8A9A7" stroke-width="1.2"/>
+    </pattern>
+  </defs>
+  <rect width="1024" height="1024" rx="40" fill="#232426"/>
+  <rect width="1024" height="1024" rx="40" fill="url(#spot)"/>
+  <ellipse cx="512" cy="815" rx="347" ry="50" fill="#000" opacity=".7" filter="url(#shadow)"/>
+  <ellipse cx="522" cy="432" rx="229" ry="139" fill="#DCAA43" opacity=".13" filter="url(#lidGlow)"/>
+
+  <!-- Open lid seen nearly front-on -->
+  <path d="M246 487 333 296Q350 259 395 251L633 211Q665 206 690 229L783 403 731 461 268 535 246 487Z" fill="url(#lid)" stroke="#070809" stroke-width="8" stroke-linejoin="round"/>
+  <path d="m291 477 78-166q10-20 34-24l221-37q19-3 31 12l83 147-34 39-392 63-21-34Z" fill="#A8792E" stroke="#15120C" stroke-width="5" stroke-linejoin="round"/>
+  <path d="m307 467 74-151q8-16 27-19l209-36q17-3 27 9l69 127-31 34-359 62-16-26Z" fill="#D1A54E" opacity=".42"/>
+  <path d="m292 479 82-168q12-23 36-27l213-37q20-3 34 14l80 144-8 7-81-145q-11-13-24-11l-214 37q-17 3-25 19l-84 171-9-4Z" fill="url(#gold)"/>
+  <path d="m271 505 25-43 417-71 34 55-16 14-421 68-39-23Z" fill="#971F28"/>
+  <path d="m282 499 22-35 405-68 23 38-403 69-47-4Z" fill="#C83337"/>
+  <path d="m294 492 17-28 390-66 16 26-394 67-29 1Z" fill="#64191F"/>
+  <path d="m312 485 382-65" stroke="#F16A63" stroke-width="3" opacity=".85"/>
+
+  <!-- Gold plate, braces, strings and tuning pins -->
+  <path d="m355 439 299-53 34 61-329 56-23-64 19-4Z" fill="#9E7026" stroke="#F1CF71" stroke-width="3"/>
+  <path d="m376 438 268-47 19 39-278 48-9-40Z" fill="#D2AA4F" opacity=".7"/>
+  <path d="m391 438 234-41" stroke="#78531E" stroke-width="4"/>
+  <path d="m405 459 244-43M409 468l248-43M413 477l251-43M417 486l254-44M421 495l257-45" stroke="#FFF0AE" stroke-width="2" opacity=".85"/>
+  <path d="m388 420 43 79M420 414l44 79M451 408l45 79M483 402l45 79M515 396l45 78M547 390l45 78M579 385l45 77M611 379l44 77M643 373l39 73" stroke="#F5DC8B" stroke-width="2"/>
+  <path d="m389 420 43 79M420 414l44 79M451 408l45 79M483 402l45 79M515 396l45 78M547 390l45 78M579 385l45 77M611 379l44 77M643 373l39 73" stroke="#FFF4C7" stroke-width=".8" opacity=".75"/>
+  <path d="m382 435 15 62M401 432l16 62M423 428l16 62M445 423l17 62M467 419l17 62M489 415l17 62M511 410l18 62M533 406l19 62M555 402l20 62M577 398l21 62M600 393l22 62M623 389l23 62M646 385l23 62M667 386l17 54" stroke="#F8E8B4" stroke-width="1.5"/>
+  <g fill="#F8E6AB" stroke="#7D5B23" stroke-width="1">
+    <circle cx="382" cy="435" r="3"/><circle cx="401" cy="432" r="3"/><circle cx="423" cy="428" r="3"/><circle cx="445" cy="423" r="3"/>
+    <circle cx="467" cy="419" r="3"/><circle cx="489" cy="415" r="3"/><circle cx="511" cy="410" r="3"/><circle cx="533" cy="406" r="3"/>
+    <circle cx="555" cy="402" r="3"/><circle cx="577" cy="398" r="3"/><circle cx="600" cy="393" r="3"/><circle cx="623" cy="389" r="3"/>
+    <circle cx="646" cy="385" r="3"/><circle cx="667" cy="386" r="3"/>
+  </g>
+  <path d="m351 441 36 44M665 384l40 56" stroke="#806027" stroke-width="8"/>
+  <path d="m355 441 34 40M669 384l36 51" stroke="#F4D26D" stroke-width="3"/>
+
+  <!-- Lid hinge and prop -->
+  <path d="m288 500 18-3 37 136-17 4-38-137Z" fill="#292D30" stroke="#08090A" stroke-width="4"/>
+  <path d="m296 503 32 126" stroke="#A7AAAC" stroke-width="3" opacity=".65"/>
+  <path d="m707 385 24 6 50 131-21 8-53-145Z" fill="#202427" stroke="#050607" stroke-width="4"/>
+  <path d="m715 392 47 127" stroke="#A3A6A8" stroke-width="3" opacity=".6"/>
+  <g fill="#D7B258" stroke="#644A1D" stroke-width="2">
+    <circle cx="300" cy="506" r="6"/><circle cx="326" cy="624" r="6"/><circle cx="718" cy="398" r="6"/><circle cx="775" cy="527" r="6"/>
+  </g>
+
+  <!-- Piano rim and broad, frontal cabinet -->
+  <path d="M211 535Q211 510 238 496L276 483 303 508 742 508 790 491 813 513V668Q813 707 778 726L741 742H262L226 720Q211 710 211 689V535Z" fill="url(#ebony)" stroke="#050607" stroke-width="8"/>
+  <path d="M220 536Q220 519 241 508L273 496 292 514H745L789 500 804 517V661Q804 698 773 715L738 730H265L235 711Q220 701 220 685V536Z" fill="url(#ebony)"/>
+  <path d="M221 680Q512 700 804 671V704Q804 725 775 740L739 753H263L235 735Q220 726 220 709V680Z" fill="url(#front)" stroke="#050607" stroke-width="4"/>
+  <path d="M230 682Q512 700 795 675" stroke="#6D7276" stroke-width="4" opacity=".72"/>
+  <path d="M237 696Q512 714 788 688" stroke="#020303" stroke-width="5"/>
+  <path d="M232 528Q512 514 794 526" stroke="#C1C4C5" stroke-width="3" opacity=".5"/>
+  <path d="M239 541Q513 526 786 539" stroke="#080A0B" stroke-width="5"/>
+  <path d="M251 514Q512 526 773 511" stroke="#4D5256" stroke-width="2" opacity=".7"/>
+  <path d="M241 572Q512 587 786 567" stroke="#43484C" stroke-width="2" opacity=".4"/>
+  <path d="M234 646Q512 666 797 641" stroke="#686D71" stroke-width="2" opacity=".4"/>
+
+  <!-- Keyboard bed and 52-key run -->
+  <path d="M282 548Q512 562 742 548L758 659Q512 682 267 659L282 548Z" fill="#080A0B" stroke="#44494D" stroke-width="3"/>
+  <path d="M292 555Q512 569 733 555L746 649Q512 671 279 649L292 555Z" fill="url(#keywhite)" stroke="#AAA9A3" stroke-width="2"/>
+  <path d="M292 555Q512 569 733 555L746 649Q512 671 279 649L292 555Z" fill="url(#keyDividers)" opacity=".8"/>
+  <path d="M292 555Q512 569 733 555" stroke="#FFF" stroke-width="4" opacity=".85"/>
+  <path d="M279 649Q512 672 746 649" stroke="#8D8E8C" stroke-width="3"/>
+  <g fill="#101214" stroke="#050607" stroke-width="2">
+    <path d="m303 556 13 1 5 54-19-1 1-54Z"/>
+    <path d="m328 558 13 1 5 54-19-1 1-54Z"/>
+    <path d="m378 561 13 1 5 54-19-1 1-54Z"/>
+    <path d="m403 562 13 1 5 54-19-1 1-54Z"/>
+    <path d="m428 564 13 1 5 54-19-1 1-54Z"/>
+    <path d="m478 566 13 1 5 54-19-1 1-54Z"/>
+    <path d="m503 568 13 1 5 54-19-1 1-54Z"/>
+    <path d="m528 569 13 1 5 54-19-1 1-54Z"/>
+    <path d="m578 572 13 1 5 54-19-1 1-54Z"/>
+    <path d="m603 573 13 1 5 54-19-1 1-54Z"/>
+    <path d="m628 574 13 1 5 54-19-1 1-54Z"/>
+    <path d="m678 571 13 1 5 54-19-1 1-54Z"/>
+    <path d="m703 568 13 1 5 54-19-1 1-54Z"/>
+  </g>
+  <g fill="#08090A" opacity=".36">
+    <path d="m296 615 18 1 1 5-19-1v-5ZM321 616l19 1 1 5-20-1v-5ZM370 619l20 1 1 5-21-1v-5ZM395 620l20 1 1 5-21-1v-5ZM420 621l20 1 1 5-21-1v-5ZM470 624l20 1 1 5-21-1v-5ZM495 625l20 1 1 5-21-1v-5ZM520 626l20 1 1 5-21-1v-5ZM570 628l20-1 1 5-21 1v-5ZM595 627l20-1 1 5-21 1v-5ZM620 626l20-1 1 5-21 1v-5ZM670 623l20-1 1 5-21 1v-5ZM695 621l20-1 1 5-21 1v-5Z"/>
+  </g>
+  <path d="M303 558 300 608M328 560l-3 49M378 563l-3 49M403 564l-3 49M428 566l-3 48M478 568l-3 47M503 570l-3 46M528 571l-3 46M578 574l-3 45M603 575l-3 44M628 576l-3 44M678 573l-3 46M703 570l-3 48" stroke="#5B5D5F" stroke-width="1.4" opacity=".8"/>
+  <path d="M287 640Q512 663 739 640" stroke="#FFF" stroke-width="2" opacity=".55"/>
+
+  <!-- Front apron, legs, brass shoes and three pedals -->
+  <path d="M275 740 307 740 313 847 278 859 263 849 275 740Z" fill="#090B0D" stroke="#4A4E51" stroke-width="3"/>
+  <path d="m283 745 14-1 6 99-17 6-7-8 4-96Z" fill="#25292C"/>
+  <path d="m270 849 44-3 14 14-8 16-52 3-14-12 16-18Z" fill="#111416" stroke="#B99147" stroke-width="3"/>
+  <path d="m275 854 40-3" stroke="#E1BD66" stroke-width="2"/>
+  <path d="M696 738 730 735 751 840 722 857 700 848 696 738Z" fill="#090B0D" stroke="#4A4E51" stroke-width="3"/>
+  <path d="m705 744 15-2 19 93-15 9-16-7-3-93Z" fill="#25292C"/>
+  <path d="m704 842 42-9 18 13-6 17-47 13-20-12 13-22Z" fill="#111416" stroke="#B99147" stroke-width="3"/>
+  <path d="m710 847 40-9" stroke="#E1BD66" stroke-width="2"/>
+  <path d="m426 762 14 2 2 53-16-2v-53ZM471 764l14 1 1 53-16-1 1-53ZM516 765l14 1v53h-16l2-54Z" fill="#A87E34" stroke="#E4C16B" stroke-width="2"/>
+  <path d="m412 813 112 4 24 19-30 20-112-6-24-17 30-20Z" fill="#0B0D0F" stroke="#9D7735" stroke-width="3"/>
+  <path d="m416 818 105 5 17 13-31 13-103-6-17-12 29-13Z" fill="#333638" stroke="#D4AE5E" stroke-width="2"/>
+  <path d="m409 834 110 6" stroke="#F0D27E" stroke-width="2"/>
+  <g fill="#D4AE5E">
+    <circle cx="280" cy="858" r="3"/><circle cx="302" cy="857" r="3"/><circle cx="716" cy="851" r="3"/><circle cx="740" cy="846" r="3"/>
+  </g>
+
+  <!-- Fine lacquer reflections and hardware -->
+  <path d="M243 536Q250 518 278 508" stroke="#FFF" stroke-width="4" stroke-linecap="round" opacity=".42"/>
+  <path d="M306 517Q514 525 724 515" stroke="#FFF" stroke-width="2" opacity=".25"/>
+  <path d="M250 674Q512 691 780 666" stroke="#FFF" stroke-width="2" opacity=".27"/>
+  <path d="M245 708Q270 729 304 733" stroke="#7A7F83" stroke-width="2" opacity=".55"/>
+  <g fill="#D3B35F" stroke="#6A501F" stroke-width="1.5">
+    <circle cx="250" cy="545" r="4"/><circle cx="781" cy="544" r="4"/>
+    <circle cx="250" cy="661" r="4"/><circle cx="781" cy="652" r="4"/>
+  </g>
+</svg>

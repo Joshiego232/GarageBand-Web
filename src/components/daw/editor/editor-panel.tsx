@@ -4,7 +4,7 @@
 // the audio editor or the smart controls for the active region.
 // ============================================================
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { MousePointerClick, X } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import type { EditorMode } from "@/lib/daw/types";
@@ -14,6 +14,7 @@ import { SmartControls } from "../mixer/smart-controls";
 import { DrumStepSequencer } from "./drum-step-sequencer";
 import { ScoreEditor } from "./score-editor";
 import { PATCHES } from "@/lib/daw/instruments";
+import { ResizeHandle } from "../panels/resize-handle";
 
 export function EditorPanel() {
   const region = useDAW((s) =>
@@ -25,7 +26,10 @@ export function EditorPanel() {
   const editorMode = useDAW((s) => s.ui.editorMode);
   const setEditorMode = useDAW((s) => s.setEditorMode);
   const togglePanel = useDAW((s) => s.togglePanel);
-  const isDrumTrack = !!track && !!PATCHES[track.instrument]?.isDrum;
+  const [editorHeight, setEditorHeight] = useState(240);
+  const isDrumTrack = !!track && (
+    !!PATCHES[track.instrument]?.isDrum || track.soundFontPreset?.bank === 128
+  );
 
   // Keep the mode valid for the active region type. Drum tracks may use the
   // dedicated step grid, while every step remains an ordinary editable MIDI note.
@@ -64,7 +68,20 @@ export function EditorPanel() {
     : "";
 
   return (
-    <section className="h-60 shrink-0 border-t border-black/60 bg-[#1d1d20] flex flex-col" aria-label="Editor panel">
+    <section
+      className="shrink-0 border-t border-black/60 bg-[#1d1d20] flex flex-col"
+      style={{ height: editorHeight, maxHeight: "65vh" }}
+      aria-label="Editor panel"
+    >
+      <ResizeHandle
+        axis="horizontal"
+        value={editorHeight}
+        min={180}
+        max={640}
+        label="Resize editor and Smart Controls panel"
+        onChange={setEditorHeight}
+        className="bg-[#1d1d20]"
+      />
       <header className="h-9 shrink-0 bg-[#232327] border-b border-black/50 flex items-center px-2 gap-2">
         <span className="text-[11px] font-medium text-zinc-200 truncate max-w-44" title={region?.name}>
           {region ? region.name : track ? track.name : "Editor"}
@@ -85,11 +102,15 @@ export function EditorPanel() {
               key={t.id}
               type="button"
               onClick={() => setEditorMode(t.id)}
-              className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
+              className={`rounded transition-colors ${
                 editorMode === t.id
                   ? "bg-[#3a3a41] text-zinc-100"
                   : "text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
               }`}
+              style={{
+                fontSize: `${Math.min(15, 11 + (editorHeight - 240) / 100)}px`,
+                padding: `${Math.min(9, 4 + (editorHeight - 240) / 60)}px ${Math.min(18, 10 + (editorHeight - 240) / 30)}px`,
+              }}
             >
               {t.label}
             </button>
@@ -110,7 +131,9 @@ export function EditorPanel() {
       </header>
       <div className="flex-1 min-h-0 flex flex-col">
         {editorMode === "smart" ? (
-          <SmartControls />
+          <SmartControls
+            controlSize={Math.min(96, 52 + Math.max(0, editorHeight - 240) * 0.08)}
+          />
         ) : editorMode === "piano" && region?.type === "midi" ? (
           <PianoRoll />
         ) : editorMode === "steps" && region?.type === "midi" ? (

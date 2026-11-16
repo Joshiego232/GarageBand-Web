@@ -23,6 +23,7 @@ import { MidiControlSurface } from "@/components/daw/panels/midi-control-surface
 import { engine } from "@/lib/daw/engine";
 import { useDAW } from "@/lib/daw/store";
 import { isBlackKey, noteName } from "@/lib/daw/utils";
+import { formatPitchClass } from "@/lib/daw/ChordDetector";
 import { cn } from "@/lib/utils";
 
 type ScaleId = "major" | "minor" | "dorian" | "pentatonic" | "blues";
@@ -35,7 +36,6 @@ const SCALE_OPTIONS: ScaleOption[] = [
   { id: "pentatonic", name: "Pentatonic", notes: [0, 2, 4, 7, 9] },
   { id: "blues", name: "Blues", notes: [0, 3, 5, 6, 7, 10] },
 ] as const;
-const ROOTS = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
 const GARAGEBAND_KEYS = ["a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k", "o", "l", "p", ";", "'"];
 const LOWER_CHROMATIC_KEYS = ["z", "s", "x", "d", "c", "v", "g", "b", "h", "n", "j", "m"];
 const UPPER_CHROMATIC_KEYS = ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p", "[", "]"];
@@ -57,6 +57,7 @@ type PointerState = {
   startScrollLeft: number;
 };
 type KeyBinding = { pitch?: number; chord?: number; octave?: number };
+type CustomChordStrip = { name: string; notes: number[] };
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -88,6 +89,10 @@ export function OnscreenKeyboard() {
   const open = useDAW((state) => state.ui.panels.keyboard);
   const octaveBase = useDAW((state) => state.ui.octaveBase);
   const musicalTyping = useDAW((state) => state.ui.musicalTyping);
+  const scaleLock = useDAW((state) => state.ui.keyboardScaleLock);
+  const root = useDAW((state) => state.ui.keyboardScaleRoot);
+  const scaleId = useDAW((state) => state.ui.keyboardScaleMode);
+  const customChordStrips = useDAW((state) => state.ui.keyboardChordStrips);
   const projectTempo = useDAW((state) => state.project.tempo);
   const selectedTrack = useDAW(
     (state) => state.project.tracks.find((track) => track.id === state.ui.selectedTrackId) ?? null,
@@ -95,14 +100,14 @@ export function OnscreenKeyboard() {
   const setUI = useDAW((state) => state.setUI);
   const togglePanel = useDAW((state) => state.togglePanel);
   const [pressed, setPressed] = useState<number[]>([]);
-  const [scaleLock, setScaleLock] = useState(false);
-  const [root, setRoot] = useState(0);
-  const [scaleId, setScaleId] = useState<ScaleId>("major");
   const [typingLayout, setTypingLayout] = useState<"garageband" | "two-row">("garageband");
-  const [chordMode, setChordMode] = useState(false);
+  const [chordMode, setChordMode] = useState(
+    () => useDAW.getState().ui.keyboardChordStrips.length > 0,
+  );
   const [dualRow, setDualRow] = useState(false);
   const [glissando, setGlissando] = useState(true);
   const [sustain, setSustain] = useState(false);
+  const [pitchBend, setPitchBend] = useState(0);
   const [arpEnabled, setArpEnabled] = useState(false);
   const [arpRate, setArpRate] = useState<"1/4" | "1/8" | "1/16">("1/8");
   const [arpPattern, setArpPattern] = useState<ArpPattern>("up");
@@ -115,6 +120,15 @@ export function OnscreenKeyboard() {
   const sustainRef = useRef(false);
 
   const scale = SCALE_OPTIONS.find((item) => item.id === scaleId) ?? SCALE_OPTIONS[0];
+  const rootNames = useMemo(
+    () => Array.from({ length: 12 }, (_, pitchClass) =>
+      formatPitchClass(pitchClass, {
+        tonic: root,
+        mode: scaleId === "minor" ? "minor" : "major",
+      }),
+    ),
+    [root, scaleId],
+  );
   const pitchStart = Math.max(21, (octaveBase + 1) * 12);
   const pitchEnd = Math.min(108, (octaveBase + 3) * 12 - 1);
   const buildChord = useCallback((degree: number, octave: number) => {
@@ -277,6 +291,29 @@ export function OnscreenKeyboard() {
   }, [sustain]);
 
   useEffect(() => {
+    const syncScale = (event: Event) => {
+      const suggestion = (event as CustomEvent<{ tonic: number; mode: "major" | "minor" }>).detail;
+      if (!suggestion) return;
+      useDAW.getState().setUI({
+        keyboardScaleRoot: suggestion.tonic,
+        keyboardScaleMode: suggestion.mode,
+        keyboardScaleLock: true,
+      });
+    };
+    const loadChordStrips = (event: Event) => {
+      const strips = (event as CustomEvent<CustomChordStrip[]>).detail;
+      useDAW.getState().setUI({ keyboardChordStrips: (strips ?? []).slice(0, 8) });
+      setChordMode(true);
+    };
+    window.addEventListener("webband:sync-scale", syncScale);
+    window.addEventListener("webband:load-chord-strips", loadChordStrips);
+    return () => {
+      window.removeEventListener("webband:sync-scale", syncScale);
+      window.removeEventListener("webband:load-chord-strips", loadChordStrips);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!open) {
       releaseAll();
       return;
@@ -309,7 +346,8 @@ export function OnscreenKeyboard() {
       const sourceId = `computer:${key}`;
       const velocity = useDAW.getState().ui.velocity;
       if (binding.chord !== undefined) {
-        const chord = buildChord(binding.chord, binding.octave ?? 0);
+        const chord = customChordStrips[binding.chord]?.notes
+          ?? buildChord(binding.chord, binding.octave ?? 0);
         startSource(sourceId, chord, velocity);
       } else if (binding.pitch !== undefined) {
         startSource(sourceId, [binding.pitch], velocity);
@@ -329,7 +367,7 @@ export function OnscreenKeyboard() {
       window.removeEventListener("keyup", onKeyUp, true);
       for (const key of heldKeys) stopSource(`computer:${key}`);
     };
-  }, [buildChord, keyBindings, musicalTyping, open, startSource, stopSource]);
+  }, [buildChord, customChordStrips, keyBindings, musicalTyping, open, startSource, stopSource]);
 
   const velocityFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -366,6 +404,28 @@ export function OnscreenKeyboard() {
     const sourceId = `pointer:${event.pointerId}`;
     const chord = buildChord(degree, octave);
     const pitches = zone === "bass" ? [Math.max(21, chord[0] - 12)] : chord;
+    pointers.current.set(event.pointerId, {
+      mode: "chord",
+      sourceId,
+      startX: event.clientX,
+      startScrollLeft: 0,
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    startSource(sourceId, pitches, velocityFromPointer(event), zone === "arp" || arpEnabled);
+  };
+
+  const beginCustomChordPointer = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    chord: number[],
+    zone: "chord" | "bass" | "arp",
+  ) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    const sourceId = `pointer:${event.pointerId}`;
+    const sorted = [...new Set(chord)].sort((a, b) => a - b);
+    const pitches = zone === "bass"
+      ? [Math.max(21, (sorted[0] ?? 48) - 12)]
+      : sorted;
     pointers.current.set(event.pointerId, {
       mode: "chord",
       sourceId,
@@ -451,13 +511,13 @@ export function OnscreenKeyboard() {
 
   return (
     <>
-      <div className="pointer-events-none fixed bottom-7 left-0 right-0 z-40 flex justify-center px-2">
+      <div className="w-full flex justify-center px-2 py-1">
         <motion.section
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           aria-label="On-screen performance keyboard"
-          className="pointer-events-auto relative max-h-[58vh] w-full max-w-[1180px] overflow-hidden rounded-xl border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_18px_60px_rgba(0,0,0,.7),inset_0_1px_0_rgba(255,255,255,.1)]"
+          className="pointer-events-auto relative min-h-[250px] max-h-[48vh] w-full overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
           onPointerDown={beginScrollPointer}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -485,7 +545,7 @@ export function OnscreenKeyboard() {
               <ControlButton
                 active={scaleLock}
                 label="Toggle scale lock"
-                onClick={() => setScaleLock((value) => !value)}
+                onClick={() => useDAW.getState().setUI({ keyboardScaleLock: !scaleLock })}
               >
                 <span>Scale</span>
               </ControlButton>
@@ -494,15 +554,15 @@ export function OnscreenKeyboard() {
                   <select
                     aria-label="Scale root note"
                     value={root}
-                    onChange={(event) => setRoot(Number(event.target.value))}
+                    onChange={(event) => useDAW.getState().setUI({ keyboardScaleRoot: Number(event.target.value) })}
                     className="h-7 rounded border border-black/50 bg-[#1a1a1d] px-1.5 text-[10px] text-zinc-200"
                   >
-                    {ROOTS.map((name, index) => <option key={name} value={index}>{name}</option>)}
+                    {rootNames.map((name, index) => <option key={`${name}-${index}`} value={index}>{name}</option>)}
                   </select>
                   <select
                     aria-label="Scale type"
                     value={scaleId}
-                    onChange={(event) => setScaleId(event.target.value as ScaleId)}
+                    onChange={(event) => useDAW.getState().setUI({ keyboardScaleMode: event.target.value as ScaleId })}
                     className="h-7 rounded border border-black/50 bg-[#1a1a1d] px-1.5 text-[10px] text-zinc-200"
                   >
                     {SCALE_OPTIONS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
@@ -568,6 +628,39 @@ export function OnscreenKeyboard() {
               <span className={cn("size-1.5 rounded-full", sustain ? "bg-[#8fd17e] shadow-[0_0_7px_#8fd17e]" : "bg-zinc-600")} />
               <span>Sustain</span>
             </ControlButton>
+            <label className="flex h-7 items-center gap-1.5 rounded-md border border-black/40 bg-[#26262b] px-2 text-[9px] text-zinc-400">
+              <span>Bend</span>
+              <input
+                type="range"
+                min={-1}
+                max={1}
+                step={0.01}
+                value={pitchBend}
+                aria-label="Pitch bend"
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setPitchBend(value);
+                  engine.pitchBend(value);
+                }}
+                onDoubleClick={() => {
+                  setPitchBend(0);
+                  engine.pitchBend(0);
+                }}
+                className="w-16 accent-[#67b7ff]"
+              />
+              <button
+                type="button"
+                aria-label="Reset pitch bend"
+                title="Reset pitch bend"
+                onClick={() => {
+                  setPitchBend(0);
+                  engine.pitchBend(0);
+                }}
+                className="rounded px-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200"
+              >
+                0
+              </button>
+            </label>
 
             <ControlButton active={arpEnabled} label="Toggle arpeggiator" onClick={() => setArpEnabled((value) => !value)}>
               <Waves size={12} />
@@ -625,26 +718,43 @@ export function OnscreenKeyboard() {
               }}
             >
               {chordMode ? (
-                <div className="grid min-w-[620px] grid-cols-7 gap-1.5">
-                  {ROMAN_NUMERALS.map((roman, degree) => (
+                <div className={`grid gap-1.5 ${customChordStrips.length ? "min-w-[700px] grid-cols-8" : "min-w-[620px] grid-cols-7"}`}>
+                  {(customChordStrips.length
+                    ? customChordStrips.map((strip, degree) => ({
+                        roman: strip.name,
+                        degree,
+                        rootNote: rootNames[(strip.notes[0] ?? 0) % 12],
+                        quality: "Custom",
+                        custom: strip,
+                      }))
+                    : ROMAN_NUMERALS.map((roman, degree) => ({
+                        roman,
+                        degree,
+                        rootNote: rootNames[(root + (scale.notes[degree % scale.notes.length] ?? 0)) % 12],
+                        quality: chordName(degree, scaleLock, scale.notes),
+                        custom: undefined,
+                      }))
+                  ).map(({ roman, degree, rootNote, quality, custom }) => (
                     <ChordStrip
-                      key={roman}
+                      key={`${degree}-${roman}`}
                       degree={degree}
                       roman={roman}
-                      chordName={chordName(degree, scaleLock, scale.notes)}
-                      rootNote={ROOTS[(root + (scale.notes[degree % scale.notes.length] ?? 0)) % 12]}
+                      chordName={quality}
+                      rootNote={rootNote}
                       keyHints={musicalTyping
                         ? [chordKeyHints.lower[degree], chordKeyHints.upper[degree]]
                             .filter((key): key is string => !!key)
                         : []}
                       onPointerDown={(event, zone) =>
-                        beginChordPointer(event, degree, zone, dualRow ? 0 : 0)
+                        custom
+                          ? beginCustomChordPointer(event, custom.notes, zone)
+                          : beginChordPointer(event, degree, zone, dualRow ? 0 : 0)
                       }
                     />
                   ))}
                 </div>
               ) : (
-                <div className={cn("flex flex-col gap-1", !dualRow && "min-w-max")}>
+                <div className="flex w-fit min-w-max flex-col gap-1">
                   {rows.map((row, rowIndex) => (
                     <PianoRow
                       key={rowIndex}
@@ -669,7 +779,7 @@ export function OnscreenKeyboard() {
           </div>
           <footer className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[8px] text-zinc-600">
             <span>
-              {scaleLock ? `${ROOTS[root]} ${scale.name} · non-scale keys hidden` : "Chromatic keys · octave controls browse A0–C8"}
+              {scaleLock ? `${rootNames[root]} ${scale.name} · non-scale keys hidden` : "Chromatic keys · octave controls browse A0–C8"}
             </span>
             <span>{musicalTyping ? "QWERTY overlay active · key-up, blur and tab-switch release notes" : "Enable Typing for QWERTY hints"}</span>
           </footer>
@@ -803,7 +913,7 @@ function PianoRow({
         className={cn(
           "relative touch-none select-none outline-none focus-visible:z-20 focus-visible:ring-2 focus-visible:ring-[#ffb648]/70",
           black
-            ? "z-10 h-[66px] w-6 -translate-x-1/2 rounded-b border border-black/80"
+            ? "z-10 h-[66px] w-full -translate-x-1/2 rounded-b border border-black/80"
                 : cn(
                     "h-[90px] shrink-0 rounded-b border border-black/30",
                     scaleLock ? "w-full min-w-0" : "w-9 sm:w-11",
@@ -855,8 +965,11 @@ function PianoRow({
         return (
           <div
             key={`black-${pitch}`}
-            className="absolute top-0"
-            style={{ left: `${(whitesBefore / whites.length) * 100}%` }}
+            className="absolute top-0 z-20"
+            style={{
+              left: `${(whitesBefore / whites.length) * 100}%`,
+              width: "24px",
+            }}
           >
             {keyButton(pitch, true)}
           </div>
