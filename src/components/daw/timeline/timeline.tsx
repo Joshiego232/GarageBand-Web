@@ -1246,7 +1246,7 @@ function drawRegion(
 
   // content
   if (isMidi) {
-    drawMidiContent(ctx, region, clipX0, y + headerH, clipW, h - headerH, pxPerTick, trackColor);
+    drawMidiContent(ctx, region, x, clipX0, y + headerH, clipW, h - headerH, pxPerTick, trackColor);
   } else {
     drawAudioContent(ctx, region, clipX0, y + headerH, clipW, h - headerH, pxPerTick, tempo);
   }
@@ -1287,6 +1287,7 @@ function drawRegion(
 function drawMidiContent(
   ctx: CanvasRenderingContext2D,
   region: Region,
+  regionX: number,
   x0: number,
   y0: number,
   w: number,
@@ -1313,7 +1314,7 @@ function drawMidiContent(
   const reps = period ? Math.ceil(region.length / period) : 1;
   for (let k = 0; k < reps; k++) {
     for (const n of notes) {
-      const drawX = x0 + (k * period + n.start) * pxPerTick;
+      const drawX = regionX + (k * period + n.start) * pxPerTick;
       const nw = Math.max(1.5, n.length * pxPerTick);
       if (drawX + nw < x0 || drawX > x0 + w) continue;
       const ny = y0 + h - ((n.pitch - lo + 1) / range) * h;

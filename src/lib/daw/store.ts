@@ -133,6 +133,7 @@ interface DAWState {
 }
 
 function cloneProject(p: Project): Project {
+  if (typeof structuredClone === "function") return structuredClone(p);
   return JSON.parse(JSON.stringify(p)) as Project;
 }
 

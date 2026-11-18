@@ -46,6 +46,7 @@ import { AutomationEngine, automationEngine, automationValueAt } from "./Automat
 
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
+const MASTER_OUTPUT_TRIM = 1.5;
 
 interface TrackNodes {
   input: GainNode;
@@ -83,7 +84,7 @@ interface AudioInputSession {
   stream: MediaStream;
   source: MediaStreamAudioSourceNode;
   monitorGain: GainNode;
-  captureNode: ScriptProcessorNode | null;
+  captureNode: AudioWorkletNode | ScriptProcessorNode | null;
   sink: GainNode | null;
   chunks: Float32Array[];
   sampleRate: number;
@@ -149,6 +150,36 @@ interface MasterNodes {
   click: GainNode;
 }
 
+const captureWorkletRegistrations = new WeakMap<BaseAudioContext, Promise<void>>();
+
+function registerCaptureWorklet(ctx: BaseAudioContext): Promise<void> {
+  const existing = captureWorkletRegistrations.get(ctx);
+  if (existing) return existing;
+
+  const workletContext = ctx as BaseAudioContext & {
+    audioWorklet?: { addModule(url: string): Promise<void> };
+  };
+  if (!workletContext.audioWorklet) return Promise.reject(new Error("AudioWorklet is unavailable"));
+
+  const source = `
+    class CaptureProcessor extends AudioWorkletProcessor {
+      process(inputs) {
+        const channel = inputs[0]?.[0];
+        if (channel && channel.length) {
+          const copy = new Float32Array(channel);
+          this.port.postMessage(copy.buffer, [copy.buffer]);
+        }
+        return true;
+      }
+    }
+    registerProcessor("garageband-capture", CaptureProcessor);
+  `;
+  const url = URL.createObjectURL(new Blob([source], { type: "application/javascript" }));
+  const registration = workletContext.audioWorklet.addModule(url).finally(() => URL.revokeObjectURL(url));
+  captureWorkletRegistrations.set(ctx, registration);
+  return registration;
+}
+
 interface ActiveVoice {
   handle: VoiceHandle;
   until: number; // ctx time when it can be pruned
@@ -194,6 +225,8 @@ function buildMaster(ctx: BaseAudioContext): MasterNodes {
   limiter.attack.value = 0.003;
   limiter.release.value = 0.25;
   const volume = ctx.createGain();
+  const outputTrim = ctx.createGain();
+  outputTrim.gain.value = MASTER_OUTPUT_TRIM;
   const filter = ctx.createBiquadFilter();
   filter.type = "lowpass";
   filter.frequency.value = 20000;
@@ -201,7 +234,7 @@ function buildMaster(ctx: BaseAudioContext): MasterNodes {
   const analyser = ctx.createAnalyser();
   analyser.fftSize = 512;
 
-  input.connect(limiter).connect(volume).connect(filter).connect(panner).connect(analyser);
+  input.connect(volume).connect(outputTrim).connect(filter).connect(panner).connect(limiter).connect(analyser);
   analyser.connect(ctx.destination);
 
   const reverbConv = ctx.createConvolver();
@@ -414,6 +447,7 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
 
   const saturation = get("saturation");
   const drive = saturation?.enabled ? Math.max(0, saturation.params.drive ?? 0.28) : 0;
+  tn.saturation.oversample = saturation?.enabled ? "4x" : "none";
   const curve = new Float32Array(1024);
   const amount = drive * 6;
   const normalizer = amount > 0 ? Math.tanh(amount) : 1;
@@ -2185,20 +2219,47 @@ export class AudioEngine {
 
   private attachCaptureNode(trackId: string, session: AudioInputSession) {
     if (!this.ctx || session.captureNode) return;
-    const node = this.ctx.createScriptProcessor(4096, 1, 1);
-    session.chunks = [];
-    session.startCtxTime = this.ctx.currentTime;
-    node.onaudioprocess = (event) => {
-      session.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-    };
-    const sink = this.ctx.createGain();
-    sink.gain.value = 0;
-    session.source.connect(node);
-    node.connect(sink);
-    sink.connect(this.ctx.destination);
-    session.captureNode = node;
-    session.sink = sink;
-    this.audioInputs.set(trackId, session);
+    const ctx = this.ctx;
+    void registerCaptureWorklet(ctx).then(() => {
+      if (session.captureNode || this.ctx !== ctx) return;
+      const node = new AudioWorkletNode(ctx, "garageband-capture", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      node.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+        if (event.data instanceof ArrayBuffer) {
+          session.chunks.push(new Float32Array(event.data));
+        }
+      };
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      session.source.connect(node);
+      node.connect(sink);
+      sink.connect(ctx.destination);
+      session.captureNode = node;
+      session.sink = sink;
+      session.chunks = [];
+      session.startCtxTime = ctx.currentTime;
+      this.audioInputs.set(trackId, session);
+    }).catch(() => {
+      if (session.captureNode) return;
+      if (this.ctx !== ctx) return;
+      const node = ctx.createScriptProcessor(4096, 1, 1);
+      session.chunks = [];
+      session.startCtxTime = ctx.currentTime;
+      node.onaudioprocess = (event) => {
+        session.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
+      const sink = ctx.createGain();
+      sink.gain.value = 0;
+      session.source.connect(node);
+      node.connect(sink);
+      sink.connect(ctx.destination);
+      session.captureNode = node;
+      session.sink = sink;
+      this.audioInputs.set(trackId, session);
+    });
   }
 
   finishAudioCapture(trackId: string): Omit<RecordedAudio, "trackId"> | null {
@@ -2357,7 +2418,14 @@ export class AudioEngine {
 
     const trackNodes = new Map<string, TrackNodes>();
     let done = 0;
+    let scheduledEvents = 0;
     const total = project.tracks.reduce((a, t) => a + Math.max(1, t.regions.length), 1);
+    const yieldDuringScheduling = async () => {
+      scheduledEvents++;
+      if (scheduledEvents % 512 !== 0) return;
+      options.signal?.throwIfAborted();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    };
 
     const timeAt = (tick: number) => renderSeconds(startTick, tick) + 0.05;
 
@@ -2500,6 +2568,7 @@ export class AudioEngine {
               );
               // Match live playback: release sustained patches at MIDI note-off.
               voice.scheduleStop(noteStart + noteDuration);
+              await yieldDuringScheduling();
             }
           }
         } else if (playbackBufferId) {
@@ -2544,6 +2613,7 @@ export class AudioEngine {
               }
               src.connect(g).connect(tn.input);
               src.start(when, (region.sampleStart ?? 0) + elapsedSec * playbackRate, durSec * playbackRate + 0.02);
+              await yieldDuringScheduling();
             }
           }
         }
@@ -2557,7 +2627,7 @@ export class AudioEngine {
     onProgress?.(0.98);
     const channels: Float32Array[] = [];
     for (let c = 0; c < rendered.numberOfChannels; c++) {
-      channels.push(new Float32Array(rendered.getChannelData(c)));
+      channels.push(rendered.getChannelData(c));
     }
     onProgress?.(1);
     return { channels, sampleRate: sr };

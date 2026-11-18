@@ -6,6 +6,7 @@
 // ============================================================
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import { Toaster } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
@@ -16,20 +17,21 @@ import { TimelineWorkspace } from "@/components/daw/timeline/timeline";
 import { SoundLibraryDrawer } from "@/components/daw/library/SoundLibraryDrawer";
 import { LoopBrowser } from "@/components/daw/library/loop-browser";
 import { EditorPanel } from "@/components/daw/editor/editor-panel";
-import { MixerPanel } from "@/components/daw/mixer/mixer-panel";
 import { OnscreenKeyboard } from "@/components/daw/panels/onscreen-keyboard";
 import { ShortcutsOverlay } from "@/components/daw/panels/shortcuts-overlay";
-import { NewProjectModal } from "@/components/daw/library/new-project-modal";
-import { AddTrackDialog } from "@/components/daw/library/add-track-dialog";
-import { BounceModal } from "@/components/daw/panels/BounceModal";
-import { MySongsModal } from "@/components/daw/library/my-songs-modal";
-import { ComposerModal } from "@/components/daw/panels/composer-modal";
 import { StatusBar } from "@/components/daw/status-bar";
 import { CommandPalette } from "@/components/daw/panels/command-palette";
 import { LiveLoopsPanel } from "@/components/daw/panels/live-loops-panel";
-import { PedalboardModal } from "@/components/daw/mixer/pedalboard-modal";
 import { SoundFontImportHost } from "@/components/daw/library/soundfont-import-host";
 import { ResizeHandle } from "@/components/daw/panels/resize-handle";
+
+const MixerPanel = dynamic(() => import("@/components/daw/mixer/mixer-panel").then((m) => m.MixerPanel), { ssr: false });
+const NewProjectModal = dynamic(() => import("@/components/daw/library/new-project-modal").then((m) => m.NewProjectModal), { ssr: false });
+const AddTrackDialog = dynamic(() => import("@/components/daw/library/add-track-dialog").then((m) => m.AddTrackDialog), { ssr: false });
+const BounceModal = dynamic(() => import("@/components/daw/panels/BounceModal").then((m) => m.BounceModal), { ssr: false });
+const MySongsModal = dynamic(() => import("@/components/daw/library/my-songs-modal").then((m) => m.MySongsModal), { ssr: false });
+const ComposerModal = dynamic(() => import("@/components/daw/panels/composer-modal").then((m) => m.ComposerModal), { ssr: false });
+const PedalboardModal = dynamic(() => import("@/components/daw/mixer/pedalboard-modal").then((m) => m.PedalboardModal), { ssr: false });
 
 export default function Home() {
   const panels = useDAW((s) => s.ui.panels);

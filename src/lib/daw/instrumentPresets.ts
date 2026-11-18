@@ -92,7 +92,75 @@ const ARTWORK_BY_ICON: Record<string, InstrumentArtworkKind> = {
  * "grand-piano": "/instruments/concert-grand.webp".
  * A failed or omitted image always falls back to the inline instrument SVG.
  */
-export const INSTRUMENT_PREVIEW_IMAGES: Record<string, string> = {};
+export const INSTRUMENT_PREVIEW_IMAGES: Record<string, string> = {
+  "string-ensemble": "/instrument-previews/Orchestral String Ensemble (Group).png",
+  "string-ensemble-2": "/instrument-previews/Orchestral String Ensemble (Group).png",
+  "tremolo-strings": "/instrument-previews/Orchestral String Ensemble (Group).png",
+  "pizzicato-strings": "/instrument-previews/Orchestral String Ensemble (Group).png",
+  violin: "/instrument-previews/Solo Violin.png",
+  viola: "/instrument-previews/Solo Viola.png",
+  cello: "/instrument-previews/Solo Cello.png",
+  contrabass: "/instrument-previews/Orchestral Double Bass.png",
+};
+
+const WORSHIP_GOSPEL_PREVIEW_IMAGES = [
+  "/instrument-previews/Yamaha DX7.jpg",
+  "/instrument-previews/Yamaha Montage 8.jpg",
+  "/instrument-previews/Yamaha MODX7.jpg",
+  "/instrument-previews/Roland Phantom keys 61 keys.jpg",
+  "/instrument-previews/Roland Fantom 8.jpg",
+  "/instrument-previews/NORD Stage 4 piano.jpg",
+  "/instrument-previews/Fantom MODX 67.jpg",
+  "/instrument-previews/Arturia KeyLab 88.jpg",
+  "/instrument-previews/Yamaha P-125.jpg",
+] as const;
+
+const GUITAR_PREVIEW_IMAGES = [
+  "/instrument-previews/Fender American Professional Classic Telecaster.jpg",
+  "/instrument-previews/fender rendezvous Light Brown wood.jpg",
+  "/instrument-previews/Fender Rendezvous Red.jpg",
+  "/instrument-previews/fender rendezvous Surf Green.jpg",
+  "/instrument-previews/fender rendezvous ultramarine blue .jpg",
+  "/instrument-previews/Fender Rendezvous Wooden.jpg",
+  "/instrument-previews/fender stratocaster white.jpg",
+  "/instrument-previews/Ibanez 5 string black.jpg",
+  "/instrument-previews/ibanez 5 string.jpg",
+] as const;
+
+function stableHash(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function getWorshipGospelPreviewImage(patch: Patch): string | undefined {
+  if (getInstrumentCategoryName(patch.category) !== "Worship & Gospel") {
+    return undefined;
+  }
+  return WORSHIP_GOSPEL_PREVIEW_IMAGES[
+    stableHash(patch.id) % WORSHIP_GOSPEL_PREVIEW_IMAGES.length
+  ];
+}
+
+function getGuitarPreviewImage(patch: Patch): string | undefined {
+  const category = getInstrumentCategoryName(patch.category);
+  const text = `${patch.id} ${patch.name} ${patch.category}`.toLowerCase();
+
+  if (
+    category !== "Guitar & Bass" ||
+    patch.category !== "Guitars" ||
+    /(?:\bbass\b|banjo|sitar|synth)/i.test(text)
+  ) {
+    return undefined;
+  }
+
+  return GUITAR_PREVIEW_IMAGES[
+    stableHash(patch.id) % GUITAR_PREVIEW_IMAGES.length
+  ];
+}
 
 export function getInstrumentCategoryName(category: string): string {
   return CATEGORY_ALIASES[category] ?? category;
@@ -118,7 +186,10 @@ export function toInstrumentPreset(patch: Patch): InstrumentPreset {
     icon: patch.icon,
     artwork: getInstrumentArtwork(patch),
     previewImageUrl:
-      INSTRUMENT_PREVIEW_IMAGES[patch.id] ?? getSynthPreviewImageUrl(patch),
+      INSTRUMENT_PREVIEW_IMAGES[patch.id] ??
+      getGuitarPreviewImage(patch) ??
+      getWorshipGospelPreviewImage(patch) ??
+      getSynthPreviewImageUrl(patch),
     patch,
   };
 }

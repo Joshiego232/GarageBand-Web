@@ -53,12 +53,16 @@ async function runRequest<T>(
 }
 
 export async function listSavedSongs(): Promise<SavedSong[]> {
-  const songs = await runRequest("readonly", (store) => store.getAll<SavedSong>());
+  const songs = await runRequest<SavedSong[]>("readonly", (store) =>
+    store.getAll() as IDBRequest<SavedSong[]>
+  );
   return songs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export function getSavedSong(id: string): Promise<SavedSong | undefined> {
-  return runRequest("readonly", (store) => store.get<SavedSong>(id));
+  return runRequest<SavedSong | undefined>("readonly", (store) =>
+    store.get(id) as IDBRequest<SavedSong | undefined>
+  );
 }
 
 export async function saveSong(project: Project): Promise<SavedSong> {
