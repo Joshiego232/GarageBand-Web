@@ -46,6 +46,50 @@ const players = new WeakMap<
   BaseAudioContext,
   Map<AudioNode, Map<string, SampleEntry>>
 >();
+const warmPromises = new WeakMap<
+  BaseAudioContext,
+  Map<AudioNode, Map<string, Promise<void>>>
+>();
+const warmQueue: Array<() => void> = [];
+let activeWarms = 0;
+const MAX_CONCURRENT_WARM_LOADS = 2;
+
+function enqueueWarm(
+  ctx: BaseAudioContext,
+  dest: AudioNode,
+  key: string,
+  task: () => Promise<void>,
+): Promise<void> {
+  let byDestination = warmPromises.get(ctx);
+  if (!byDestination) {
+    byDestination = new Map();
+    warmPromises.set(ctx, byDestination);
+  }
+  let byPatch = byDestination.get(dest);
+  if (!byPatch) {
+    byPatch = new Map();
+    byDestination.set(dest, byPatch);
+  }
+  const existing = byPatch.get(key);
+  if (existing) return existing;
+
+  let promise: Promise<void>;
+  promise = new Promise<void>((resolve, reject) => {
+    const run = () => {
+      activeWarms++;
+      Promise.resolve().then(task).then(resolve, reject).finally(() => {
+        activeWarms--;
+        if (byPatch?.get(key) === promise) byPatch.delete(key);
+        const next = warmQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeWarms < MAX_CONCURRENT_WARM_LOADS) run();
+    else warmQueue.push(run);
+  });
+  byPatch.set(key, promise);
+  return promise;
+}
 const PIANO_SAMPLE_NOTES = [
   21, 27, 33, 39, 45, 51, 57, 63, 69, 75, 81, 87, 93, 99, 105, 108,
 ];
@@ -96,8 +140,41 @@ function entryFor(
   return players.get(ctx)?.get(dest)?.get(patchId);
 }
 
+export function disposeSampledDestination(ctx: BaseAudioContext, dest: AudioNode): void {
+  const byDestination = players.get(ctx)?.get(dest);
+  if (byDestination) {
+    for (const entry of byDestination.values()) {
+      for (const tone of entry.tones) {
+        try {
+          tone.disconnect();
+        } catch {
+          // The tone may already be disconnected.
+        }
+      }
+    }
+  }
+  players.get(ctx)?.delete(dest);
+
+  const warmDestination = warmPromises.get(ctx)?.get(dest);
+  if (warmDestination) warmDestination.clear();
+  warmPromises.get(ctx)?.delete(dest);
+}
+
 /** Load one selected patch. Repeated requests share the same player and buffers. */
 export function warmSampledPatch(
+  ctx: BaseAudioContext,
+  dest: AudioNode,
+  patch: Patch,
+  offline = false,
+  trackId = patch.id,
+): Promise<void> {
+  const key = `${patch.id}:${trackId}`;
+  return enqueueWarm(ctx, dest, key, () =>
+    warmSampledPatchImmediate(ctx, dest, patch, offline, trackId),
+  );
+}
+
+function warmSampledPatchImmediate(
   ctx: BaseAudioContext,
   dest: AudioNode,
   patch: Patch,

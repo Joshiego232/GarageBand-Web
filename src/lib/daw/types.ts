@@ -123,7 +123,19 @@ export type PedalId =
   | "blue-echo"
   | "spring-box"
   | "auto-funk"
-  | "total-tremolo";
+  | "total-tremolo"
+  | "fender-clean-booster"
+  | "ibanez-green-screamer"
+  | "garageband-fuzz"
+  | "silk-noise-gate"
+  | "studio-tilt-eq"
+  | "stereo-flanger"
+  | "ping-pong-delay"
+  | "cathedral-reverb"
+  | "octave-down"
+  | "double-tracker"
+  | "master-limiter"
+  | "bass-presence";
 
 export interface PedalInstance {
   id: string;

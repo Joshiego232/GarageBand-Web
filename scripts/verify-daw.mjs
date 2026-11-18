@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -292,11 +292,24 @@ try {
   const defaultPedals = pedalboard.PEDAL_DEFINITIONS.map((definition) =>
     pedalboard.createPedalInstance(definition.id),
   );
-  expect(defaultPedals.length === 8, "Pedalboard must expose eight distinct stompboxes");
+  expect(Object.keys(pedalboard.PEDAL_FACE_IMAGES).length === defaultPedals.length, "Every stompbox must map to a face image");
+  for (const [pedalId, imagePath] of Object.entries(pedalboard.PEDAL_FACE_IMAGES)) {
+    await access(path.join(root, "public", decodeURIComponent(imagePath.slice(1))));
+    expect(defaultPedals.some((pedal) => pedal.pedalId === pedalId), `Face image has no matching stompbox: ${pedalId}`);
+  }
+  expect(defaultPedals.length >= 20, "Pedalboard must expose at least twenty distinct stompboxes");
+  expect(new Set(defaultPedals.map((pedal) => pedal.pedalId)).size >= 20, "Pedalboard stompbox IDs must be distinct");
+  expect(pedalboard.PEDAL_DEFINITIONS.some((definition) => definition.manufacturer === "Fender"), "Pedalboard catalog must include Fender pedals");
+  expect(pedalboard.PEDAL_DEFINITIONS.some((definition) => definition.manufacturer === "Ibanez"), "Pedalboard catalog must include Ibanez pedals");
+  expect(pedalboard.PEDAL_DEFINITIONS.some((definition) => definition.manufacturer === "GarageBand"), "Pedalboard catalog must include GarageBand pedals");
+  for (const id of ["retro-chorus", "phase-tripper", "squash-compressor"]) {
+    const definition = pedalboard.PEDAL_BY_ID[id];
+    expect(definition.controls.some((control) => control.id === "mix"), `${id} must have an independent wet/dry mix control`);
+  }
   const pedalPatch = userPatches.makePedalboardPatch("Studio Chain", defaultPedals, "#3673D0");
   userPatches.writeUserPatches([...restoredPatches, pedalPatch]);
   const restoredPedalPatch = userPatches.readUserPatches().find((patch) => patch.kind === "pedalboard");
-  expect(restoredPedalPatch?.pedalboard?.length === 8, "User patch library did not preserve the full pedalboard chain");
+  expect(restoredPedalPatch?.pedalboard?.length === defaultPedals.length, "User patch library did not preserve the full pedalboard chain");
 
   // Catalog counts, verified upstream sample IDs, and our original synth engine.
   const categories = new Map();

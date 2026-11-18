@@ -274,6 +274,7 @@ export function SoundLibraryDrawer() {
   const [saveName, setSaveName] = useState("");
   const [saveTrackId, setSaveTrackId] = useState<string | null>(null);
   const [previewHeight, setPreviewHeight] = useState(144);
+  const [visibleLimit, setVisibleLimit] = useState(150);
   const [activeIndex, setActiveIndex] = useState(0);
   const trackRefs = useRef(new Map<string, HTMLButtonElement>());
   const categoryRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -572,6 +573,7 @@ export function SoundLibraryDrawer() {
       setUserPatches(next);
       setCategory("My Instruments");
       setQuery("");
+      setVisibleLimit(150);
       setSaveOpen(false);
       window.dispatchEvent(new CustomEvent("webband:user-patches-updated"));
       toast.success(`${userPatch.name} saved to My Instruments`);
@@ -597,6 +599,7 @@ export function SoundLibraryDrawer() {
       const index = (Math.max(0, currentIndex) + delta + visibleCategories.length) % visibleCategories.length;
       const next = visibleCategories[index];
       setCategory(next.name);
+      setVisibleLimit(150);
       setActiveIndex(0);
       categoryRefs.current.get(next.name)?.focus();
       return;
@@ -604,10 +607,12 @@ export function SoundLibraryDrawer() {
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       if (!browserItems.length) return;
       event.preventDefault();
+      const visibleBrowserItems = browserItems.slice(0, visibleLimit);
+      if (!visibleBrowserItems.length) return;
       const delta = event.key === "ArrowDown" ? 1 : -1;
-      const index = (activeIndex + delta + browserItems.length) % browserItems.length;
+      const index = (activeIndex + delta + visibleBrowserItems.length) % visibleBrowserItems.length;
       setActiveIndex(index);
-      const item = browserItems[index];
+      const item = visibleBrowserItems[index];
       trackRefs.current.get(item.kind === "instrument" ? item.preset.id : item.userPatch.id)?.focus();
       if (item.kind === "instrument") audition(item.patch);
       else {
@@ -626,7 +631,8 @@ export function SoundLibraryDrawer() {
         categoryRefs.current.get(category)?.focus();
       } else if (event.key === "ArrowRight" && categoryHasFocus) {
         event.preventDefault();
-        const item = browserItems[activeIndex] ?? browserItems[0];
+        const visibleBrowserItems = browserItems.slice(0, visibleLimit);
+        const item = visibleBrowserItems[activeIndex] ?? visibleBrowserItems[0];
         if (item) {
           trackRefs.current.get(
             item.kind === "instrument" ? item.preset.id : item.userPatch.id,
@@ -636,6 +642,7 @@ export function SoundLibraryDrawer() {
         event.preventDefault();
         const previous = visibleCategories[currentIndex - 1];
         setCategory(previous.name);
+          setVisibleLimit(150);
         categoryRefs.current.get(previous.name)?.focus();
       }
     }
@@ -643,10 +650,11 @@ export function SoundLibraryDrawer() {
 
   const renderItemName = (item: BrowserItem) =>
     item.kind === "instrument" ? item.preset.name : item.userPatch.name;
-  const activeId = browserItems[activeIndex]
-    ? browserItems[activeIndex].kind === "instrument"
-      ? browserItems[activeIndex].preset.id
-      : browserItems[activeIndex].userPatch.id
+  const visibleBrowserItemsForId = browserItems.slice(0, visibleLimit);
+  const activeId = visibleBrowserItemsForId[activeIndex]
+    ? visibleBrowserItemsForId[activeIndex].kind === "instrument"
+      ? visibleBrowserItemsForId[activeIndex].preset.id
+      : visibleBrowserItemsForId[activeIndex].userPatch.id
     : "";
 
   return (
@@ -717,6 +725,7 @@ export function SoundLibraryDrawer() {
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
+              setVisibleLimit(150);
               setActiveIndex(0);
             }}
             placeholder="Search Sounds..."
@@ -728,6 +737,7 @@ export function SoundLibraryDrawer() {
               type="button"
               onClick={() => {
                 setQuery("");
+                setVisibleLimit(150);
                 setActiveIndex(0);
                 searchRef.current?.focus();
               }}
@@ -763,6 +773,7 @@ export function SoundLibraryDrawer() {
                 aria-pressed={selected}
                 onClick={() => {
                   setCategory(item.name);
+                  setVisibleLimit(150);
                   setActiveIndex(0);
                 }}
                 className={cn(
@@ -789,7 +800,7 @@ export function SoundLibraryDrawer() {
           aria-label={queryText ? "Matching sounds from all categories" : `${category} sounds`}
           className={cn(SCROLL_CLASS, "bg-[#222325] p-1.5")}
         >
-          {browserItems.map((item, index) => {
+          {browserItems.slice(0, visibleLimit).map((item, index) => {
             const id = item.kind === "instrument" ? item.preset.id : item.userPatch.id;
             const iconKey = item.kind === "instrument" ? item.preset.icon : "music";
             const Icon = CATEGORY_ICONS[iconKey] ?? (iconKey === "guitar" ? Guitar : Music2);
@@ -844,6 +855,15 @@ export function SoundLibraryDrawer() {
                   ? "Save a track or stack to build your collection."
                   : "No sounds in this category."}
             </p>
+          )}
+          {browserItems.length > visibleLimit && (
+            <button
+              type="button"
+              onClick={() => setVisibleLimit((limit) => limit + 150)}
+              className="mx-auto my-1 block rounded border border-white/10 bg-white/[0.05] px-3 py-1.5 text-[9px] text-zinc-400 hover:bg-white/[0.08]"
+            >
+              Load 150 more ({browserItems.length - visibleLimit} remaining)
+            </button>
           )}
           <p className="px-1 pt-1 text-center text-[8px] text-zinc-700">
             ↑ ↓ Preview · ← → Browse · Return Load

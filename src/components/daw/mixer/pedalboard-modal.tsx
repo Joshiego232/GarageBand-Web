@@ -18,6 +18,7 @@ import {
   PEDAL_BY_ID,
   PEDAL_CATEGORIES,
   PEDAL_DEFINITIONS,
+  PEDAL_FACE_IMAGES,
   createPedalInstance,
 } from "@/lib/daw/pedalboard";
 import {
@@ -91,8 +92,18 @@ function PedalboardWorkspace({
   const insertPedal = (pedalId: PedalId, index = pedals.length) => {
     const next = [...pedals];
     next.splice(index, 0, createPedalInstance(pedalId));
+    if (!track) return;
     commit();
-    updatePedals(next);
+    const plugins = track.audioPlugins ?? [];
+    const existingSlot = plugins.find((plugin) => plugin.pluginId === "pedalboard");
+    updateTrack(track.id, {
+      pedalboard: next,
+      audioPlugins: existingSlot
+        ? plugins.map((plugin) =>
+            plugin.id === existingSlot.id ? { ...plugin, enabled: true } : plugin,
+          )
+        : [...plugins, { id: uid(), pluginId: "pedalboard", enabled: true, params: {} }],
+    }, false);
   };
 
   const dropPedal = (event: DragEvent<HTMLElement>, index = pedals.length) => {
@@ -327,7 +338,7 @@ function PedalboardWorkspace({
           >
             <div className="border-b border-black/50 px-3 py-3">
               <p className="text-[10px] font-semibold uppercase tracking-[.16em] text-zinc-200">Stompbox browser</p>
-              <p className="mt-1 text-[9px] text-zinc-600">Eight studio-grade inserts</p>
+              <p className="mt-1 text-[9px] text-zinc-600">{PEDAL_DEFINITIONS.length} studio-grade inserts</p>
             </div>
             <div className="flex flex-wrap gap-1 border-b border-black/40 p-2">
               {(["All", ...PEDAL_CATEGORIES] as const).map((item) => (
@@ -356,7 +367,7 @@ function PedalboardWorkspace({
                   <span className="size-2.5 shrink-0 rounded-sm shadow-[0_0_10px_currentColor]" style={{ backgroundColor: definition.face, color: definition.face }} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[10px] font-semibold tracking-wide text-zinc-300">{definition.name}</p>
-                    <p className="truncate text-[9px] text-zinc-600">{definition.category} · {definition.subtitle}</p>
+                    <p className="truncate text-[9px] text-zinc-600">{definition.manufacturer} · {definition.category}</p>
                   </div>
                   <button
                     type="button"
@@ -421,9 +432,16 @@ function PedalCard({
       <span className="pedal-screw screw-bottom-left" />
       <span className="pedal-screw screw-bottom-right" />
       <div className="pedal-face">
+        <img
+          className="pedal-artwork"
+          src={PEDAL_FACE_IMAGES[definition.id]}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+        />
         <div className="flex items-start justify-between">
           <div>
-            <p className="pedal-brand">WEBBAND · SERIES 08</p>
+            <p className="pedal-brand">{definition.manufacturer.toUpperCase()} · SERIES 08</p>
             <p className="pedal-name">{definition.name}</p>
             <p className="pedal-subtitle">{definition.subtitle}</p>
           </div>

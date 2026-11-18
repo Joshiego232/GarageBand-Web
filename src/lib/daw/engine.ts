@@ -14,7 +14,7 @@ import {
   getRegionPlaybackBufferId,
 } from "./types";
 import { playNote, PATCHES, trackPatch, type VoiceHandle } from "./instruments";
-import { warmSampledPatch } from "./sampled-instruments";
+import { disposeSampledDestination, warmSampledPatch } from "./sampled-instruments";
 import {
   clearSoundFontStatus,
   disposeSoundFontTrack,
@@ -47,6 +47,7 @@ import { AutomationEngine, automationEngine, automationValueAt } from "./Automat
 const LOOKAHEAD_SEC = 0.18;
 const TICK_INTERVAL_MS = 40;
 const MASTER_OUTPUT_TRIM = 1.5;
+const MAX_STORED_AUDIO_BUFFERS = 32;
 
 interface TrackNodes {
   input: GainNode;
@@ -526,8 +527,12 @@ export class AudioEngine {
   private bufferCache = new Map<string, StoredBuffer>();
   private pendingLoads = new Set<string>();
   private bufferLoadPromises = new Map<string, Promise<StoredBuffer | undefined>>();
+  private bufferLoadQueue: Array<() => void> = [];
+  private activeBufferLoads = 0;
+  private readonly maxConcurrentBufferLoads = 4;
   private ctxBufferCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
   private auditionDest: GainNode | null = null;
+  private auditionRequestId = 0;
   private previewTimer: ReturnType<typeof setInterval> | null = null;
   private liveLoopTimer: ReturnType<typeof setInterval> | null = null;
   private liveClips = new Map<string, LiveClipState>();
@@ -739,6 +744,7 @@ export class AudioEngine {
         const tn = this.tracks.get(id);
         if (tn) {
           try {
+            disposeSampledDestination(ctx, tn.input);
             tn.input.disconnect();
             tn.analyser.disconnect();
             tn.spatialPanner.disconnect();
@@ -761,12 +767,22 @@ export class AudioEngine {
 
   async storeBuffer(id: string, buf: StoredBuffer) {
     this.bufferCache.set(id, buf);
+    this.limitStoredBuffers();
     await saveBufferQuiet(id, buf);
   }
 
   async storePersistentBuffer(id: string, buf: StoredBuffer) {
     this.bufferCache.set(id, buf);
+    this.limitStoredBuffers();
     await saveBuffer(id, buf);
+  }
+
+  private limitStoredBuffers() {
+    while (this.bufferCache.size > MAX_STORED_AUDIO_BUFFERS) {
+      const oldest = this.bufferCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.bufferCache.delete(oldest);
+    }
   }
 
   hasBuffer(id: string): boolean {
@@ -775,26 +791,50 @@ export class AudioEngine {
 
   /** Public read access to cached PCM (for waveform drawing) */
   getStoredBuffer(id: string): StoredBuffer | undefined {
-    return this.bufferCache.get(id);
+    const buffer = this.bufferCache.get(id);
+    if (buffer) {
+      this.bufferCache.delete(id);
+      this.bufferCache.set(id, buffer);
+    }
+    return buffer;
   }
 
   async ensureBufferLoaded(id: string): Promise<StoredBuffer | undefined> {
     const cached = this.bufferCache.get(id);
-    if (cached) return cached;
+    if (cached) {
+      this.bufferCache.delete(id);
+      this.bufferCache.set(id, cached);
+      return Promise.resolve(cached);
+    }
 
     const existing = this.bufferLoadPromises.get(id);
     if (existing) return existing;
 
     this.pendingLoads.add(id);
-    const pending = loadBuffer(id)
-      .then((buffer) => {
-        if (buffer) this.bufferCache.set(id, buffer);
-        return buffer;
-      })
-      .finally(() => {
-        this.pendingLoads.delete(id);
-        this.bufferLoadPromises.delete(id);
-      });
+    let pending: Promise<StoredBuffer | undefined>;
+    pending = new Promise<StoredBuffer | undefined>((resolve, reject) => {
+      const run = () => {
+        this.activeBufferLoads++;
+        loadBuffer(id)
+          .then((buffer) => {
+            if (buffer) {
+              this.bufferCache.set(id, buffer);
+              this.limitStoredBuffers();
+            }
+            resolve(buffer);
+          })
+          .catch(reject)
+          .finally(() => {
+            this.activeBufferLoads--;
+            this.pendingLoads.delete(id);
+            this.bufferLoadPromises.delete(id);
+            const next = this.bufferLoadQueue.shift();
+            if (next) next();
+          });
+      };
+      if (this.activeBufferLoads < this.maxConcurrentBufferLoads) run();
+      else this.bufferLoadQueue.push(run);
+    });
     this.bufferLoadPromises.set(id, pending);
     return pending;
   }
@@ -809,10 +849,20 @@ export class AudioEngine {
       this.ctxBufferCache.set(ctx, perCtx);
     }
     let buf = perCtx.get(id);
+    if (buf) {
+      perCtx.delete(id);
+      perCtx.set(id, buf);
+      return buf;
+    }
     if (!buf) {
       buf = ctx.createBuffer(stored.channels.length, stored.channels[0].length, stored.sampleRate);
       stored.channels.forEach((ch, i) => buf!.copyToChannel(new Float32Array(ch), i));
       perCtx.set(id, buf);
+      while (perCtx.size > MAX_STORED_AUDIO_BUFFERS) {
+        const oldest = perCtx.keys().next().value as string | undefined;
+        if (!oldest) break;
+        perCtx.delete(oldest);
+      }
     }
     return buf;
   }
@@ -1739,6 +1789,7 @@ export class AudioEngine {
     params?: Record<string, number>,
     patchOverride?: Patch,
   ) {
+    const requestId = ++this.auditionRequestId;
     const ctx = this.ensure();
     if (!this.master) return;
     const st = useDAW.getState();
@@ -1778,6 +1829,7 @@ export class AudioEngine {
       const sampleId = selectedZone?.bufferId ?? customTrack.sampleBufferId;
       if (sampleId) {
         void this.ensureBufferLoaded(sampleId).then((buffer) => {
+          if (requestId !== this.auditionRequestId) return;
           if (!buffer) throw new Error("Sampler audio could not be loaded");
           play();
         }).catch((error: unknown) => {
@@ -1789,7 +1841,10 @@ export class AudioEngine {
     }
 
     if (patch?.sampled) {
-      void warmSampledPatch(ctx, dest, patch, false, sourceTrack?.id ?? patch.id).then(play).catch(() => {
+      void warmSampledPatch(ctx, dest, patch, false, sourceTrack?.id ?? patch.id).then(() => {
+        if (requestId === this.auditionRequestId) play();
+      }).catch(() => {
+        if (requestId !== this.auditionRequestId) return;
         toast.error(`Could not load ${patch.name} samples. Please try again.`);
       });
       return;
