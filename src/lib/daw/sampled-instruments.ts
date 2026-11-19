@@ -2,6 +2,7 @@
 // credited SoundFont and sampled-kit libraries; no oscillator-only patches
 // are used for the expanded library.
 import {
+  CacheStorage,
   DrumMachine,
   ElectricPiano,
   SampleLoader,
@@ -42,6 +43,27 @@ type SampleEntry = {
 
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
 const schedulers = new WeakMap<BaseAudioContext, ReturnType<typeof Scheduler>>();
+let persistentSampleStorage: ReturnType<typeof CacheStorage> | undefined;
+
+function sampleStorageForSecureOrigin() {
+  // CacheStorage requires the browser Cache API, which is restricted to
+  // secure contexts. localhost and HTTPS-hosted deployments qualify.
+  if (
+    typeof window === "undefined" ||
+    !window.isSecureContext ||
+    typeof caches === "undefined"
+  ) {
+    return undefined;
+  }
+
+  try {
+    persistentSampleStorage ??= CacheStorage();
+    return persistentSampleStorage;
+  } catch (error) {
+    console.warn("Persistent sample cache is unavailable; using session memory only.", error);
+    return undefined;
+  }
+}
 const players = new WeakMap<
   BaseAudioContext,
   Map<AudioNode, Map<string, SampleEntry>>
@@ -53,7 +75,10 @@ const PIANO_SAMPLE_NOTES = [
 function loaderFor(ctx: BaseAudioContext): SampleLoader {
   let loader = loaders.get(ctx);
   if (!loader) {
-    loader = SampleLoader(ctx);
+    const storage = sampleStorageForSecureOrigin();
+    loader = storage
+      ? SampleLoader(ctx, { storage })
+      : SampleLoader(ctx);
     loaders.set(ctx, loader);
   }
   return loader;
