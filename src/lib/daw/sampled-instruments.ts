@@ -44,6 +44,9 @@ type SampleEntry = {
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
 const schedulers = new WeakMap<BaseAudioContext, ReturnType<typeof Scheduler>>();
 let persistentSampleStorage: ReturnType<typeof CacheStorage> | undefined;
+const MAX_CONCURRENT_SAMPLE_FETCHES = 4;
+let activeSampleFetches = 0;
+const waitingSampleFetches: Array<() => void> = [];
 
 function sampleStorageForSecureOrigin() {
   // CacheStorage requires the browser Cache API, which is restricted to
@@ -64,6 +67,25 @@ function sampleStorageForSecureOrigin() {
     return undefined;
   }
 }
+
+async function fetchSampleAsset(url: string): Promise<Response> {
+  // smplr requests the notes for an instrument concurrently. Keep a global
+  // cap so several tracks cannot flood GitHub Pages with sample requests.
+  if (activeSampleFetches >= MAX_CONCURRENT_SAMPLE_FETCHES) {
+    await new Promise<void>((resolve) => waitingSampleFetches.push(resolve));
+  }
+
+  activeSampleFetches += 1;
+  try {
+    const storage = sampleStorageForSecureOrigin();
+    return storage ? await storage.fetch(url) : await fetch(url);
+  } finally {
+    activeSampleFetches -= 1;
+    waitingSampleFetches.shift()?.();
+  }
+}
+
+const limitedSampleStorage = { fetch: fetchSampleAsset };
 const players = new WeakMap<
   BaseAudioContext,
   Map<AudioNode, Map<string, SampleEntry>>
@@ -75,10 +97,7 @@ const PIANO_SAMPLE_NOTES = [
 function loaderFor(ctx: BaseAudioContext): SampleLoader {
   let loader = loaders.get(ctx);
   if (!loader) {
-    const storage = sampleStorageForSecureOrigin();
-    loader = storage
-      ? SampleLoader(ctx, { storage })
-      : SampleLoader(ctx);
+    loader = SampleLoader(ctx, { storage: limitedSampleStorage });
     loaders.set(ctx, loader);
   }
   return loader;
