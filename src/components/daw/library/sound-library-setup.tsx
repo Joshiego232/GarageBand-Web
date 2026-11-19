@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { AudioWaveform, CheckCircle2, Download, Music2, RefreshCw, Sparkles, ShieldCheck } from "lucide-react";
 import { SOUNDFONT_PATCHES } from "@/lib/daw/soundfont-catalog";
-import { cacheSoundFont, getCachedSoundFont } from "@/lib/daw/soundfont-cache";
+import { installSoundFontFile } from "@/lib/daw/soundfont-cache";
 
 type Props = { onContinue: () => void };
 
@@ -20,6 +20,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
   const [done, setDone] = useState(false);
   const [completed, setCompleted] = useState(0);
   const [failed, setFailed] = useState<string[]>([]);
+  const [bytesInstalled, setBytesInstalled] = useState(0);
   const [current, setCurrent] = useState("Ready when you are");
   const percent = items.length ? Math.round((completed / items.length) * 100) : 100;
 
@@ -28,27 +29,51 @@ export function SoundLibrarySetup({ onContinue }: Props) {
     setRunning(true);
     setDone(false);
     setCompleted(0);
+    setBytesInstalled(0);
     setFailed([]);
+
+    // A small worker pool downloads several banks together without opening
+    // dozens of large responses at once on lower-memory devices.
+    const concurrency = Math.min(3, Math.max(1, items.length));
     const errors: string[] = [];
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      setCurrent(item.name);
-      try {
-        const cached = await getCachedSoundFont(item.url);
-        if (!cached) {
-          const response = await fetch(item.url);
-          if (!response.ok) throw new Error(`Download failed (${response.status})`);
-          const bytes = await response.arrayBuffer();
-          await cacheSoundFont(item.url, bytes);
+    const active = new Set<string>();
+    let nextIndex = 0;
+    let completedCount = 0;
+    let totalBytes = 0;
+
+    const worker = async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) return;
+
+        const item = items[index];
+        active.add(item.name);
+        setCurrent(`Installing ${active.size}/${concurrency} at once: ${[...active].join(", ")}`);
+        try {
+          const result = await installSoundFontFile(item.url);
+          totalBytes += result.byteLength;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.warn("Sound library installation failed for", item.name, error);
+          errors.push(`${item.name}: ${detail}`);
+        } finally {
+          active.delete(item.name);
+          completedCount += 1;
+          setCompleted(completedCount);
+          setBytesInstalled(totalBytes);
+          setCurrent(
+            active.size
+              ? `Installing ${active.size}/${concurrency} at once: ${[...active].join(", ")}`
+              : `Completed ${completedCount} of ${items.length} files`,
+          );
         }
-      } catch (error) {
-        console.warn("Sound library preparation failed for", item.name, error);
-        errors.push(item.name);
       }
-      setCompleted(index + 1);
-    }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
     setFailed(errors);
-    setCurrent(errors.length ? "Some sounds could not be downloaded" : "Your SoundFont library is ready");
+    setCurrent(errors.length ? "Some SoundFont files need another attempt" : "Your built-in SoundFont library is ready");
     setDone(true);
     setRunning(false);
   };
@@ -83,7 +108,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
               <span className="block bg-gradient-to-r from-amber-200 via-orange-300 to-rose-300 bg-clip-text text-transparent">Then just play.</span>
             </h1>
             <p className="mt-5 max-w-xl text-sm leading-7 text-zinc-400 sm:text-base">
-              Download and unpack every built-in SoundFont preset before entering the studio. The files are saved in this installation’s local sound cache, so supported instruments are ready when you start making music.
+              Download, verify, and save every built-in SoundFont preset before entering the studio. Three files install at once, with a limit that keeps memory use under control. The verified banks are saved in this installation’s local sound cache.
             </p>
 
             <div className="mt-8 grid grid-cols-3 gap-2">
@@ -128,8 +153,8 @@ export function SoundLibrarySetup({ onContinue }: Props) {
           <div className="rounded-[28px] border border-white/10 bg-[#1a1b20] p-5 shadow-2xl shadow-black/30 sm:p-7">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold">Sound library preparation</p>
-                <p className="mt-1 text-xs text-zinc-500">{items.length} unique built-in SoundFont files</p>
+                <p className="text-sm font-semibold">SoundFont installation</p>
+                <p className="mt-1 text-xs text-zinc-500">{items.length} unique built-in SF2/SF3 preset files · 3 at a time</p>
               </div>
               <span className="rounded-lg bg-white/[0.06] px-2.5 py-1.5 text-xs tabular-nums text-zinc-300">{percent}%</span>
             </div>
@@ -138,9 +163,9 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             </div>
             <div className="mt-4 flex items-center justify-between gap-3 text-xs">
               <span className="min-w-0 truncate text-zinc-400">{current}</span>
-              <span className="shrink-0 tabular-nums text-zinc-500">{completed}/{items.length}</span>
+              <span className="shrink-0 tabular-nums text-zinc-500">{completed}/{items.length} · {(bytesInstalled / (1024 * 1024)).toFixed(1)} MB</span>
             </div>
-            {running && <p className="mt-5 text-xs leading-6 text-zinc-500">Keep this window open while the files are saved to your local sound cache. Download time depends on your connection.</p>}
+            {running && <p className="mt-5 text-xs leading-6 text-zinc-500">Up to three banks are downloading and being verified simultaneously. Each successful bank is saved immediately, so an interruption will not discard completed files.</p>}
             {done && failed.length === 0 && (
               <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.07] p-4">
                 <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-300" size={18} />
@@ -155,11 +180,11 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             )}
             <div className="mt-6 border-t border-white/10 pt-5">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Good to know</p>
-              <p className="mt-2 text-xs leading-6 text-zinc-500">This step installs the complete set of built-in SoundFont preset files included in the current library. Imported SoundFonts remain separate because they are files you add yourself. Instruments that use third-party sample libraries may still stream their credited samples the first time they are selected.</p>
+              <p className="mt-2 text-xs leading-6 text-zinc-500">SoundFont banks are RIFF/SF2/SF3 files, not ZIP archives, so there is no separate extraction step. This installs the built-in preset files used by the curated SoundFont patches. Other sample-based instruments use the separate smplr library and are loaded when selected; imported SoundFonts are also stored separately.</p>
             </div>
           </div>
         </section>
-        <footer className="border-t border-white/10 pt-4 text-[10px] text-zinc-600">Your projects and installed SoundFont cache stay on this device. Keep this window open until installation finishes.</footer>
+        <footer className="border-t border-white/10 pt-4 text-[10px] text-zinc-600">Your projects and installed SoundFont banks stay in this browser profile on this device. Keep this window open until installation finishes.</footer>
       </div>
     </main>
   );
