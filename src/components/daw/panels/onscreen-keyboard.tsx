@@ -467,7 +467,7 @@ export function OnscreenKeyboard() {
     if (
       glissando ||
       (event.target as HTMLElement).closest(
-        "[data-key-pitch], [data-chord-strip], button, select, input",
+        "[data-instrument-overlay-controls], [data-key-pitch], [data-chord-strip], button, select, input",
       )
     ) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
