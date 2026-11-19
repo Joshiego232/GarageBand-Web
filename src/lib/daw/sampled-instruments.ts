@@ -10,6 +10,7 @@ import {
   SplendidGrandPiano,
   Soundfont,
 } from "smplr";
+import type { StorageResponse } from "smplr";
 import type { Patch } from "./types";
 import type { VoiceHandle } from "./instruments";
 import {
@@ -68,7 +69,7 @@ function sampleStorageForSecureOrigin() {
   }
 }
 
-async function fetchSampleAsset(url: string): Promise<Response> {
+async function fetchSampleAsset(url: string): Promise<StorageResponse> {
   // smplr requests the notes for an instrument concurrently. Keep a global
   // cap so several tracks cannot flood GitHub Pages with sample requests.
   if (activeSampleFetches >= MAX_CONCURRENT_SAMPLE_FETCHES) {
