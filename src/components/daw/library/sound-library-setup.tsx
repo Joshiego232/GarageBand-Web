@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ArrowRight, AudioWaveform, CheckCircle2, Download, Music2, RefreshCw, Sparkles } from "lucide-react";
-import { PATCHES } from "@/lib/daw/instruments";
+import { SOUNDFONT_PATCHES } from "@/lib/daw/soundfont-catalog";
 import { cacheSoundFont, getCachedSoundFont } from "@/lib/daw/soundfont-cache";
 
 type Props = { onContinue: () => void };
@@ -10,7 +10,7 @@ type Props = { onContinue: () => void };
 export function SoundLibrarySetup({ onContinue }: Props) {
   const items = useMemo(() => {
     const byUrl = new Map<string, { name: string; url: string }>();
-    for (const patch of Object.values(PATCHES)) {
+    for (const patch of Object.values(SOUNDFONT_PATCHES)) {
       const url = patch.soundfont?.url;
       if (url && !byUrl.has(url)) byUrl.set(url, { name: patch.soundfont?.name ?? patch.name, url });
     }
