@@ -180,7 +180,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             )}
             <div className="mt-6 border-t border-white/10 pt-5">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Good to know</p>
-              <p className="mt-2 text-xs leading-6 text-zinc-500">SoundFont banks are RIFF/SF2/SF3 files, not ZIP archives, so there is no separate extraction step. This installs the built-in preset files used by the curated SoundFont patches. Other sample-based instruments use the separate smplr library and are loaded when selected; imported SoundFonts are also stored separately.</p>
+              <p className="mt-2 text-xs leading-6 text-zinc-500">SoundFont banks are RIFF/SF2/SF3 files, not ZIP archives, so there is no separate extraction step. This setup installs the 24 built-in preset banks used by the curated SoundFont patches. The other 120 sample-based instrument patches use smplr: their samples are fetched when the instrument is first selected, with four sample requests allowed at a time and persistent browser caching on secure origins. This avoids a huge first-run download. Imported SoundFonts remain separate.</p>
             </div>
           </div>
         </section>
