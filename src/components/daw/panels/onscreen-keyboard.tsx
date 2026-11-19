@@ -25,6 +25,7 @@ import { useDAW } from "@/lib/daw/store";
 import { isBlackKey, noteName } from "@/lib/daw/utils";
 import { formatPitchClass } from "@/lib/daw/ChordDetector";
 import { cn } from "@/lib/utils";
+import { Knob } from "@/components/daw/controls/knob";
 
 type ScaleId = "major" | "minor" | "dorian" | "pentatonic" | "blues";
 type ScaleOption = { id: ScaleId; name: string; notes: readonly number[] };
@@ -94,10 +95,12 @@ export function OnscreenKeyboard() {
   const scaleId = useDAW((state) => state.ui.keyboardScaleMode);
   const customChordStrips = useDAW((state) => state.ui.keyboardChordStrips);
   const projectTempo = useDAW((state) => state.project.tempo);
+  const velocity = useDAW((state) => state.ui.velocity);
   const selectedTrack = useDAW(
     (state) => state.project.tracks.find((track) => track.id === state.ui.selectedTrackId) ?? null,
   );
   const setUI = useDAW((state) => state.setUI);
+  const commit = useDAW((state) => state.commit);
   const togglePanel = useDAW((state) => state.togglePanel);
   const [pressed, setPressed] = useState<number[]>([]);
   const [typingLayout, setTypingLayout] = useState<"garageband" | "two-row">("garageband");
@@ -118,6 +121,28 @@ export function OnscreenKeyboard() {
   const pitchCounts = useRef(new Map<number, number>());
   const arpTimers = useRef(new Map<string, number>());
   const sustainRef = useRef(false);
+
+  const setTrackParam = (key: string, value: number) => {
+    if (!selectedTrack || selectedTrack.type !== "midi") return;
+    const state = useDAW.getState();
+    const current = state.project.tracks.find((track) => track.id === selectedTrack.id);
+    if (!current) return;
+    const params = { ...current.params, [key]: value };
+    state.updateTrack(current.id, { params }, false);
+    engine.setSoundFontParams(current.id, params);
+  };
+
+  const setEqGain = (key: "lowGain" | "midGain" | "highGain", value: number) => {
+    if (!selectedTrack || selectedTrack.type !== "midi") return;
+    const state = useDAW.getState();
+    const current = state.project.tracks.find((track) => track.id === selectedTrack.id);
+    if (!current) return;
+    state.updateTrack(current.id, { eq: { ...current.eq, [key]: value } }, false);
+  };
+
+  const setKeyboardVelocity = (value: number) => {
+    useDAW.getState().setUI({ velocity: Math.max(1, Math.min(127, Math.round(value))) });
+  };
 
   const scale = SCALE_OPTIONS.find((item) => item.id === scaleId) ?? SCALE_OPTIONS[0];
   const rootNames = useMemo(
@@ -372,7 +397,9 @@ export function OnscreenKeyboard() {
   const velocityFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const amount = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-    return Math.max(1, Math.min(127, Math.round(1 + amount * 126)));
+    const pointerVelocity = Math.round(1 + amount * 126);
+    const velocityLimit = useDAW.getState().ui.velocity;
+    return Math.max(1, Math.min(127, Math.round(pointerVelocity * velocityLimit / 127)));
   };
 
   const beginKeyPointer = (
@@ -517,7 +544,8 @@ export function OnscreenKeyboard() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           aria-label="On-screen performance keyboard"
-          className="pointer-events-auto relative min-h-[250px] max-h-[48vh] w-full overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
+          data-instrument-id={selectedTrack?.instrument ?? "no-instrument"}
+          className="pointer-events-auto relative min-h-[320px] max-h-[60vh] w-full overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
           onPointerDown={beginScrollPointer}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -706,6 +734,99 @@ export function OnscreenKeyboard() {
               MIDI
             </button>
           </div>
+
+          <section
+            data-instrument-overlay-controls
+            aria-label="Instrument performance controls"
+            className="relative mt-2 rounded-md border border-white/10 bg-black/20 px-1.5 py-1.5"
+          >
+            <div className="mb-1 flex items-center justify-between gap-2 px-1">
+              <span className="text-[8px] font-semibold uppercase tracking-[.16em] text-zinc-500">
+                Instrument Controls
+              </span>
+              <span className="max-w-[55%] truncate text-[8px] text-zinc-600">
+                {selectedTrack?.name ?? "Select a MIDI instrument track"}
+              </span>
+            </div>
+            <div className="grid grid-cols-6 items-center gap-0.5 sm:gap-2">
+              <Knob
+                size={38}
+                textSize={8}
+                label="Compression"
+                min={0}
+                max={100}
+                value={selectedTrack?.params.keyboardCompression ?? 0}
+                color="#b69aff"
+                format={(value) => `${Math.round(value)}%`}
+                disabled={!isMidi}
+                onChange={(value) => setTrackParam("keyboardCompression", value)}
+                onCommitStart={commit}
+              />
+              <Knob
+                size={38}
+                textSize={8}
+                label="High"
+                min={-12}
+                max={12}
+                value={selectedTrack?.eq.highGain ?? 0}
+                color="#e5e7eb"
+                format={(value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} dB`}
+                disabled={!isMidi}
+                onChange={(value) => setEqGain("highGain", value)}
+                onCommitStart={commit}
+              />
+              <Knob
+                size={38}
+                textSize={8}
+                label="Mid"
+                min={-12}
+                max={12}
+                value={selectedTrack?.eq.midGain ?? 0}
+                color="#ffbf69"
+                format={(value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} dB`}
+                disabled={!isMidi}
+                onChange={(value) => setEqGain("midGain", value)}
+                onCommitStart={commit}
+              />
+              <Knob
+                size={38}
+                textSize={8}
+                label="Low"
+                min={-12}
+                max={12}
+                value={selectedTrack?.eq.lowGain ?? 0}
+                color="#e08e3c"
+                format={(value) => `${value > 0 ? "+" : ""}${value.toFixed(1)} dB`}
+                disabled={!isMidi}
+                onChange={(value) => setEqGain("lowGain", value)}
+                onCommitStart={commit}
+              />
+              <Knob
+                size={38}
+                textSize={8}
+                label="Reverb"
+                min={0}
+                max={1}
+                value={selectedTrack?.params.reverb ?? 0.12}
+                color="#78bfff"
+                format={(value) => `${Math.round(value * 100)}%`}
+                disabled={!isMidi}
+                onChange={(value) => setTrackParam("reverb", value)}
+                onCommitStart={commit}
+              />
+              <Knob
+                size={38}
+                textSize={8}
+                label="Velocity"
+                min={1}
+                max={127}
+                value={velocity}
+                color="#91d18b"
+                format={(value) => `${Math.round(value)}`}
+                onChange={setKeyboardVelocity}
+              />
+            </div>
+          </section>
 
           <div className="mt-2 flex min-h-0 items-stretch gap-2">
             <div
