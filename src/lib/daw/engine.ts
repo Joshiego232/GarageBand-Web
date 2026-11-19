@@ -393,19 +393,23 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
   const compressorPluginEnabled = !!compressor?.enabled;
   const keyboardCompression = clamp(track.params.keyboardCompression ?? 0, 0, 100) / 100;
   const keyboardCompressionEnabled = keyboardCompression > 0;
+  const baseThreshold = compressorPluginEnabled
+    ? compressor?.params.threshold ?? -18
+    : -18;
+  const baseRatio = compressorPluginEnabled
+    ? compressor?.params.ratio ?? 2.5
+    : 2.5;
+  const compressionThreshold = keyboardCompressionEnabled
+    ? Math.max(-36, baseThreshold - keyboardCompression * 18)
+    : baseThreshold;
+  const compressionRatio = keyboardCompressionEnabled
+    ? Math.min(20, baseRatio + keyboardCompression * 7)
+    : baseRatio;
   setComp(
     tn.comp,
     track.compressor || compressorPluginEnabled || keyboardCompressionEnabled,
-    compressorPluginEnabled
-      ? compressor?.params.threshold ?? -18
-      : keyboardCompressionEnabled
-        ? -6 - keyboardCompression * 24
-        : -18,
-    compressorPluginEnabled
-      ? compressor?.params.ratio ?? 2.5
-      : keyboardCompressionEnabled
-        ? 1 + keyboardCompression * 9
-        : 2.5
+    compressionThreshold,
+    compressionRatio
   );
 
   const highPass = get("high-pass");
