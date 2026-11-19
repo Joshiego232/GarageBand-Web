@@ -30,14 +30,23 @@ import { LiveLoopsPanel } from "@/components/daw/panels/live-loops-panel";
 import { PedalboardModal } from "@/components/daw/mixer/pedalboard-modal";
 import { SoundFontImportHost } from "@/components/daw/library/soundfont-import-host";
 import { ResizeHandle } from "@/components/daw/panels/resize-handle";
+import { SoundLibrarySetup } from "@/components/daw/library/sound-library-setup";
 
 export default function Home() {
   const panels = useDAW((s) => s.ui.panels);
   const modal = useDAW((s) => s.ui.modal);
   const trackCount = useDAW((s) => s.project.tracks.length);
   const [libraryWidth, setLibraryWidth] = useState(250);
+  const [setupChecked, setSetupChecked] = useState(false);
+  const [showSoundSetup, setShowSoundSetup] = useState(false);
 
   useShortcuts();
+
+  useEffect(() => {
+    const completed = localStorage.getItem("webband-sound-library-setup-v1") === "done";
+    setShowSoundSetup(!completed);
+    setSetupChecked(true);
+  }, []);
 
   // init audio on first gesture + autoload welcome
   useEffect(() => {
@@ -59,6 +68,14 @@ export default function Home() {
       window.removeEventListener("keydown", unlock);
     };
   }, []);
+
+  if (!setupChecked) {
+    return <div className="flex h-screen items-center justify-center bg-[#101114] text-sm text-zinc-400">Preparing your studio…</div>;
+  }
+
+  if (showSoundSetup) {
+    return <SoundLibrarySetup onContinue={() => setShowSoundSetup(false)} />;
+  }
 
   return (
     <div className="h-screen flex flex-col bg-[#1e1e1e] text-zinc-200 overflow-hidden select-none">
