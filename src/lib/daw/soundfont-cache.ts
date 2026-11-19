@@ -97,6 +97,70 @@ export async function cacheSoundFont(url: string, bytes: ArrayBuffer): Promise<v
   }
 }
 
+function isValidSoundFontFile(bytes: ArrayBuffer): boolean {
+  if (bytes.byteLength < 12) return false;
+  const header = new DataView(bytes);
+  const readTag = (offset: number) =>
+    String.fromCharCode(
+      header.getUint8(offset),
+      header.getUint8(offset + 1),
+      header.getUint8(offset + 2),
+      header.getUint8(offset + 3),
+    );
+  return readTag(0) === "RIFF" && readTag(8) === "sfbk";
+}
+
+export interface InstalledSoundFontFile {
+  byteLength: number;
+  fromCache: boolean;
+}
+
+/**
+ * Download one complete SF2/SF3 bank, validate its RIFF/SFBK header, and
+ * persist it before reporting success. A bad cached entry is automatically
+ * replaced by a fresh download.
+ */
+export async function installSoundFontFile(
+  url: string,
+  timeoutMs = 45_000,
+): Promise<InstalledSoundFontFile> {
+  let cached: ArrayBuffer | undefined;
+  try {
+    cached = await getCachedSoundFont(url);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error("Local SoundFont storage could not be opened: " + detail);
+  }
+
+  if (cached && isValidSoundFontFile(cached)) {
+    return { byteLength: cached.byteLength, fromCache: true };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Download failed (${response.status} ${response.statusText}).`);
+    }
+
+    const bytes = await response.arrayBuffer();
+    if (!isValidSoundFontFile(bytes)) {
+      throw new Error("The server response is not a valid SF2/SF3 SoundFont bank.");
+    }
+
+    await cacheSoundFont(url, bytes);
+    return { byteLength: bytes.byteLength, fromCache: false };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Download timed out after " + Math.round(timeoutMs / 1000) + " seconds.");
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function saveImportedSoundFont(
   fileName: string,
   bytes: ArrayBuffer,
