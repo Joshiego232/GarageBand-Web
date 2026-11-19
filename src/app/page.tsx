@@ -5,7 +5,7 @@
 // Works on Windows, Chromebook and Mac
 // ============================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Toaster } from "sonner";
 import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
@@ -32,21 +32,47 @@ import { SoundFontImportHost } from "@/components/daw/library/soundfont-import-h
 import { ResizeHandle } from "@/components/daw/panels/resize-handle";
 import { SoundLibrarySetup } from "@/components/daw/library/sound-library-setup";
 
+const SOUND_SETUP_KEY = "webband-sound-library-setup-v1";
+const SOUND_SETUP_EVENT = "webband:sound-library-setup-change";
+let setupCompletedInMemory = false;
+
+function subscribeToSoundSetup(callback: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(SOUND_SETUP_EVENT, callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener(SOUND_SETUP_EVENT, callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+function getSoundSetupSnapshot(): "required" | "complete" {
+  if (setupCompletedInMemory) return "complete";
+  try {
+    return window.localStorage.getItem(SOUND_SETUP_KEY) === "done"
+      ? "complete"
+      : "required";
+  } catch {
+    return "required";
+  }
+}
+
+function getServerSoundSetupSnapshot(): "checking" {
+  return "checking";
+}
+
 export default function Home() {
   const panels = useDAW((s) => s.ui.panels);
   const modal = useDAW((s) => s.ui.modal);
   const trackCount = useDAW((s) => s.project.tracks.length);
   const [libraryWidth, setLibraryWidth] = useState(250);
-  const [setupChecked, setSetupChecked] = useState(false);
-  const [showSoundSetup, setShowSoundSetup] = useState(false);
+  const setupStatus = useSyncExternalStore(
+    subscribeToSoundSetup,
+    getSoundSetupSnapshot,
+    getServerSoundSetupSnapshot,
+  );
 
   useShortcuts();
-
-  useEffect(() => {
-    const completed = localStorage.getItem("webband-sound-library-setup-v1") === "done";
-    setShowSoundSetup(!completed);
-    setSetupChecked(true);
-  }, []);
 
   // init audio on first gesture + autoload welcome
   useEffect(() => {
@@ -69,12 +95,19 @@ export default function Home() {
     };
   }, []);
 
-  if (!setupChecked) {
+  if (setupStatus === "checking") {
     return <div className="flex h-screen items-center justify-center bg-[#101114] text-sm text-zinc-400">Preparing your studio…</div>;
   }
 
-  if (showSoundSetup) {
-    return <SoundLibrarySetup onContinue={() => setShowSoundSetup(false)} />;
+  if (setupStatus === "required") {
+    return (
+      <SoundLibrarySetup
+        onContinue={() => {
+          setupCompletedInMemory = true;
+          window.dispatchEvent(new Event(SOUND_SETUP_EVENT));
+        }}
+      />
+    );
   }
 
   return (
