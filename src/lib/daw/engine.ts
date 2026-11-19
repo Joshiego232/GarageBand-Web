@@ -461,9 +461,10 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
 
   const reverb = get("reverb");
   const delay = get("delay");
-  tn.reverbSend.gain.value = reverb
-    ? (reverb.enabled ? clamp(reverb.params.amount ?? 0.28, 0, 1) : 0)
-    : clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
+  const keyboardReverbSend = clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
+  tn.reverbSend.gain.value = reverb?.enabled
+    ? Math.min(keyboardReverbSend, clamp(reverb.params.amount ?? 0.28, 0, 1))
+    : keyboardReverbSend;
   tn.delaySend.gain.value = delay
     ? (delay.enabled ? clamp(delay.params.amount ?? 0.22, 0, 1) : 0)
     : clamp((track.params.delay ?? 0) * 0.9, 0, 1);
