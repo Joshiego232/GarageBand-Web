@@ -2,8 +2,8 @@
 
 // ============================================================
 // Library panel - browse instrument patches. Clicking a patch
-// changes the selected software-instrument track's sound and
-// auditions a short note (GarageBand-style).
+// changes the selected software-instrument track's sound without
+// automatically playing a preview note.
 // ============================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -204,9 +204,6 @@ export function LibraryPanel() {
       patch.id,
       ...current.filter((id) => id !== patch.id),
     ].slice(0, MAX_RECENTS));
-    // Audition the sound on every click, like GarageBand
-    engine.auditionNote(patch.id, 60, 100, undefined, patch);
-
     if (!selectedTrack) {
       toast.info("Select a track first");
       return;
