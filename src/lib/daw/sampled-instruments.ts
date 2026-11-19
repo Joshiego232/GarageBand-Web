@@ -193,6 +193,7 @@ export function warmSampledPatch(
         destination: dest,
         loader,
         scheduler,
+        storage: limitedSampleStorage,
         volume: 100,
         notesToLoad: {
           notes: PIANO_SAMPLE_NOTES,
@@ -206,6 +207,7 @@ export function warmSampledPatch(
         destination: dest,
         loader,
         scheduler,
+        storage: limitedSampleStorage,
         volume: 96,
       }) as unknown as SampledPlayer);
       break;
@@ -231,6 +233,7 @@ export function warmSampledPatch(
           destination: dest,
           loader,
           scheduler,
+          storage: limitedSampleStorage,
           volume: Math.round(96 * (index === 0 ? 1 : layer.gain)),
         }) as unknown as SampledPlayer);
       }
