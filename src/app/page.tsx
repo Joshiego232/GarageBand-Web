@@ -46,7 +46,7 @@ function subscribeToSoundSetup(callback: () => void) {
   };
 }
 
-function getSoundSetupSnapshot(): "required" | "complete" {
+function getSoundSetupSnapshot(): "checking" | "required" | "complete" {
   if (setupCompletedInMemory) return "complete";
   try {
     return window.localStorage.getItem(SOUND_SETUP_KEY) === "done"
