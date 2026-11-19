@@ -74,15 +74,19 @@ async function fetchSampleAsset(url: string): Promise<StorageResponse> {
   // cap so several tracks cannot flood GitHub Pages with sample requests.
   if (activeSampleFetches >= MAX_CONCURRENT_SAMPLE_FETCHES) {
     await new Promise<void>((resolve) => waitingSampleFetches.push(resolve));
+  } else {
+    activeSampleFetches += 1;
   }
 
-  activeSampleFetches += 1;
   try {
     const storage = sampleStorageForSecureOrigin();
     return storage ? await storage.fetch(url) : await fetch(url);
   } finally {
-    activeSampleFetches -= 1;
-    waitingSampleFetches.shift()?.();
+    // Hand the occupied slot directly to the next waiter. Do not decrement
+    // and re-increment here, which could briefly allow a fifth request in.
+    const nextWaiting = waitingSampleFetches.shift();
+    if (nextWaiting) nextWaiting();
+    else activeSampleFetches -= 1;
   }
 }
 
