@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowRight, AudioWaveform, CheckCircle2, Download, Music2, RefreshCw, Sparkles } from "lucide-react";
+import { AudioWaveform, CheckCircle2, Download, Music2, RefreshCw, Sparkles, ShieldCheck } from "lucide-react";
 import { SOUNDFONT_PATCHES } from "@/lib/daw/soundfont-catalog";
 import { cacheSoundFont, getCachedSoundFont } from "@/lib/daw/soundfont-cache";
 
@@ -54,6 +54,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
   };
 
   const finish = () => {
+    if (!done || failed.length > 0 || running) return;
     try { localStorage.setItem("webband-sound-library-setup-v1", "done"); } catch {}
     onContinue();
   };
@@ -67,9 +68,9 @@ export function SoundLibrarySetup({ onContinue }: Props) {
           </div>
           <div>
             <p className="text-sm font-semibold tracking-wide">GARAGEBAND WEB STUDIO</p>
-            <p className="text-xs text-zinc-500">First-time setup</p>
+            <p className="text-xs text-zinc-500">One-time sound installation</p>
           </div>
-          <span className="ml-auto rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[11px] text-emerald-300">Sound library</span>
+          <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-amber-300/20 bg-amber-300/[0.07] px-3 py-1 text-[11px] text-amber-200"><ShieldCheck size={12} /> Required setup</span>
         </header>
 
         <section className="grid flex-1 items-center gap-10 py-10 lg:grid-cols-[1.05fr_.95fr]">
@@ -82,7 +83,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
               <span className="block bg-gradient-to-r from-amber-200 via-orange-300 to-rose-300 bg-clip-text text-transparent">Then just play.</span>
             </h1>
             <p className="mt-5 max-w-xl text-sm leading-7 text-zinc-400 sm:text-base">
-              Prepare the built-in SoundFont presets now. They’ll be saved in this app’s local sound cache, so supported instruments can load faster and remain available without downloading them again.
+              Download and unpack every built-in SoundFont preset before entering the studio. The files are saved in this installation’s local sound cache, so supported instruments are ready when you start making music.
             </p>
 
             <div className="mt-8 grid grid-cols-3 gap-2">
@@ -111,15 +112,15 @@ export function SoundLibrarySetup({ onContinue }: Props) {
                 className="inline-flex h-12 items-center gap-2 rounded-xl bg-amber-300 px-5 text-sm font-semibold text-[#17130c] transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {running ? <RefreshCw className="animate-spin" size={16} /> : done && failed.length === 0 ? <CheckCircle2 size={16} /> : <Download size={16} />}
-                {running ? "Preparing sounds…" : done && failed.length === 0 ? "Sounds prepared" : failed.length ? "Retry failed downloads" : "Prepare sound library"}
+                {running ? "Installing sound library…" : done && failed.length === 0 ? "Sound library installed" : failed.length ? "Retry missing files" : "Install all sounds"}
               </button>
               <button
                 type="button"
                 onClick={finish}
-                disabled={running}
-                className="inline-flex h-12 items-center gap-2 rounded-xl border border-white/15 px-5 text-sm text-zinc-300 transition hover:bg-white/[0.06] disabled:opacity-40"
+                disabled={!done || failed.length > 0 || running}
+                className="inline-flex h-12 items-center gap-2 rounded-xl border border-white/15 px-5 text-sm text-zinc-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
               >
-                {done ? "Open Studio" : "Do this later"} <ArrowRight size={15} />
+                Open Studio
               </button>
             </div>
           </div>
@@ -143,7 +144,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             {done && failed.length === 0 && (
               <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.07] p-4">
                 <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-300" size={18} />
-                <div><p className="text-sm font-medium text-emerald-200">All built-in SoundFont files are ready</p><p className="mt-1 text-xs leading-5 text-zinc-400">They are stored in the app’s IndexedDB cache for this installation.</p></div>
+                <div><p className="text-sm font-medium text-emerald-200">All built-in SoundFont files are ready</p><p className="mt-1 text-xs leading-5 text-zinc-400">All {items.length} built-in SoundFont files are saved locally. You can now enter the studio.</p></div>
               </div>
             )}
             {done && failed.length > 0 && (
@@ -154,11 +155,11 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             )}
             <div className="mt-6 border-t border-white/10 pt-5">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Good to know</p>
-              <p className="mt-2 text-xs leading-6 text-zinc-500">This step caches the built-in SoundFont files. Other sample-based instruments may still need their credited sample sources on first use. Imported SoundFonts are kept separately and are not included in this download.</p>
+              <p className="mt-2 text-xs leading-6 text-zinc-500">This step installs the complete set of built-in SoundFont preset files included in the current library. Imported SoundFonts remain separate because they are files you add yourself. Instruments that use third-party sample libraries may still stream their credited samples the first time they are selected.</p>
             </div>
           </div>
         </section>
-        <footer className="border-t border-white/10 pt-4 text-[10px] text-zinc-600">Your projects and sound cache stay on this device.</footer>
+        <footer className="border-t border-white/10 pt-4 text-[10px] text-zinc-600">Your projects and installed SoundFont cache stay on this device. Keep this window open until installation finishes.</footer>
       </div>
     </main>
   );
