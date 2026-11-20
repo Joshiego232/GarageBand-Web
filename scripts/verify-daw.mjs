@@ -93,6 +93,9 @@ try {
   const { SOUNDFONT_PATCHES } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/soundfont-catalog.js")).href
   );
+  const { findMissingSampleBuffers } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/sampled-instruments.js")).href
+  );
   const chords = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/ChordDetector.js")).href
   );
@@ -305,6 +308,26 @@ try {
   expect(
     Object.keys(SOUNDFONT_PATCHES).length === 24,
     `Expected 24 curated SoundFont patches, found ${Object.keys(SOUNDFONT_PATCHES).length}`,
+  );
+  const samplePreset = {
+    groups: [{
+      regions: [
+        { sample: "piano-c4" },
+        { sample: "piano-g4" },
+        { sample: "piano-c4" },
+      ],
+    }],
+  };
+  expect(
+    findMissingSampleBuffers(samplePreset, new Map([
+      ["piano-c4", {}],
+      ["piano-g4", {}],
+    ])).length === 0,
+    "Complete instrument sample banks should pass the missing-buffer check",
+  );
+  expect(
+    findMissingSampleBuffers(samplePreset, new Map([["piano-c4", {}]])).join(",") === "piano-g4",
+    "Instrument sample validation should report missing buffer keys without duplicates",
   );
   for (const patch of Object.values(PATCHES)) {
     if (patch.sampled?.engine === "soundfont-worklet") {
