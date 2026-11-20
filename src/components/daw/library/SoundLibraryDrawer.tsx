@@ -55,6 +55,10 @@ import {
 } from "@/lib/daw/user-patches";
 import { useDAW } from "@/lib/daw/store";
 import { uid, type Patch } from "@/lib/daw/types";
+import {
+  getSampledInstrumentStatus,
+  type SampledInstrumentStatus,
+} from "@/lib/daw/sampled-instruments";
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   "user-round": UserRound,
@@ -275,6 +279,7 @@ export function SoundLibraryDrawer() {
   const [saveTrackId, setSaveTrackId] = useState<string | null>(null);
   const [previewHeight, setPreviewHeight] = useState(144);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [sampleStatus, setSampleStatus] = useState<SampledInstrumentStatus | null>(null);
   const trackRefs = useRef(new Map<string, HTMLButtonElement>());
   const categoryRefs = useRef(new Map<string, HTMLButtonElement>());
   const searchRef = useRef<HTMLInputElement>(null);
@@ -285,6 +290,24 @@ export function SoundLibraryDrawer() {
     state.project.tracks.find((item) => item.id === saveTrackId) ?? null,
   );
   const selectedTrackId = useDAW((state) => state.ui.selectedTrackId);
+
+  useEffect(() => {
+    const refreshStatus = () => {
+      setSampleStatus(
+        selectedTrackId ? getSampledInstrumentStatus(selectedTrackId) ?? null : null,
+      );
+    };
+    const frame = window.requestAnimationFrame(refreshStatus);
+    const handleStatus = (event: Event) => {
+      const status = (event as CustomEvent<SampledInstrumentStatus>).detail;
+      if (status.trackId === selectedTrackId) setSampleStatus(status);
+    };
+    window.addEventListener("webband:sampled-instrument-status", handleStatus);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("webband:sampled-instrument-status", handleStatus);
+    };
+  }, [selectedTrackId]);
 
   const refresh = useCallback(() => {
     setUserPatches(readUserPatches());
@@ -407,7 +430,6 @@ export function SoundLibraryDrawer() {
   }, [track?.id, track?.instrument]);
 
   const assignInstrument = (patch: Patch) => {
-    audition(patch);
     if (!track) {
       toast.info("Select a track first");
       return;
@@ -416,6 +438,11 @@ export function SoundLibraryDrawer() {
       toast.info("Pick a software-instrument track");
       return;
     }
+    setPreviewState({
+      preset: toInstrumentPreset(patch),
+      trackId: track.id,
+      instrument: patch.id,
+    });
     if (track.instrument === patch.id) return;
 
     const previousName = track.soundFontPreset?.presetName ??
@@ -523,10 +550,6 @@ export function SoundLibraryDrawer() {
     if (item.kind === "instrument") {
       assignInstrument(item.patch);
     } else {
-      const instrument = item.userPatch.track?.instrument;
-      if (instrument && PATCHES[instrument]) {
-        audition(PATCHES[instrument]);
-      }
       setPreviewState({
         preset: getUserPatchArtwork(item.userPatch),
         trackId: track?.id ?? null,
@@ -684,6 +707,53 @@ export function SoundLibraryDrawer() {
                 {preview.description}
               </p>
             )}
+            {track?.type === "midi" && currentPatch?.sampled &&
+              sampleStatus?.trackId === track.id &&
+              sampleStatus.patchId === currentPatch.id && (
+                <div className="mt-2 max-w-[300px]" aria-live="polite">
+                  <div className="flex items-center gap-1.5 text-[9px]">
+                    <span
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        sampleStatus.state === "ready"
+                          ? "bg-emerald-400"
+                          : sampleStatus.state === "error"
+                            ? "bg-rose-400"
+                            : "animate-pulse bg-sky-400",
+                      )}
+                    />
+                    <span className={cn(
+                      "truncate",
+                      sampleStatus.state === "ready"
+                        ? "text-emerald-300"
+                        : sampleStatus.state === "error"
+                          ? "text-rose-300"
+                          : "text-sky-300",
+                    )}>
+                      {sampleStatus.state === "ready"
+                        ? "All instrument samples ready"
+                        : sampleStatus.state === "error"
+                          ? "Some instrument samples are missing"
+                          : sampleStatus.total > 0
+                            ? `Loading samples · ${sampleStatus.loaded}/${sampleStatus.total}`
+                            : "Preparing instrument samples…"}
+                    </span>
+                  </div>
+                  {sampleStatus.state === "loading" && sampleStatus.total > 0 && (
+                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-black/40">
+                      <div
+                        className="h-full rounded-full bg-sky-400 transition-[width]"
+                        style={{ width: `${Math.min(100, (sampleStatus.loaded / sampleStatus.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                  {sampleStatus.state === "error" && sampleStatus.message && (
+                    <p className="mt-1 line-clamp-2 text-[8px] leading-relaxed text-rose-300/80" title={sampleStatus.message}>
+                      {sampleStatus.message}
+                    </p>
+                  )}
+                </div>
+              )}
           </div>
           <button
             type="button"
@@ -832,7 +902,26 @@ export function SoundLibraryDrawer() {
                       : `${item.userPatch.category} · ${item.userPatch.kind === "stack" ? "Track Stack" : item.userPatch.kind === "pedalboard" ? "Pedalboard" : "User Patch"}`}
                   </span>
                 </span>
-                {isCurrent && <span className="size-1.5 shrink-0 rounded-full bg-[#70adff]" />}
+                {isCurrent && sampleStatus?.trackId === track?.id && sampleStatus.patchId === item.patch.id
+                  ? (
+                    <span className={cn(
+                      "shrink-0 rounded-full px-1.5 py-0.5 text-[7px] leading-none",
+                      sampleStatus.state === "ready"
+                        ? "bg-emerald-400/10 text-emerald-300"
+                        : sampleStatus.state === "error"
+                          ? "bg-rose-400/10 text-rose-300"
+                          : "bg-sky-400/10 text-sky-300",
+                    )}>
+                      {sampleStatus.state === "ready"
+                        ? "READY"
+                        : sampleStatus.state === "error"
+                          ? "MISSING"
+                          : sampleStatus.total > 0
+                            ? `${Math.round((sampleStatus.loaded / sampleStatus.total) * 100)}%`
+                            : "LOAD"}
+                    </span>
+                  )
+                  : isCurrent && <span className="size-1.5 shrink-0 rounded-full bg-[#70adff]" />}
               </button>
             );
           })}
