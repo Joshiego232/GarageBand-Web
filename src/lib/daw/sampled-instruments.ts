@@ -10,7 +10,7 @@ import {
   SplendidGrandPiano,
   Soundfont,
 } from "smplr";
-import type { StorageResponse } from "smplr";
+import type { LoadProgress, SmplrPreset, StorageResponse } from "smplr";
 import type { Patch } from "./types";
 import type { VoiceHandle } from "./instruments";
 import {
@@ -32,7 +32,18 @@ type SampledPlayer = {
   output: { addInsert(node: AudioNode): void };
   setCC?: (controller: number, value: number) => void;
   getGroupNames?: () => string[];
+  loadProgress?: LoadProgress;
 };
+
+export interface SampledInstrumentStatus {
+  trackId: string;
+  patchId: string;
+  patchName: string;
+  state: "loading" | "ready" | "error";
+  loaded: number;
+  total: number;
+  message?: string;
+}
 
 type SampleEntry = {
   players: SampledPlayer[];
@@ -41,6 +52,34 @@ type SampleEntry = {
   readyPromise: Promise<void>;
   tones: BiquadFilterNode[];
 };
+
+const sampledStatuses = new Map<string, SampledInstrumentStatus>();
+
+function publishSampledStatus(status: SampledInstrumentStatus): void {
+  sampledStatuses.set(status.trackId, status);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent<SampledInstrumentStatus>(
+      "webband:sampled-instrument-status",
+      { detail: status },
+    ));
+  }
+}
+
+export function getSampledInstrumentStatus(
+  trackId: string,
+): SampledInstrumentStatus | undefined {
+  return sampledStatuses.get(trackId);
+}
+
+export function findMissingSampleBuffers(
+  preset: Pick<SmplrPreset, "groups">,
+  buffers: ReadonlyMap<string, AudioBuffer>,
+): string[] {
+  const required = new Set(
+    preset.groups.flatMap((group) => group.regions.map((region) => region.sample)),
+  );
+  return [...required].filter((name) => !buffers.has(name));
+}
 
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
 const schedulers = new WeakMap<BaseAudioContext, ReturnType<typeof Scheduler>>();
@@ -80,7 +119,11 @@ async function fetchSampleAsset(url: string): Promise<StorageResponse> {
 
   try {
     const storage = sampleStorageForSecureOrigin();
-    return storage ? await storage.fetch(url) : await fetch(url);
+    const response = storage ? await storage.fetch(url) : await fetch(url);
+    if (response.status !== 200) {
+      throw new Error(`Sample request failed with HTTP ${response.status}: ${url}`);
+    }
+    return response;
   } finally {
     // Hand the occupied slot directly to the next waiter. Do not decrement
     // and re-increment here, which could briefly allow a fifth request in.
@@ -103,6 +146,22 @@ function loaderFor(ctx: BaseAudioContext): SampleLoader {
   let loader = loaders.get(ctx);
   if (!loader) {
     loader = SampleLoader(ctx, { storage: limitedSampleStorage });
+    const originalLoad = loader.load.bind(loader) as (
+      preset: SmplrPreset,
+      options?: unknown,
+    ) => Promise<Map<string, AudioBuffer>>;
+    loader.load = (async (preset: SmplrPreset, options?: unknown) => {
+      const buffers = await originalLoad(preset, options);
+      const missing = findMissingSampleBuffers(preset, buffers);
+      if (missing.length) {
+        const examples = missing.slice(0, 5).join(", ");
+        const remainder = missing.length > 5 ? ` and ${missing.length - 5} more` : "";
+        throw new Error(
+          `Missing or undecodable sample assets (${missing.length}): ${examples}${remainder}`,
+        );
+      }
+      return buffers;
+    }) as SampleLoader["load"];
     loaders.set(ctx, loader);
   }
   return loader;
@@ -163,6 +222,16 @@ export function warmSampledPatch(
   }
 
   if (source.engine === "soundfont-worklet") {
+    if (!offline) {
+      publishSampledStatus({
+        trackId,
+        patchId: patch.id,
+        patchName: patch.name,
+        state: "loading",
+        loaded: 0,
+        total: 1,
+      });
+    }
     const entry: SampleEntry = existing ?? {
       players: [],
       ready: false,
@@ -176,9 +245,30 @@ export function warmSampledPatch(
     entry.readyPromise = prepareSoundFontPatch(ctx, dest, trackId, patch)
       .then(() => {
         entry.ready = true;
+        if (!offline) {
+          publishSampledStatus({
+            trackId,
+            patchId: patch.id,
+            patchName: patch.name,
+            state: "ready",
+            loaded: 1,
+            total: 1,
+          });
+        }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         entry.ready = true;
+        if (!offline) {
+          publishSampledStatus({
+            trackId,
+            patchId: patch.id,
+            patchName: patch.name,
+            state: "error",
+            loaded: 0,
+            total: 1,
+            message: error instanceof Error ? error.message : "SoundFont could not be loaded.",
+          });
+        }
       });
     return entry.readyPromise;
   }
@@ -186,6 +276,31 @@ export function warmSampledPatch(
   const loader = loaderFor(ctx);
   const scheduler = schedulerFor(ctx, offline);
   const playersForPatch: SampledPlayer[] = [];
+  const layerProgress = new Map<number, LoadProgress>();
+  const reportProgress = (layerIndex: number, progress: LoadProgress) => {
+    layerProgress.set(layerIndex, progress);
+    if (offline) return;
+    const loaded = [...layerProgress.values()].reduce((sum, item) => sum + item.loaded, 0);
+    const total = [...layerProgress.values()].reduce((sum, item) => sum + item.total, 0);
+    publishSampledStatus({
+      trackId,
+      patchId: patch.id,
+      patchName: patch.name,
+      state: "loading",
+      loaded,
+      total,
+    });
+  };
+  if (!offline) {
+    publishSampledStatus({
+      trackId,
+      patchId: patch.id,
+      patchName: patch.name,
+      state: "loading",
+      loaded: 0,
+      total: 0,
+    });
+  }
 
   switch (source.engine) {
     case "splendid-piano":
@@ -194,6 +309,7 @@ export function warmSampledPatch(
         loader,
         scheduler,
         storage: limitedSampleStorage,
+        onLoadProgress: (progress) => reportProgress(0, progress),
         volume: 100,
         notesToLoad: {
           notes: PIANO_SAMPLE_NOTES,
@@ -208,6 +324,7 @@ export function warmSampledPatch(
         loader,
         scheduler,
         storage: limitedSampleStorage,
+        onLoadProgress: (progress) => reportProgress(0, progress),
         volume: 96,
       }) as unknown as SampledPlayer);
       break;
@@ -217,6 +334,8 @@ export function warmSampledPatch(
         destination: dest,
         loader,
         scheduler,
+        storage: limitedSampleStorage,
+        onLoadProgress: (progress) => reportProgress(0, progress),
         volume: 96,
       }) as unknown as SampledPlayer);
       break;
@@ -234,6 +353,7 @@ export function warmSampledPatch(
           loader,
           scheduler,
           storage: limitedSampleStorage,
+          onLoadProgress: (progress) => reportProgress(index, progress),
           volume: Math.round(96 * (index === 0 ? 1 : layer.gain)),
         }) as unknown as SampledPlayer);
       }
@@ -260,9 +380,34 @@ export function warmSampledPatch(
         entry.tones.push(tone);
       }
       entry.ready = true;
+      if (!offline) {
+        const loaded = [...layerProgress.values()].reduce((sum, item) => sum + item.loaded, 0);
+        const total = [...layerProgress.values()].reduce((sum, item) => sum + item.total, 0);
+        publishSampledStatus({
+          trackId,
+          patchId: patch.id,
+          patchName: patch.name,
+          state: "ready",
+          loaded: total || loaded,
+          total: total || loaded,
+        });
+      }
     })
     .catch((error: unknown) => {
       entry.failed = true;
+      if (!offline) {
+        const loaded = [...layerProgress.values()].reduce((sum, item) => sum + item.loaded, 0);
+        const total = [...layerProgress.values()].reduce((sum, item) => sum + item.total, 0);
+        publishSampledStatus({
+          trackId,
+          patchId: patch.id,
+          patchName: patch.name,
+          state: "error",
+          loaded,
+          total,
+          message: error instanceof Error ? error.message : "One or more instrument samples could not be loaded.",
+        });
+      }
       // Remove failed cache entries so a later Play/Preview attempt can retry.
       if (byPatch.get(patch.id) === entry) byPatch.delete(patch.id);
       console.error(
