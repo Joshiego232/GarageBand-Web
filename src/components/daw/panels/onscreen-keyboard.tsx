@@ -77,8 +77,10 @@ const OVERLAY_ARTWORK_ICONS: Record<InstrumentArtworkKind, LucideIcon> = {
 
 function InstrumentKeyboardArtwork({
   preset,
+  children,
 }: {
   preset: InstrumentPreset | null;
+  children: ReactNode;
 }) {
   const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
   const imageUrl = preset?.previewImageUrl;
@@ -88,7 +90,7 @@ function InstrumentKeyboardArtwork({
     : Piano;
 
   return (
-    <div className="relative h-[68px] min-w-0 overflow-hidden rounded-t-lg">
+    <div className="relative h-[150px] min-w-0 overflow-hidden rounded-lg">
       {imageUrl && !imageFailed ? (
         <img
           src={imageUrl}
@@ -110,7 +112,7 @@ function InstrumentKeyboardArtwork({
       )}
       <div className="absolute inset-0 bg-gradient-to-r from-[#0d1118]/95 via-[#0d1118]/55 to-[#0d1118]/10" />
       <div className="absolute inset-0 bg-gradient-to-t from-[#0b0d12]/55 via-transparent to-black/10" />
-      <div className="relative flex h-full items-center px-3">
+      <div className="absolute inset-x-0 top-0 flex h-[62px] items-start justify-between gap-2 px-3 pt-2.5">
         <div className="min-w-0">
           <p className="text-[7px] font-semibold uppercase tracking-[.22em] text-[#9dc7f3]/80">
             Instrument layer
@@ -124,9 +126,12 @@ function InstrumentKeyboardArtwork({
               : "Select a MIDI track to enable its controls"}
           </p>
         </div>
-        <span className="ml-auto mr-2 rounded-full border border-white/10 bg-black/25 px-2 py-1 text-[7px] uppercase tracking-[.15em] text-zinc-300/80">
+        <span className="shrink-0 rounded-full border border-white/10 bg-black/35 px-2 py-1 text-[7px] uppercase tracking-[.15em] text-zinc-300/80">
           Live controls
         </span>
+      </div>
+      <div className="absolute inset-x-0 bottom-0 border-t border-white/10 bg-[#080b10]/75 px-1.5 py-1.5 backdrop-blur-md">
+        {children}
       </div>
     </div>
   );
@@ -830,8 +835,7 @@ export function OnscreenKeyboard() {
             aria-label="Instrument artwork and performance controls"
             className="relative mt-2 overflow-hidden rounded-lg border border-white/10 bg-[#11151b] shadow-[inset_0_1px_0_rgba(255,255,255,.06)]"
           >
-            <InstrumentKeyboardArtwork preset={instrumentPreset} />
-            <div className="relative border-t border-white/10 bg-[#11151b]/95 px-1.5 py-1.5 backdrop-blur-md">
+            <InstrumentKeyboardArtwork preset={instrumentPreset}>
               <div className="grid grid-cols-6 items-center gap-0.5 sm:gap-2">
 
               <Knob
@@ -912,7 +916,7 @@ export function OnscreenKeyboard() {
               />
 
               </div>
-            </div>
+            </InstrumentKeyboardArtwork>
           </section>
 
           <div className="mt-2 flex min-h-0 items-stretch gap-2">
