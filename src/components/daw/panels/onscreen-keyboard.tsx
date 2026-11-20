@@ -80,15 +80,12 @@ function InstrumentKeyboardArtwork({
 }: {
   preset: InstrumentPreset | null;
 }) {
-  const [imageFailed, setImageFailed] = useState(false);
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
   const imageUrl = preset?.previewImageUrl;
+  const imageFailed = !!imageUrl && failedImageUrl === imageUrl;
   const ArtworkIcon = preset
     ? OVERLAY_ARTWORK_ICONS[preset.artwork]
     : Piano;
-
-  useEffect(() => {
-    setImageFailed(false);
-  }, [imageUrl]);
 
   return (
     <div className="relative h-[68px] min-w-0 overflow-hidden rounded-t-lg">
@@ -97,7 +94,7 @@ function InstrumentKeyboardArtwork({
           src={imageUrl}
           alt={preset?.name ? `${preset.name} instrument artwork` : "Instrument artwork"}
           className="absolute inset-0 h-full w-full object-cover object-center opacity-65"
-          onError={() => setImageFailed(true)}
+          onError={() => setFailedImageUrl(imageUrl ?? null)}
         />
       ) : (
         <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_28%_40%,rgba(97,143,193,.34),transparent_42%),linear-gradient(110deg,#27313d,#171a20_58%,#2b2420)]">
