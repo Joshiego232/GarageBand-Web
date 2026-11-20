@@ -12,12 +12,20 @@ import {
 import { motion } from "framer-motion";
 import {
   AudioLines,
+  Bell,
+  Disc3,
+  Drum,
+  Guitar,
   Minus,
   MoveHorizontal,
   Music2,
+  Piano,
   Plus,
+  Speaker,
   Waves,
+  Wind,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { MidiControlSurface } from "@/components/daw/panels/midi-control-surface";
 import { engine } from "@/lib/daw/engine";
@@ -26,6 +34,12 @@ import { isBlackKey, noteName } from "@/lib/daw/utils";
 import { formatPitchClass } from "@/lib/daw/ChordDetector";
 import { cn } from "@/lib/utils";
 import { Knob } from "@/components/daw/controls/knob";
+import { trackPatch } from "@/lib/daw/instruments";
+import {
+  toInstrumentPreset,
+  type InstrumentArtworkKind,
+  type InstrumentPreset,
+} from "@/lib/daw/instrumentPresets";
 
 type ScaleId = "major" | "minor" | "dorian" | "pentatonic" | "blues";
 type ScaleOption = { id: ScaleId; name: string; notes: readonly number[] };
@@ -47,6 +61,79 @@ const KEYBOARD_STYLE = {
   backgroundImage:
     "linear-gradient(90deg, rgba(114,63,34,.5), rgba(60,37,27,.45)), repeating-linear-gradient(2deg, #553824 0px, #68442b 3px, #4a3022 6px, #704a2e 9px)",
 };
+
+const OVERLAY_ARTWORK_ICONS: Record<InstrumentArtworkKind, LucideIcon> = {
+  piano: Piano,
+  guitar: Guitar,
+  drums: Drum,
+  synth: Waves,
+  organ: AudioLines,
+  brass: Wind,
+  strings: Music2,
+  bass: Speaker,
+  bells: Bell,
+  turntable: Disc3,
+};
+
+function InstrumentKeyboardArtwork({
+  preset,
+}: {
+  preset: InstrumentPreset | null;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const imageUrl = preset?.previewImageUrl;
+  const ArtworkIcon = preset
+    ? OVERLAY_ARTWORK_ICONS[preset.artwork]
+    : Piano;
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [imageUrl]);
+
+  return (
+    <div className="relative h-[68px] min-w-0 overflow-hidden rounded-t-lg">
+      {imageUrl && !imageFailed ? (
+        <img
+          src={imageUrl}
+          alt={preset?.name ? `${preset.name} instrument artwork` : "Instrument artwork"}
+          className="absolute inset-0 h-full w-full object-cover object-center opacity-65"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_28%_40%,rgba(97,143,193,.34),transparent_42%),linear-gradient(110deg,#27313d,#171a20_58%,#2b2420)]">
+          <div className="absolute -right-4 -top-12 size-40 rounded-full border border-white/10" />
+          <div className="absolute -right-1 -top-9 size-32 rounded-full border border-white/[.07]" />
+          <ArtworkIcon
+            size={78}
+            strokeWidth={0.8}
+            className="absolute right-8 top-1 text-white/25"
+            aria-hidden
+          />
+        </div>
+      )}
+      <div className="absolute inset-0 bg-gradient-to-r from-[#0d1118]/95 via-[#0d1118]/55 to-[#0d1118]/10" />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#0b0d12]/55 via-transparent to-black/10" />
+      <div className="relative flex h-full items-center px-3">
+        <div className="min-w-0">
+          <p className="text-[7px] font-semibold uppercase tracking-[.22em] text-[#9dc7f3]/80">
+            Instrument layer
+          </p>
+          <p className="mt-0.5 truncate text-[13px] font-semibold leading-tight text-white">
+            {preset?.name ?? "Choose an instrument"}
+          </p>
+          <p className="mt-0.5 truncate text-[8px] text-zinc-300/75">
+            {preset
+              ? `${preset.category} · ${preset.patch?.subcategory ?? (preset.patch?.synthEngine ? "Morph Synth" : "Sampled instrument")}`
+              : "Select a MIDI track to enable its controls"}
+          </p>
+        </div>
+        <span className="ml-auto mr-2 rounded-full border border-white/10 bg-black/25 px-2 py-1 text-[7px] uppercase tracking-[.15em] text-zinc-300/80">
+          Live controls
+        </span>
+      </div>
+    </div>
+  );
+}
 
 type ArpPattern = "up" | "down" | "up-down" | "random";
 type PointerMode = "gliss" | "bend" | "scroll" | "chord";
@@ -102,6 +189,12 @@ export function OnscreenKeyboard() {
   const setUI = useDAW((state) => state.setUI);
   const commit = useDAW((state) => state.commit);
   const togglePanel = useDAW((state) => state.togglePanel);
+  const selectedPatch = selectedTrack?.type === "midi"
+    ? trackPatch(selectedTrack)
+    : undefined;
+  const instrumentPreset = selectedPatch
+    ? toInstrumentPreset(selectedPatch)
+    : null;
   const [pressed, setPressed] = useState<number[]>([]);
   const [typingLayout, setTypingLayout] = useState<"garageband" | "two-row">("garageband");
   const [chordMode, setChordMode] = useState(
@@ -545,7 +638,7 @@ export function OnscreenKeyboard() {
           transition={{ duration: 0.2, ease: "easeOut" }}
           aria-label="On-screen performance keyboard"
           data-instrument-id={selectedTrack?.instrument ?? "no-instrument"}
-          className="pointer-events-auto relative min-h-[320px] max-h-[60vh] w-full overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
+          className="pointer-events-auto relative flex w-full min-h-[300px] max-h-none flex-col overflow-visible rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-2.5 sm:p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
           onPointerDown={beginScrollPointer}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -737,18 +830,13 @@ export function OnscreenKeyboard() {
 
           <section
             data-instrument-overlay-controls
-            aria-label="Instrument performance controls"
-            className="relative mt-2 rounded-md border border-white/10 bg-black/20 px-1.5 py-1.5"
+            aria-label="Instrument artwork and performance controls"
+            className="relative mt-2 overflow-hidden rounded-lg border border-white/10 bg-[#11151b] shadow-[inset_0_1px_0_rgba(255,255,255,.06)]"
           >
-            <div className="mb-1 flex items-center justify-between gap-2 px-1">
-              <span className="text-[8px] font-semibold uppercase tracking-[.16em] text-zinc-500">
-                Instrument Controls
-              </span>
-              <span className="max-w-[55%] truncate text-[8px] text-zinc-600">
-                {selectedTrack?.name ?? "Select a MIDI instrument track"}
-              </span>
-            </div>
-            <div className="grid grid-cols-6 items-center gap-0.5 sm:gap-2">
+            <InstrumentKeyboardArtwork preset={instrumentPreset} />
+            <div className="relative border-t border-white/10 bg-[#11151b]/95 px-1.5 py-1.5 backdrop-blur-md">
+              <div className="grid grid-cols-6 items-center gap-0.5 sm:gap-2">
+
               <Knob
                 size={38}
                 textSize={8}
@@ -825,6 +913,8 @@ export function OnscreenKeyboard() {
                 format={(value) => `${Math.round(value)}`}
                 onChange={setKeyboardVelocity}
               />
+
+              </div>
             </div>
           </section>
 
