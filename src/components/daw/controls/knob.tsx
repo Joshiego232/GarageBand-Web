@@ -88,29 +88,63 @@ export function Knob({
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
-        className="cursor-ns-resize touch-none"
+        className="cursor-ns-resize touch-none outline-none focus-visible:rounded-full focus-visible:ring-2 focus-visible:ring-[#ffb648]/70"
+        role="slider"
+        tabIndex={disabled ? -1 : 0}
+        aria-label={label ?? "Instrument control"}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={display}
+        aria-disabled={disabled}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          const step = (max - min) / (e.shiftKey ? 20 : 100);
+          let next: number | undefined;
+          if (e.key === "ArrowUp" || e.key === "ArrowRight") next = value + step;
+          else if (e.key === "ArrowDown" || e.key === "ArrowLeft") next = value - step;
+          else if (e.key === "PageUp") next = value + (max - min) / 10;
+          else if (e.key === "PageDown") next = value - (max - min) / 10;
+          else if (e.key === "Home") next = min;
+          else if (e.key === "End") next = max;
+          if (next === undefined) return;
+          e.preventDefault();
+          onCommitStart?.();
+          onChange(Math.min(max, Math.max(min, next)));
+          onCommitEnd?.();
+        }}
         onPointerDown={(e) => {
-          (e.target as Element).setPointerCapture(e.pointerId);
+          if (disabled) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
           dragRef.current = { y: e.clientY, v: norm };
           setDragging(true);
           onCommitStart?.();
           e.preventDefault();
         }}
         onPointerMove={(e) => {
-          if (!dragRef.current) return;
+          if (!dragRef.current || disabled) return;
           const dy = dragRef.current.y - e.clientY;
           const speed = e.shiftKey ? 400 : 150;
           const next = Math.min(1, Math.max(0, dragRef.current.v + dy / speed));
           onChange(fromNorm(next));
         }}
         onPointerUp={() => {
+          if (!dragRef.current) return;
+          dragRef.current = null;
+          setDragging(false);
+          onCommitEnd?.();
+        }}
+        onPointerCancel={() => {
+          if (!dragRef.current) return;
           dragRef.current = null;
           setDragging(false);
           onCommitEnd?.();
         }}
         onDoubleClick={() => {
-          // reset to middle
+          if (disabled) return;
+          onCommitStart?.();
           onChange(fromNorm(0.5));
+          onCommitEnd?.();
         }}
       >
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#3a3a41" strokeWidth="3" strokeDasharray="none" opacity="0.6"
