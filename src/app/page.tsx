@@ -156,7 +156,7 @@ export default function Home() {
       </div>
 
       {panels.keyboard && (
-        <div className="shrink-0 max-h-[50vh] overflow-y-auto border-t border-black/80 bg-[#1c1c1e]">
+        <div className="shrink-0 max-h-[64vh] overflow-y-auto overscroll-contain border-t border-black/80 bg-[#1c1c1e]">
           <OnscreenKeyboard />
         </div>
       )}
