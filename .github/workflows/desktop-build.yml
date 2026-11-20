@@ -11,6 +11,8 @@ on:
       - "desktop/**"
       - "scripts/prepare-standalone.mjs"
       - "package.json"
+      - "package-lock.json"
+      - "scripts/verify-daw.mjs"
       - "prisma/**"
       - "src/**"
   workflow_dispatch:
