@@ -92,7 +92,11 @@ const ARTWORK_BY_ICON: Record<string, InstrumentArtworkKind> = {
  * "grand-piano": "/instruments/concert-grand.webp".
  * A failed or omitted image always falls back to the inline instrument SVG.
  */
-export const INSTRUMENT_PREVIEW_IMAGES: Record<string, string> = {};
+export const INSTRUMENT_PREVIEW_IMAGES: Record<string, string> = {
+  "grand-piano": "/concert-grand-piano.svg",
+  "bright-piano": "/concert-grand-piano.svg",
+  "stage-epiano": "/nord-stage-keyboard.svg",
+};
 
 export function getInstrumentCategoryName(category: string): string {
   return CATEGORY_ALIASES[category] ?? category;
