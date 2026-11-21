@@ -61,7 +61,7 @@ jobs:
           retention-days: 30
 
   linux:
-    name: Chromebook Linux ${{ matrix.arch }} installer
+    name: Linux Debian ${{ matrix.arch }} installer
     strategy:
       fail-fast: false
       matrix:
@@ -92,13 +92,13 @@ jobs:
           npm run lint
           npm run test:daw
           npm run typecheck
-      - name: Build standalone studio and Chromebook Linux package
+      - name: Build standalone studio and Linux Debian package
         run: |
           npm run build
           npx electron-builder --linux deb --${{ matrix.arch }} --publish never
       - uses: actions/upload-artifact@v4
         with:
-          name: GarageBand-Chromebook-Linux-${{ matrix.arch }}
+          name: GarageBand-Linux-${{ matrix.arch }}
           path: release/*.deb
           if-no-files-found: error
           retention-days: 30
