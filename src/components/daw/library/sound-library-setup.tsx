@@ -257,7 +257,7 @@ export function SoundLibrarySetup({ onContinue }: Props) {
             {done && failed.length === 0 && (
               <div className="mt-6 flex items-start gap-3 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.07] p-4">
                 <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-300" size={18} />
-                <div><p className="text-sm font-medium text-emerald-200">All built-in sounds are preloaded</p><p className="mt-1 text-xs leading-5 text-zinc-400">{items.length} SoundFont files and {sampledItems.length} sampled instrument presets have been loaded and verified in local storage. You can now enter the studio and work offline.</p></div>
+                <div><p className="text-sm font-medium text-emerald-200">All built-in sounds are preloaded</p><p className="mt-1 text-xs leading-5 text-zinc-400">{items.length} SoundFont files and {sampledItems.length} sampled instrument presets have been saved in the device cache. You can now enter the studio and work offline.</p></div>
               </div>
             )}
             {done && failed.length > 0 && (
