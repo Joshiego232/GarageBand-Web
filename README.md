@@ -1,6 +1,6 @@
 # GarageBand Web Studio
 
-An original browser-based digital audio workstation for Windows, macOS and ChromeOS. The project combines a full-stack Next.js studio with selected creative workflows from the Soundstage DAW project. The same application can also be packaged as a local desktop app for Windows and ChromeOS Linux.
+An original browser-based digital audio workstation for Windows, macOS and Linux. The project combines a full-stack Next.js studio with selected creative workflows from the Soundstage DAW project. The same application can also be packaged as a local desktop app for Windows and Debian-based Linux distributions, including ChromeOS Linux.
 
 > This project is not affiliated with Apple. It does not include Apple's proprietary GarageBand/Logic assets or sound packs.
 
@@ -19,7 +19,8 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Sound Library drawer:** searchable instrument browser with categories, descriptions, artwork previews, keyboard navigation, favorites/recent sounds, and a personal **My Instruments** collection.
 - **Sampled instruments:** the library includes SoundFont-backed and sampled piano, electric-piano, orchestral and drum sounds, plus layered keyboard presets.
 - **Original synthesizers:** additive/morph synth patches include adjustable oscillator spectrum, harmonics, filters, envelopes, detune, modulation, chorus, glide, sub and noise controls.
-- **SoundFont import:** import `.sf2` and `.sf3` files, scan their bank/program presets, and assign the selected preset to an instrument track.
+- **Full sound-library preload:** the first-run setup downloads and verifies all curated SF2/SF3 bank files and preloads every built-in sample-based instrument preset into persistent device storage. Progress, failed downloads and storage errors are reported before the studio opens.
+- **SoundFont import:** import `.sf2` and `.sf3` files, scan their bank/program presets, and assign the selected preset to an instrument track. Imported banks are stored locally.
 - **Saved patches:** save instrument/track setups and pedalboard chains locally for reuse.
 - **Sample credits:** sampled patches use credited third-party sources. The app does not claim ownership of those recordings; see [SOUNDFONT_CREDITS.md](SOUNDFONT_CREDITS.md) and [docs/SAMPLE_ATTRIBUTION.md](docs/SAMPLE_ATTRIBUTION.md).
 
@@ -50,7 +51,7 @@ Soundstage JSON files do not contain their IndexedDB audio blobs. Audio clips th
 - Zustand project state
 - Prisma + SQLite saved-song API
 - Tailwind CSS and shadcn-style UI components
-- Electron desktop shell and electron-builder installers for Windows and ChromeOS Linux
+- Electron desktop shell and electron-builder installers for Windows and Debian-based Linux (x64 and ARM64)
 
 ## Run locally
 
@@ -95,8 +96,8 @@ The [Desktop Installers workflow](.github/workflows/desktop-build.yml) builds:
 | Platform | Installer |
 |---|---|
 | Windows 10/11, x64 | Interactive `.exe` setup installer |
-| Chromebook Linux, x86_64 | Debian `.deb` package |
-| Chromebook Linux, ARM64 | Debian `.deb` package |
+| Debian/Ubuntu and ChromeOS Linux, x86_64 | Debian `.deb` package |
+| Debian/Ubuntu and ChromeOS Linux, ARM64 | Debian `.deb` package |
 
 ### Download the installers from GitHub Actions
 
@@ -105,45 +106,43 @@ The [Desktop Installers workflow](.github/workflows/desktop-build.yml) builds:
 3. Open the run automatically created by a push to the `codespace-symmetrical-spork-g976wjv9pqph99v6` branch.
 4. When all three platform jobs finish, download the Windows or Linux artifact from the run's **Artifacts** section. The Linux artifact is built separately for x86_64 and ARM64.
 
-Pushing a version tag such as `v1.0.0` also creates a GitHub Release containing the installers.
+Pushing a version tag such as `v1.3.0` also creates a GitHub Release containing all three installers. The installer version follows the root `package.json` version.
 
 ### Install on Windows
 
-Download and run `GarageBand-Web-Studio-Setup-1.0.0-x64.exe`. Follow the installer prompts. A desktop shortcut and Start Menu entry are created.
+Download and run `GarageBand-Web-Studio-Setup-1.3.0-x64.exe`. Follow the installer prompts. A desktop shortcut and Start Menu entry are created.
 
 The installer is not code-signed by default. Windows SmartScreen may therefore show an unsigned-app warning; that is separate from the build itself.
 
-### Install on a Chromebook
+### Install on Debian-based Linux or Chromebook
 
-1. Enable the Chromebook's **Linux development environment** in ChromeOS settings.
-2. Download the Linux `.deb` artifact and place it in the Chromebook's **Linux files** folder.
-3. In the Linux Terminal, check the CPU architecture with `uname -m`:
-   - `x86_64` uses the x64 package.
-   - `aarch64` uses the ARM64 package.
-4. Install the downloaded package (replace the example filename with the exact downloaded filename):
+1. Download the Linux `.deb` artifact. On Chromebook, enable the **Linux development environment** in ChromeOS settings and place the file in **Linux files**.
+2. Check the CPU architecture:
+   - `uname -m` returns `x86_64` for the amd64 package.
+   - `uname -m` returns `aarch64` or `arm64` for the ARM64 package.
+3. In the terminal, install the matching package:
 
 ```bash
 sudo apt update
-sudo apt install ./GarageBand-Web-Studio-1.0.0-amd64.deb
+sudo apt install ./GarageBand-Web-Studio-1.3.0-amd64.deb
 ```
 
-Use `sudo apt install ./GarageBand-Web-Studio-1.0.0-arm64.deb` instead on an ARM64 Chromebook. After installation, open **GarageBand Web Studio** from the ChromeOS app launcher under **Linux apps**. To uninstall it later:
+Use `sudo apt install ./GarageBand-Web-Studio-1.3.0-arm64.deb` on ARM64. After installation, open **GarageBand Web Studio** from your desktop application launcher (under **Linux apps** on ChromeOS). To uninstall it later:
 
 ```bash
 sudo apt remove garageband-web-studio-desktop
 ```
 
-The Chromebook package is a Linux desktop application for devices that support ChromeOS's Linux development environment; it is not a Chrome Web Store extension or a native ChromeOS APK.
+The `.deb` installer is for Debian-based Linux distributions (including Ubuntu and ChromeOS Linux/Crostini). It is not a Chrome Web Store extension or a native ChromeOS APK.
 
 ### Offline use and local data
 
 - The desktop window and Next.js application server are bundled and run locally, so the studio can open without internet after installation.
 - Projects saved through the song API use a SQLite database in the operating system's application-data folder.
 - Audio regions, imported SoundFonts and user patches use browser storage (IndexedDB) associated with the desktop app's local address.
-- Built-in procedural synth patches work without downloading sample banks. SoundFont bytes fetched from the remote bank loader are saved in IndexedDB after they have been loaded once. Imported `.sf2` and `.sf3` banks are stored locally as well.
-- Some other `smplr`-loaded sample instruments fetch their credited sample sets from their upstream hosts. Their availability across app restarts while offline is not guaranteed. For reliable offline sound, use the built-in procedural synth patches or import a local `.sf2`/`.sf3` bank before disconnecting.
-
-Offline availability therefore depends on the sample engine and what has been cached or imported. A fresh installation can launch offline; remote samples that have never been fetched cannot be loaded without a connection.
+- The first-run **Sound Library Setup** must finish before the studio opens. It downloads all curated SF2/SF3 files and preloads every built-in sampled instrument, including the `smplr` piano, electric-piano, drum-machine, orchestral, guitar, bass and layered-key sample sets.
+- The curated SF2/SF3 banks are stored in IndexedDB. The `smplr` sample assets are stored in the browser's Cache Storage. The setup checks that these assets were persisted and blocks completion if downloads or persistent caching fail.
+- After the full setup succeeds, the built-in sampled instrument library is available offline on that device and browser profile. The first run requires an internet connection and sufficient local storage; the download may be large. Imported `.sf2` and `.sf3` files are also stored locally. Procedural Alchemy synth patches do not require sample downloads.
 
 ### Build installers locally
 
@@ -179,4 +178,4 @@ The app is local-first for audio media. GitHub stores application source and doc
 
 ## Feature status
 
-The source contains the DAW workflows described above. Browser/device support varies for microphone access, MIDI devices and audio codecs. Remote sample availability depends on the upstream sample hosts and the local cache. Cloud authentication and multi-user cloud sync are not implemented.
+The source contains the DAW workflows described above. Browser/device support varies for microphone access, MIDI devices and audio codecs. The first-run sound setup depends on the credited sample hosts being reachable and sufficient local storage being available. Cloud authentication and multi-user cloud sync are not implemented.
