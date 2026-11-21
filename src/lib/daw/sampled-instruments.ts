@@ -84,18 +84,32 @@ export function findMissingSampleBuffers(
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
 const schedulers = new WeakMap<BaseAudioContext, ReturnType<typeof Scheduler>>();
 let persistentSampleStorage: ReturnType<typeof CacheStorage> | undefined;
+const SAMPLE_CACHE_NAME = "smplr";
+const persistentSampleCacheMisses = new Set<string>();
 const MAX_CONCURRENT_SAMPLE_FETCHES = 4;
+
+export function isPersistentSampleStorageAvailable(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.isSecureContext &&
+    typeof caches !== "undefined"
+  );
+}
+
+export function clearPersistentSampleCacheIssues(): void {
+  persistentSampleCacheMisses.clear();
+}
+
+export function getPersistentSampleCacheIssues(): string[] {
+  return [...persistentSampleCacheMisses];
+}
 let activeSampleFetches = 0;
 const waitingSampleFetches: Array<() => void> = [];
 
 function sampleStorageForSecureOrigin() {
   // CacheStorage requires the browser Cache API, which is restricted to
   // secure contexts. localhost and HTTPS-hosted deployments qualify.
-  if (
-    typeof window === "undefined" ||
-    !window.isSecureContext ||
-    typeof caches === "undefined"
-  ) {
+  if (!isPersistentSampleStorageAvailable()) {
     return undefined;
   }
 
@@ -122,6 +136,20 @@ async function fetchSampleAsset(url: string): Promise<StorageResponse> {
     const response = storage ? await storage.fetch(url) : await fetch(url);
     if (response.status !== 200) {
       throw new Error(`Sample request failed with HTTP ${response.status}: ${url}`);
+    }
+
+    // smplr's CacheStorage intentionally treats quota errors as best-effort.
+    // Verify the response really exists in the persistent cache so the
+    // first-run installer can report storage failures rather than claiming
+    // an offline-ready library when a browser quota was exceeded.
+    if (storage) {
+      try {
+        const cache = await caches.open(SAMPLE_CACHE_NAME);
+        if (await cache.match(url)) persistentSampleCacheMisses.delete(url);
+        else persistentSampleCacheMisses.add(url);
+      } catch {
+        persistentSampleCacheMisses.add(url);
+      }
     }
     return response;
   } finally {
