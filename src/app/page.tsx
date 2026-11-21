@@ -32,7 +32,7 @@ import { SoundFontImportHost } from "@/components/daw/library/soundfont-import-h
 import { ResizeHandle } from "@/components/daw/panels/resize-handle";
 import { SoundLibrarySetup } from "@/components/daw/library/sound-library-setup";
 
-const SOUND_SETUP_KEY = "webband-sound-library-setup-v1";
+const SOUND_SETUP_KEY = "webband-sound-library-setup-v2";
 const SOUND_SETUP_EVENT = "webband:sound-library-setup-change";
 let setupCompletedInMemory = false;
 
