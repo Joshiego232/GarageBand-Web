@@ -5,6 +5,15 @@ const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 
+// ChromeOS Linux (Crostini) may expose Wayland without the DRM render nodes
+// Electron expects. Use the tested X11 path and software-friendly settings on
+// Linux so the packaged app opens from the desktop launcher without manual flags.
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("ozone-platform", "x11");
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-dev-shm-usage");
+}
+
 const PORT = 3210;
 const APP_URL = "http://127.0.0.1:" + PORT;
 let mainWindow = null;
@@ -86,7 +95,7 @@ async function startLocalStudioServer() {
   process.env.NEXT_TELEMETRY_DISABLED = "1";
   process.env.HOSTNAME = "127.0.0.1";
   process.env.PORT = String(PORT);
-  process.env.DATABASE_URL = "file:" + databaseFile.replace(/\\/g, "/");
+  process.env.DATABASE_URL = "file:" + databaseFile.replace(/\\\\/g, "/");
 
   // Run Next.js inside Electron's Node main process. This avoids requiring a
   // separately-installed Node.js runtime on Windows or ChromeOS Linux.
