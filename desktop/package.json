@@ -1,0 +1,9 @@
+{
+  "name": "garageband-web-studio-desktop",
+  "version": "1.4.0",
+  "private": true,
+  "productName": "GarageBand Web Studio",
+  "description": "Local desktop edition of GarageBand Web Studio",
+  "main": "main.cjs",
+  "author": "Joshiego232"
+}
