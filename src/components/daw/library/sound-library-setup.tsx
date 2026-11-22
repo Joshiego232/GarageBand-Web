@@ -166,9 +166,14 @@ export function SoundLibrarySetup({ onContinue }: Props) {
     setRunning(false);
   };
 
-  const finish = () => {
-    if (!done || failed.length > 0 || running) return;
-    try { localStorage.setItem("webband-sound-library-setup-v2", "done"); } catch {}
+  const finish = (skipped = false) => {
+    if (!done || running) return;
+    try {
+      localStorage.setItem(
+        "webband-sound-library-setup-v2",
+        skipped ? "skipped" : "done",
+      );
+    } catch {}
     onContinue();
   };
 
@@ -229,11 +234,11 @@ export function SoundLibrarySetup({ onContinue }: Props) {
               </button>
               <button
                 type="button"
-                onClick={finish}
-                disabled={!done || failed.length > 0 || running}
+                onClick={() => finish(failed.length > 0)}
+                disabled={!done || running}
                 className="inline-flex h-12 items-center gap-2 rounded-xl border border-white/15 px-5 text-sm text-zinc-200 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-35"
               >
-                Open Studio
+                {failed.length > 0 ? "Skip & Open Studio" : "Open Studio"}
               </button>
             </div>
           </div>
@@ -264,6 +269,9 @@ export function SoundLibrarySetup({ onContinue }: Props) {
               <div className="mt-6 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-4">
                 <p className="text-sm font-medium text-amber-200">{failed.length} sound asset(s) need another attempt</p>
                 <p className="mt-1 text-xs leading-5 text-zinc-400">{failed.slice(0, 4).join(", ")}{failed.length > 4 ? "…" : ""}</p>
+                <p className="mt-3 text-xs leading-5 text-zinc-300">
+                  You can skip these files and enter the Studio now. Sounds that downloaded successfully remain saved; only the failed assets may be unavailable.
+                </p>
               </div>
             )}
             <div className="mt-6 border-t border-white/10 pt-5">
