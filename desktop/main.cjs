@@ -119,7 +119,9 @@ function createStudioWindow() {
     minHeight: 640,
     backgroundColor: "#1e1e1e",
     autoHideMenuBar: true,
-    show: false,
+    // Show immediately: some Linux/ChromeOS compositors never deliver
+    // ready-to-show reliably for this local, software-rendered window.
+    show: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -145,7 +147,10 @@ function createStudioWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
-  void mainWindow.loadURL(APP_URL);
+  void mainWindow.loadURL(APP_URL).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    dialog.showErrorBox("GarageBand Web Studio could not load", message);
+  });
 }
 
 const hasSingleInstance = app.requestSingleInstanceLock();
