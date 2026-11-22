@@ -106,11 +106,11 @@ The [Desktop Installers workflow](.github/workflows/desktop-build.yml) builds:
 3. Open the run automatically created by a push to the `codespace-symmetrical-spork-g976wjv9pqph99v6` branch.
 4. When all three platform jobs finish, download the Windows or Linux artifact from the run's **Artifacts** section. The Linux artifact is built separately for x86_64 and ARM64.
 
-Pushing a version tag such as `v1.3.0` also creates a GitHub Release containing all three installers. The installer version follows the root `package.json` version.
+Pushing a version tag such as `v1.3.1` also creates a GitHub Release containing all three installers. The installer version follows the root `package.json` version.
 
 ### Install on Windows
 
-Download and run `GarageBand-Web-Studio-Setup-1.3.0-x64.exe`. Follow the installer prompts. A desktop shortcut and Start Menu entry are created.
+Download and run `GarageBand-Web-Studio-Setup-1.3.1-x64.exe`. Follow the installer prompts. A desktop shortcut and Start Menu entry are created.
 
 The installer is not code-signed by default. Windows SmartScreen may therefore show an unsigned-app warning; that is separate from the build itself.
 
@@ -124,10 +124,10 @@ The installer is not code-signed by default. Windows SmartScreen may therefore s
 
 ```bash
 sudo apt update
-sudo apt install ./GarageBand-Web-Studio-1.3.0-amd64.deb
+sudo apt install ./GarageBand-Web-Studio-1.3.1-amd64.deb
 ```
 
-Use `sudo apt install ./GarageBand-Web-Studio-1.3.0-arm64.deb` on ARM64. After installation, open **GarageBand Web Studio** from your desktop application launcher (under **Linux apps** on ChromeOS). To uninstall it later:
+Use `sudo apt install ./GarageBand-Web-Studio-1.3.1-arm64.deb` on ARM64. After installation, open **GarageBand Web Studio** from your desktop application launcher (under **Linux apps** on ChromeOS). To uninstall it later:
 
 ```bash
 sudo apt remove garageband-web-studio-desktop
