@@ -122,9 +122,27 @@ function sampleStorageForSecureOrigin() {
   }
 }
 
+const GREG_SULLIVAN_PAGES_BASE_URL =
+  "https://smpldsnds.github.io/sfzinstruments-greg-sullivan-e-pianos";
+const GREG_SULLIVAN_RAW_BASE_URL =
+  "https://raw.githubusercontent.com/smpldsnds/sfzinstruments-greg-sullivan-e-pianos/main";
+
+/**
+ * GitHub Pages can lag behind the source sample repository and occasionally
+ * return 404s for valid piano samples. Prefer the same file from the source
+ * repository's raw-content host, then keep Pages as a fallback.
+ */
+export function getSampleAssetUrlCandidates(url: string): string[] {
+  const pagesPrefix = `${GREG_SULLIVAN_PAGES_BASE_URL}/`;
+  if (!url.startsWith(pagesPrefix)) return [url];
+
+  const relativePath = url.slice(pagesPrefix.length);
+  return [`${GREG_SULLIVAN_RAW_BASE_URL}/${relativePath}`, url];
+}
+
 async function fetchSampleAsset(url: string): Promise<StorageResponse> {
   // smplr requests the notes for an instrument concurrently. Keep a global
-  // cap so several tracks cannot flood GitHub Pages with sample requests.
+  // cap so several tracks cannot flood the sample hosts with requests.
   if (activeSampleFetches >= MAX_CONCURRENT_SAMPLE_FETCHES) {
     await new Promise<void>((resolve) => waitingSampleFetches.push(resolve));
   } else {
@@ -133,25 +151,40 @@ async function fetchSampleAsset(url: string): Promise<StorageResponse> {
 
   try {
     const storage = sampleStorageForSecureOrigin();
-    const response = storage ? await storage.fetch(url) : await fetch(url);
-    if (response.status !== 200) {
-      throw new Error(`Sample request failed with HTTP ${response.status}: ${url}`);
-    }
+    let lastError: unknown;
 
-    // smplr's CacheStorage intentionally treats quota errors as best-effort.
-    // Verify the response really exists in the persistent cache so the
-    // first-run installer can report storage failures rather than claiming
-    // an offline-ready library when a browser quota was exceeded.
-    if (storage) {
+    for (const candidateUrl of getSampleAssetUrlCandidates(url)) {
       try {
-        const cache = await caches.open(SAMPLE_CACHE_NAME);
-        if (await cache.match(url)) persistentSampleCacheMisses.delete(url);
-        else persistentSampleCacheMisses.add(url);
-      } catch {
-        persistentSampleCacheMisses.add(url);
+        const response = storage
+          ? await storage.fetch(candidateUrl)
+          : await fetch(candidateUrl);
+        if (response.status !== 200) {
+          lastError = new Error(
+            `Sample request failed with HTTP ${response.status}: ${candidateUrl}`,
+          );
+          continue;
+        }
+
+        // smplr's CacheStorage intentionally treats quota errors as best-effort.
+        // Verify the successful mirror URL really exists in persistent storage
+        // so first-run setup does not claim an offline-ready library too early.
+        if (storage) {
+          try {
+            const cache = await caches.open(SAMPLE_CACHE_NAME);
+            if (await cache.match(candidateUrl)) persistentSampleCacheMisses.delete(url);
+            else persistentSampleCacheMisses.add(url);
+          } catch {
+            persistentSampleCacheMisses.add(url);
+          }
+        }
+        return response;
+      } catch (error) {
+        lastError = error;
       }
     }
-    return response;
+
+    const detail = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`Sample request failed for ${url}. ${detail}`);
   } finally {
     // Hand the occupied slot directly to the next waiter. Do not decrement
     // and re-increment here, which could briefly allow a fifth request in.
