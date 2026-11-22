@@ -49,7 +49,8 @@ function subscribeToSoundSetup(callback: () => void) {
 function getSoundSetupSnapshot(): "checking" | "required" | "complete" {
   if (setupCompletedInMemory) return "complete";
   try {
-    return window.localStorage.getItem(SOUND_SETUP_KEY) === "done"
+    const setupStatus = window.localStorage.getItem(SOUND_SETUP_KEY);
+    return setupStatus === "done" || setupStatus === "skipped"
       ? "complete"
       : "required";
   } catch {
