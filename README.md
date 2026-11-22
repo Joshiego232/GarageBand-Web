@@ -79,3 +79,19 @@ The instrument library supports text search, categories, favorites and recently 
 ## Feature status
 
 The source contains the core DAW workflows listed above. Browser/device support varies for microphone access, MIDI devices and audio codecs. Cloud authentication and multi-user cloud sync are not implemented. For the exact current state of any feature, prefer the implementation and tests over roadmap language.
+
+## Windows desktop installer
+
+The Windows desktop edition is packaged from this same web/DAW source, so the desktop app includes the current instrument library, plugin artwork, pedalboard and performance updates.
+
+To download the latest build:
+
+1. Open the repository's **Actions** tab.
+2. Select **Desktop Installers**.
+3. Open the newest successful run on the `fix/ci-build` branch.
+4. Download the `GarageBand-Windows-x64` artifact and extract the ZIP.
+5. Run `GarageBand-Web-Studio-Setup-1.4.0-x64.exe`.
+
+The installer runs the Next.js studio locally inside Electron. It does not require a separately installed Node.js runtime, a Codespace or an always-on hosted website. Project data and audio storage remain local to the desktop app's browser profile.
+
+The installer is not code-signed by default, so Windows SmartScreen may show an unsigned-app warning.
