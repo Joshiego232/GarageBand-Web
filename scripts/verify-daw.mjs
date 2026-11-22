@@ -93,7 +93,10 @@ try {
   const { SOUNDFONT_PATCHES } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/soundfont-catalog.js")).href
   );
-  const { findMissingSampleBuffers } = await import(
+  const {
+    findMissingSampleBuffers,
+    getSampleAssetUrlCandidates,
+  } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/sampled-instruments.js")).href
   );
   const chords = await import(
@@ -328,6 +331,30 @@ try {
   expect(
     findMissingSampleBuffers(samplePreset, new Map([["piano-c4", {}]])).join(",") === "piano-g4",
     "Instrument sample validation should report missing buffer keys without duplicates",
+  );
+
+  // Greg Sullivan electric-piano samples must recover from a stale GitHub Pages
+  // mirror by trying the same file on the upstream repository's raw host first.
+  const pagesPianoBase =
+    "https://smpldsnds.github.io/sfzinstruments-greg-sullivan-e-pianos";
+  const rawPianoBase =
+    "https://raw.githubusercontent.com/smpldsnds/sfzinstruments-greg-sullivan-e-pianos/main";
+  const wurlitzerSampleUrl = `${pagesPianoBase}/wurlitzer-ep200/samples/ab6mp.ogg`;
+  expect(
+    getSampleAssetUrlCandidates(wurlitzerSampleUrl).join("|") ===
+      `${rawPianoBase}/wurlitzer-ep200/samples/ab6mp.ogg|${wurlitzerSampleUrl}`,
+    "Wurlitzer EP-200 samples should try the source repository before GitHub Pages",
+  );
+  const cp80SampleUrl = `${pagesPianoBase}/cp80/samples/065-F4-PP.ogg`;
+  expect(
+    getSampleAssetUrlCandidates(cp80SampleUrl).join("|") ===
+      `${rawPianoBase}/cp80/samples/065-F4-PP.ogg|${cp80SampleUrl}`,
+    "Yamaha CP-80 samples should try the source repository before GitHub Pages",
+  );
+  const unrelatedSampleUrl = "https://example.com/samples/piano-c4.ogg";
+  expect(
+    getSampleAssetUrlCandidates(unrelatedSampleUrl).join("|") === unrelatedSampleUrl,
+    "Unrelated instrument sample URLs should not be rewritten",
   );
   for (const patch of Object.values(PATCHES)) {
     if (patch.sampled?.engine === "soundfont-worklet") {
