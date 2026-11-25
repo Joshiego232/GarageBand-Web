@@ -101,10 +101,11 @@ export async function saveImportedSoundFont(
   fileName: string,
   bytes: ArrayBuffer,
   presets: Omit<ImportedSoundFontPreset, "fileId" | "fileName">[],
+  id = crypto.randomUUID(),
 ): Promise<ImportedSoundFontRecord> {
   const database = await openDatabase();
   const record: StoredImportedSoundFont = {
-    id: crypto.randomUUID(),
+    id,
     fileName,
     createdAt: Date.now(),
     presets,

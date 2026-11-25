@@ -94,6 +94,7 @@ export interface ChordRegion {
   length: number;
   name: string;
   notes: number[];
+  color?: string;
 }
 
 export interface EqSettings {
@@ -263,7 +264,7 @@ export interface Project {
 // ---------- UI state ----------
 
 export type Tool = "pointer" | "pencil";
-export type SnapMode = "smart" | "bar" | "beat" | "8th" | "16th" | "off";
+export type SnapMode = "smart" | "bar" | "beat" | "1/2" | "1/4" | "8th" | "16th" | "off";
 export type TrackSize = "S" | "M" | "L";
 export type EditorMode = "piano" | "audio" | "steps" | "score" | "smart";
 export type PanelKey =
@@ -284,6 +285,7 @@ export type ModalKind =
   | "pedalboard";
 
 export interface UIState {
+  projectsScreen: boolean;
   tool: Tool;
   snap: SnapMode;
   zoom: number; // pixels per beat

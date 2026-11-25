@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type CSSProperties, type DragEvent, type PointerEvent } from "react";
+import { useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type PointerEvent } from "react";
 import {
   AudioLines,
   Check,
@@ -285,6 +285,7 @@ function PedalboardWorkspace({
                         pedal={pedal}
                         index={index}
                         onChange={(key, next) => updatePedal(pedal.id, { params: { ...pedal.params, [key]: next } })}
+                        onCommit={commit}
                         onToggle={() => updatePedal(pedal.id, { enabled: !pedal.enabled }, true)}
                         onRemove={() => { commit(); updatePedals(pedals.filter((item) => item.id !== pedal.id)); }}
                         onDrop={(event) => dropPedal(event, index)}
@@ -384,6 +385,7 @@ function PedalCard({
   pedal,
   index,
   onChange,
+  onCommit,
   onToggle,
   onRemove,
   onDrop,
@@ -392,6 +394,7 @@ function PedalCard({
   pedal: PedalInstance;
   index: number;
   onChange: (id: string, value: number) => void;
+  onCommit: () => void;
   onToggle: () => void;
   onRemove: () => void;
   onDrop: (event: DragEvent<HTMLElement>) => void;
@@ -442,6 +445,7 @@ function PedalCard({
               value={pedal.params[control.id] ?? control.defaultValue}
               color={definition.color}
               onChange={(next) => onChange(control.id, next)}
+              onCommit={onCommit}
             />
           ))}
         </div>
@@ -471,23 +475,38 @@ function RotaryKnob({
   value,
   color,
   onChange,
+  onCommit,
 }: {
   label: string;
   value: number;
   color: string;
   onChange: (value: number) => void;
+  onCommit: () => void;
 }) {
   const drag = useRef<{ y: number; value: number; pointerId: number } | null>(null);
   const angle = -135 + value * 270;
   const pointerDown = (event: PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
+    onCommit();
     drag.current = { y: event.clientY, value, pointerId: event.pointerId };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: PointerEvent<HTMLButtonElement>) => {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
     onChange(Math.max(0, Math.min(1, drag.current.value + (drag.current.y - event.clientY) / 150)));
+  };
+  const keyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const step = event.shiftKey ? 0.1 : 0.01;
+    let next: number | null = null;
+    if (event.key === "ArrowUp" || event.key === "ArrowRight") next = value + step;
+    if (event.key === "ArrowDown" || event.key === "ArrowLeft") next = value - step;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = 1;
+    if (next === null) return;
+    event.preventDefault();
+    onCommit();
+    onChange(Math.max(0, Math.min(1, next)));
   };
   const pointerUp = (event: PointerEvent<HTMLButtonElement>) => {
     if (drag.current?.pointerId !== event.pointerId) return;
@@ -503,6 +522,12 @@ function RotaryKnob({
       </div>
       <button
         type="button"
+        role="slider"
+        aria-valuemin={0}
+        aria-valuemax={1}
+        aria-valuenow={value}
+        aria-valuetext={`${Math.round(value * 100)} percent`}
+        aria-orientation="vertical"
         className="pedal-knob"
         aria-label={`${label}: ${Math.round(value * 100)} percent`}
         title={`${label} · ${Math.round(value * 100)}%`}
@@ -510,7 +535,8 @@ function RotaryKnob({
         onPointerMove={pointerMove}
         onPointerUp={pointerUp}
         onPointerCancel={pointerUp}
-        onDoubleClick={() => onChange(0.5)}
+        onKeyDown={keyDown}
+        onDoubleClick={() => { onCommit(); onChange(0.5); }}
         style={{ "--knob-angle": `${angle}deg`, "--knob-accent": color } as CSSProperties}
       >
         <span className="pedal-knob-metal" />

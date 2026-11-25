@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Disc3,
+  Cloud,
   FilePlus2,
   Guitar,
   Mic,
@@ -37,6 +38,7 @@ import {
   deleteSavedSong,
   getSavedSong,
   listSavedSongs,
+  markSavedSongOpened,
   type SavedSong,
 } from "@/lib/daw/saved-songs";
 
@@ -102,6 +104,11 @@ export function NewProjectModal() {
       if (!song) throw new Error("song not found");
       markSeen();
       loadProject(song.project);
+      try {
+        await markSavedSongOpened(id);
+      } catch {
+        toast.error("Opened the project, but could not update its last-opened date");
+      }
       toast.success(`Opened "${song.name}"`);
     } catch {
       toast.error("Could not open that song");
@@ -255,9 +262,17 @@ export function NewProjectModal() {
           </section>
         )}
 
-        <DialogFooter className="sm:justify-center border-t border-black/50 pt-3">
+        <DialogFooter className="sm:justify-between border-t border-black/50 pt-3">
+          <button
+            type="button"
+            onClick={() => setModal("mySongs")}
+            className="inline-flex h-7 items-center gap-1.5 rounded px-2 text-[10px] text-zinc-300 transition-colors hover:bg-[#2f2f34] hover:text-zinc-100"
+          >
+            <Cloud size={13} aria-hidden />
+            My Songs &amp; Account
+          </button>
           <p className="text-[10px] text-zinc-600">
-            v1.0 &mdash; all audio is synthesized in your browser
+            Local saves stay in this browser unless you sign in and sync them.
           </p>
         </DialogFooter>
       </DialogContent>

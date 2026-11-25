@@ -13,6 +13,7 @@ import { exportSoundstageProject, importSoundstageProject } from "./soundstage-b
 import { analyzeMidiNotesByBar } from "./ChordDetector";
 import { importMidiFiles } from "./midi-import";
 import { saveSong } from "./saved-songs";
+import { saveCloudProjectIfSignedIn } from "./cloud-projects";
 
 export interface Command {
   id: string;
@@ -253,9 +254,20 @@ async function saveProject() {
   try {
     const savedSong = await saveSong(project);
     useDAW.setState({ project: { ...project, id: savedSong.id } });
-    toast.success(`Saved "${project.name}"`);
-  } catch {
-    toast.error("Could not save the project");
+    try {
+      const cloudSong = await saveCloudProjectIfSignedIn(savedSong.project);
+      toast.success(
+        cloudSong
+          ? `Saved "${project.name}" on this device and to your account`
+          : `Saved "${project.name}" on this device. Sign in to back it up to your account.`,
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Cloud storage unavailable";
+      toast.error(`Saved locally, but cloud sync failed: ${reason}`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Browser storage unavailable";
+    toast.error(`Could not save the project: ${reason}`);
   }
 }
 

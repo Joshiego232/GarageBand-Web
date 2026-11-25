@@ -10,7 +10,7 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Soundstage workflow additions:** 16-step drum sequencer for MIDI drum tracks, plus import and export of Soundstage `.soundstage.json` project files.
 - **Shared MIDI model:** step-sequencer hits are stored as MIDI notes, so they remain editable in the piano roll and work with playback and WAV rendering.
 - **Sampled instruments:** 120 SoundFont and sample-backed patches, including 20 stage-keyboard-inspired presets and layered piano/pad/string combinations, plus 10 original additive synth presets. The stage sounds use the credited MusyngKite General MIDI bank; they are not Nord or Yamaha factory recordings.
-- **Local song storage:** projects are saved in IndexedDB in the current browser; audio media also remains on that device.
+- **Project storage:** projects and their audio media can be saved locally or synced to a user account across devices.
 - **Audio output:** Web Audio playback, microphone recording where the browser permits it, WAV bounce, MIDI export, and audio-file import.
 
 ## Technology
@@ -55,11 +55,28 @@ Use **File → Import Soundstage Project JSON…** or **File → Export Soundsta
 
 Soundstage JSON files do not contain their IndexedDB audio blobs. Audio clips therefore cannot be transferred through the JSON bridge; import the original audio files again after moving a session. Native audio assets stay in the browser's local storage and are not uploaded to GitHub.
 
-## Storage and account status
+## Accounts and cloud project storage
 
-Project JSON and audio media are stored in the browser's IndexedDB. They are not uploaded to the server and are not available across devices or browsers. The saved-song API has been removed; account sign-in and cloud sync are not implemented.
+The app keeps browser-local saves and adds optional Supabase accounts. Use the account button in the top menu or **File → My Songs** to create an account, sign in, reset a password, or open saved projects. **File → Save** and **My Songs → Save Current Song** save locally and, when signed in, sync the project to the account. Existing local songs can be synced by opening one, signing in, and saving it again.
 
-The app is local-first for audio media. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
+Cloud saves include imported/recorded audio, custom sampler audio, and any imported SoundFont used by the project. Audio and project data are private to the signed-in user through Supabase Row Level Security and a private Storage bucket. Built-in and remote sample libraries continue to load from their existing sources. Cloud audio uploads require adequate Supabase Storage limits and may take time for large projects.
+
+To enable cloud accounts:
+
+1. Create a Supabase project and enable email/password authentication. Configure the project's Site URL and allowed redirect URLs for both local development and your deployed app. Set up email delivery for confirmations and password resets.
+2. In the Supabase SQL Editor, run [`supabase/schema.sql`](./supabase/schema.sql). It creates the project table, private audio bucket, and owner-only access policies.
+3. Set these public client environment variables in `.env.local` for development and in your deployment environment:
+
+   ```dotenv
+   NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-anon-key
+   ```
+
+   The anon key is intended for browser use and is restricted by the SQL Row Level Security policies. Never expose a Supabase `service_role` key in a `NEXT_PUBLIC_` variable or in client code.
+
+Without those environment variables, browser-local project saving continues to work; cloud account controls remain unavailable. Local projects are not automatically uploaded: open and save each project while signed in to sync it.
+
+The app stores user recordings and imported audio in the user's private Supabase project storage. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
 
 ## Sample credits and licenses
 

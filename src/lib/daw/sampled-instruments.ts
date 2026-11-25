@@ -154,6 +154,7 @@ export function warmSampledPatch(
     case "electric-piano":
       playersForPatch.push(ElectricPiano(ctx, {
         instrument: source.instrument,
+        formats: source.instrument === "TX81Z" ? ["wav"] : ["m4a"],
         destination: dest,
         loader,
         scheduler,

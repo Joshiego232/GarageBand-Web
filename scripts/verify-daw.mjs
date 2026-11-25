@@ -19,6 +19,8 @@ try {
 
   const modules = [
     "src/lib/daw/types.ts",
+    "src/lib/daw/cloud-audio.ts",
+    "src/lib/daw/reverb-mix.ts",
     "src/lib/daw/DenoiseEngine.ts",
     "src/lib/daw/ChordDetector.ts",
     "src/lib/daw/pedalboard.ts",
@@ -83,6 +85,12 @@ try {
   );
   const { getRegionPlaybackBufferId, getRegionSourceBufferId } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/types.js")).href
+  );
+  const { decodeStoredBuffer, encodeStoredBuffer } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/cloud-audio.js")).href
+  );
+  const { normalizeReverbSend } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/reverb-mix.js")).href
   );
   const { getDenoiseCacheKey } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/DenoiseEngine.js")).href
@@ -149,6 +157,39 @@ try {
     }) === "clean-audio",
     "Enabled denoise should route playback to the cached processed buffer",
   );
+  const audioForSync = {
+    sampleRate: 48000,
+    name: "stereo recording",
+    channels: [
+      new Float32Array([0.25, -0.5, 1]),
+      new Float32Array([-1, 0.125, 0.75]),
+    ],
+  };
+  const restoredAudio = await decodeStoredBuffer(encodeStoredBuffer(audioForSync));
+  expect(
+    restoredAudio.sampleRate === audioForSync.sampleRate &&
+      restoredAudio.name === audioForSync.name &&
+      restoredAudio.channels.length === 2 &&
+      restoredAudio.channels[0][1] === -0.5 &&
+      restoredAudio.channels[1][2] === 0.75,
+    "Cloud audio serialization should preserve names, sample rates, and every channel",
+  );
+  await assert.rejects(
+    () => decodeStoredBuffer(new Blob(["invalid audio"])),
+    /invalid header/,
+    "Cloud audio deserialization should reject malformed files",
+  );
+  let previousWet = -1;
+  for (let send = 0; send <= 1; send += 0.1) {
+    const gains = normalizeReverbSend(send);
+    const wet = gains.send * 0.8;
+    expect(
+      Math.abs(gains.dry ** 2 + wet ** 2 - 1) < 1e-12,
+      "Reverb gain compensation should keep dry/wet power constant",
+    );
+    expect(wet >= previousWet, "Increasing the reverb send should not reduce the wet signal");
+    previousWet = wet;
+  }
   const denoiseKey = getDenoiseCacheKey("source-audio", { amount: 50, highPass: true });
   expect(
     denoiseKey === getDenoiseCacheKey("source-audio", { amount: 50, highPass: true }) &&
@@ -498,6 +539,52 @@ try {
       useDAW.getState().ui.trackSize === "L" &&
       useDAW.getState().ui.zoom === 88,
     "Screenset did not restore the saved workspace layout",
+  );
+
+  // Splitting at the playhead affects only the selected track.
+  useDAW.getState().addTrack({ type: "midi", name: "Split Selected Track" });
+  useDAW.getState().addTrack({ type: "midi", name: "Split Other Track" });
+  const splitSelectedTrack = useDAW.getState().project.tracks.find(
+    (track) => track.name === "Split Selected Track",
+  );
+  const splitOtherTrack = useDAW.getState().project.tracks.find(
+    (track) => track.name === "Split Other Track",
+  );
+  expect(!!splitSelectedTrack && !!splitOtherTrack, "Could not create split test tracks");
+  useDAW.getState().addRegion({
+    id: "split-selected-region",
+    trackId: splitSelectedTrack.id,
+    type: "midi",
+    name: "Selected Region",
+    start: 0,
+    length: 3840,
+  });
+  useDAW.getState().addRegion({
+    id: "split-other-region",
+    trackId: splitOtherTrack.id,
+    type: "midi",
+    name: "Other Region",
+    start: 0,
+    length: 3840,
+  });
+  useDAW.getState().selectTrack(splitSelectedTrack.id);
+  useDAW.getState().splitRegionsAt(1920);
+  project = useDAW.getState().project;
+  const splitSelectedRegions = project.tracks.find(
+    (track) => track.id === splitSelectedTrack.id,
+  )?.regions ?? [];
+  const splitOtherRegions = project.tracks.find(
+    (track) => track.id === splitOtherTrack.id,
+  )?.regions ?? [];
+  expect(
+    splitSelectedRegions.length === 2 &&
+      splitSelectedRegions[0].length === 1920 &&
+      splitSelectedRegions[1].start === 1920,
+    "Split at the playhead did not split the selected track's region",
+  );
+  expect(
+    splitOtherRegions.length === 1 && splitOtherRegions[0].length === 3840,
+    "Split at the playhead changed an unselected track",
   );
 
   // Verify Quick Swipe comping replaces aligned audio takes atomically.

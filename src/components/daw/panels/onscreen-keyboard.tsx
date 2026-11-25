@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { motion } from "framer-motion";
@@ -24,6 +25,7 @@ import { engine } from "@/lib/daw/engine";
 import { useDAW } from "@/lib/daw/store";
 import { isBlackKey, noteName } from "@/lib/daw/utils";
 import { formatPitchClass } from "@/lib/daw/ChordDetector";
+import { uid, type Track } from "@/lib/daw/types";
 import { cn } from "@/lib/utils";
 
 type ScaleId = "major" | "minor" | "dorian" | "pentatonic" | "blues";
@@ -142,18 +144,29 @@ export function OnscreenKeyboard() {
   }, [octaveBase, root, scale.notes]);
   const visiblePitches = useMemo(
     () =>
-      Array.from({ length: Math.max(0, pitchEnd - pitchStart + 1) }, (_, index) => pitchStart + index)
+      Array.from({ length: 108 - 21 + 1 }, (_, index) => 21 + index)
         .filter((pitch) => !scaleLock || scale.notes.includes((pitch - root + 120) % 12)),
-    [pitchEnd, pitchStart, root, scale.notes, scaleLock],
+    [root, scale.notes, scaleLock],
+  );
+  const typingPitches = useMemo(
+    () => visiblePitches.filter((pitch) => pitch >= pitchStart && pitch <= pitchEnd),
+    [pitchEnd, pitchStart, visiblePitches],
   );
   const rows = useMemo(() => {
     if (!dualRow) return [visiblePitches];
-    const splitAt = pitchStart + 12;
+    const splitAt = 65;
     return [
       visiblePitches.filter((pitch) => pitch >= splitAt),
       visiblePitches.filter((pitch) => pitch < splitAt),
     ];
-  }, [dualRow, pitchStart, visiblePitches]);
+  }, [dualRow, visiblePitches]);
+  const typingRows = useMemo(() => {
+    const splitAt = pitchStart + 12;
+    return [
+      typingPitches.filter((pitch) => pitch >= splitAt),
+      typingPitches.filter((pitch) => pitch < splitAt),
+    ];
+  }, [pitchStart, typingPitches]);
 
   const keyBindings = useMemo(() => {
     const bindings = new Map<string, KeyBinding>();
@@ -170,7 +183,7 @@ export function OnscreenKeyboard() {
     }
 
     if (typingLayout === "garageband") {
-      visiblePitches.forEach((pitch, index) => {
+      typingPitches.forEach((pitch, index) => {
         const key = GARAGEBAND_KEYS[index];
         if (key) bindings.set(key, { pitch });
       });
@@ -178,7 +191,7 @@ export function OnscreenKeyboard() {
     }
 
     if (dualRow) {
-      rows.forEach((row, rowIndex) => {
+      typingRows.forEach((row, rowIndex) => {
         const keys = scaleLock
           ? rowIndex === 0 ? UPPER_SCALE_KEYS : LOWER_SCALE_KEYS
           : rowIndex === 0 ? UPPER_CHROMATIC_KEYS : LOWER_CHROMATIC_KEYS;
@@ -190,7 +203,7 @@ export function OnscreenKeyboard() {
     } else {
       const lowerKeys = scaleLock ? LOWER_SCALE_KEYS : LOWER_CHROMATIC_KEYS;
       const upperKeys = scaleLock ? UPPER_SCALE_KEYS : UPPER_CHROMATIC_KEYS;
-      visiblePitches.forEach((pitch, index) => {
+      typingPitches.forEach((pitch, index) => {
         const key = index < lowerKeys.length
           ? lowerKeys[index]
           : upperKeys[index - lowerKeys.length];
@@ -198,7 +211,7 @@ export function OnscreenKeyboard() {
       });
     }
     return bindings;
-  }, [chordMode, dualRow, rows, scaleLock, typingLayout, visiblePitches]);
+  }, [chordMode, dualRow, scaleLock, typingLayout, typingPitches, typingRows]);
 
   const refreshPressed = useCallback(() => {
     setPressed([...pitchCounts.current.keys()]);
@@ -517,7 +530,7 @@ export function OnscreenKeyboard() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           aria-label="On-screen performance keyboard"
-          className="pointer-events-auto relative min-h-[250px] max-h-[48vh] w-full overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
+          className="pointer-events-auto relative flex max-h-[70vh] min-h-[250px] w-full flex-col overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
           onPointerDown={beginScrollPointer}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -707,7 +720,9 @@ export function OnscreenKeyboard() {
             </button>
           </div>
 
-          <div className="mt-2 flex min-h-0 items-stretch gap-2">
+          <InstrumentControls track={selectedTrack} />
+
+          <div className="mt-2 flex min-h-0 flex-1 items-stretch gap-2">
             <div
               ref={keyScrollRef}
               className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden rounded-md border border-black/50 bg-[#171719] p-1.5 [scrollbar-color:#55545a_#202024] [scrollbar-width:thin]"
@@ -779,7 +794,9 @@ export function OnscreenKeyboard() {
           </div>
           <footer className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[8px] text-zinc-600">
             <span>
-              {scaleLock ? `${rootNames[root]} ${scale.name} · non-scale keys hidden` : "Chromatic keys · octave controls browse A0–C8"}
+              {scaleLock
+                ? `${rootNames[root]} ${scale.name} · non-scale keys hidden`
+                : "88-note A0–C8 range · octave controls set the typing range"}
             </span>
             <span>{musicalTyping ? "QWERTY overlay active · key-up, blur and tab-switch release notes" : "Enable Typing for QWERTY hints"}</span>
           </footer>
@@ -824,6 +841,238 @@ function ControlButton({
     >
       {children}
     </button>
+  );
+}
+
+function InstrumentControls({ track }: { track: Track | null }) {
+  const updateTrack = useDAW((state) => state.updateTrack);
+  const velocity = useDAW((state) => state.ui.velocity);
+  const setUI = useDAW((state) => state.setUI);
+  const compressor = track?.audioPlugins?.find((plugin) => plugin.pluginId === "compressor");
+  const compressionValue = compressor?.enabled
+    ? Math.round(((compressor.params.ratio ?? 2.5) - 1) / 11 * 100)
+    : track?.compressor ? 100 : 0;
+  const values = {
+    compression: compressionValue,
+    high: track?.eq.highGain ?? 0,
+    mid: track?.eq.midGain ?? 0,
+    low: track?.eq.lowGain ?? 0,
+    reverb: Math.round((track?.params.reverb ?? 0.12) * 100),
+    velocity,
+  };
+  const commit = () => useDAW.getState().commit();
+  const changeTrack = (patch: Parameters<typeof updateTrack>[1]) => {
+    if (track) updateTrack(track.id, patch, false);
+  };
+
+  const changeCompression = (value: number) => {
+    if (!track) return;
+    const plugins = track.audioPlugins ?? [];
+    const existing = plugins.find((plugin) => plugin.pluginId === "compressor");
+    const next = {
+      id: existing?.id ?? uid(),
+      pluginId: "compressor",
+      enabled: value > 0,
+      params: {
+        ...existing?.params,
+        threshold: -6 - value * 0.3,
+        ratio: 1 + value * 0.11,
+      },
+    };
+    changeTrack({
+      compressor: false,
+      audioPlugins: existing
+        ? plugins.map((plugin) => plugin.id === existing.id ? next : plugin)
+        : [...plugins, next],
+    });
+  };
+
+  return (
+    <section
+      aria-label="Instrument Controls"
+      className="mb-2 rounded-xl border border-white/10 bg-black/70 px-3 py-2.5 shadow-[inset_0_1px_rgba(255,255,255,.04)]"
+    >
+      <h3 className="mb-2 text-[13px] font-semibold text-zinc-100">Instrument Controls</h3>
+      <div className="grid grid-cols-6 gap-1">
+        <InstrumentDial
+          label="Compression"
+          range="0–100%"
+          value={values.compression}
+          min={0}
+          max={100}
+          step={1}
+          format={(value) => `${Math.round(value)}%`}
+          disabled={!track}
+          onCommit={commit}
+          onChange={changeCompression}
+        />
+        <InstrumentDial
+          label="High"
+          range="±12 dB"
+          value={values.high}
+          min={-12}
+          max={12}
+          step={1}
+          format={(value) => `${Math.round(value)} dB`}
+          disabled={!track}
+          onCommit={commit}
+          onChange={(value) => track && changeTrack({ eq: { ...track.eq, highGain: value } })}
+        />
+        <InstrumentDial
+          label="Mid"
+          range="±12 dB"
+          value={values.mid}
+          min={-12}
+          max={12}
+          step={1}
+          format={(value) => `${Math.round(value)} dB`}
+          disabled={!track}
+          onCommit={commit}
+          onChange={(value) => track && changeTrack({ eq: { ...track.eq, midGain: value } })}
+        />
+        <InstrumentDial
+          label="Low"
+          range="±12 dB"
+          value={values.low}
+          min={-12}
+          max={12}
+          step={1}
+          format={(value) => `${Math.round(value)} dB`}
+          disabled={!track}
+          onCommit={commit}
+          onChange={(value) => track && changeTrack({ eq: { ...track.eq, lowGain: value } })}
+        />
+        <InstrumentDial
+          label="Reverb"
+          range="0–100%"
+          value={values.reverb}
+          min={0}
+          max={100}
+          step={1}
+          format={(value) => `${Math.round(value)}%`}
+          disabled={!track}
+          onCommit={commit}
+          onChange={(value) => {
+            if (track) changeTrack({ params: { ...track.params, reverb: value / 100 } });
+          }}
+        />
+        <InstrumentDial
+          label="Velocity"
+          range="1–127"
+          value={values.velocity}
+          min={1}
+          max={127}
+          step={1}
+          format={(value) => `${Math.round(value)}`}
+          onCommit={() => undefined}
+          onChange={(value) => setUI({ velocity: Math.max(1, Math.min(127, Math.round(value))) })}
+        />
+      </div>
+    </section>
+  );
+}
+
+function InstrumentDial({
+  label,
+  range,
+  value,
+  min,
+  max,
+  step,
+  format,
+  disabled = false,
+  onCommit,
+  onChange,
+}: {
+  label: string;
+  range: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (value: number) => string;
+  disabled?: boolean;
+  onCommit: () => void;
+  onChange: (value: number) => void;
+}) {
+  const drag = useRef<{ y: number; value: number; pointerId: number } | null>(null);
+  const updateByKey = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    let next: number | null = null;
+    if (event.key === "ArrowUp" || event.key === "ArrowRight") next = value + step;
+    if (event.key === "ArrowDown" || event.key === "ArrowLeft") next = value - step;
+    if (event.key === "PageUp") next = value + step * 10;
+    if (event.key === "PageDown") next = value - step * 10;
+    if (event.key === "Home") next = min;
+    if (event.key === "End") next = max;
+    if (next === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onCommit();
+    onChange(Math.max(min, Math.min(max, next)));
+  };
+  const normalized = (value - min) / Math.max(1, max - min);
+  const angle = -135 + normalized * 270;
+  const activeAngle = normalized * 270;
+
+  return (
+    <div className="flex min-w-0 flex-col items-center gap-1">
+      <button
+        type="button"
+        role="slider"
+        aria-label={label}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={format(value)}
+        aria-orientation="vertical"
+        disabled={disabled}
+        title={`${label}: ${format(value)} · rotate by dragging vertically or use arrow keys`}
+        onPointerDown={(event) => {
+          if (disabled || (event.pointerType === "mouse" && event.button !== 0)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onCommit();
+          drag.current = { y: event.clientY, value, pointerId: event.pointerId };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const current = drag.current;
+          if (!current || current.pointerId !== event.pointerId) return;
+          event.stopPropagation();
+          const amount = (current.y - event.clientY) / 120;
+          const precision = step < 1 ? 100 : 1;
+          const next = Math.round((current.value + amount * (max - min)) * precision) / precision;
+          onChange(Math.max(min, Math.min(max, next)));
+        }}
+        onPointerUp={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          drag.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          drag.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onKeyDown={updateByKey}
+        className="relative flex size-[52px] shrink-0 items-center justify-center rounded-full p-[4px] shadow-[0_3px_8px_rgba(0,0,0,.65)] transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ffb648]/60 disabled:cursor-not-allowed disabled:opacity-40"
+        style={{
+          background: `conic-gradient(from 225deg, #ffb648 0deg ${activeAngle}deg, #52525b ${activeAngle}deg 270deg, transparent 270deg 360deg)`,
+        }}
+      >
+        <span className="relative flex size-full items-center justify-center rounded-full border border-black/80 bg-[radial-gradient(circle_at_34%_25%,#57575d,#27272d_48%,#101013)] shadow-[inset_0_2px_3px_rgba(255,255,255,.18),inset_0_-3px_5px_rgba(0,0,0,.75)]">
+          <span className="absolute inset-[5px] rounded-full border border-white/10 bg-[repeating-conic-gradient(rgba(255,255,255,.025)_0deg_3deg,rgba(0,0,0,.08)_3deg_6deg),radial-gradient(circle_at_35%_25%,#3e3e44,#17171a_75%)] shadow-[inset_0_1px_2px_rgba(255,255,255,.12),0_1px_2px_rgba(0,0,0,.7)]" />
+          <span
+            aria-hidden="true"
+            className="absolute top-[4px] left-1/2 h-[13px] w-[2px] -translate-x-1/2 rounded-full bg-[#ffe0a6] shadow-[0_0_4px_#ffb648]"
+            style={{ transform: `translateX(-50%) rotate(${angle}deg)`, transformOrigin: "50% 18px" }}
+          />
+        </span>
+      </button>
+      <span className="truncate text-center text-[10px] font-medium leading-tight text-zinc-100">{label}</span>
+      <span className="text-center text-[10px] leading-tight tabular-nums text-[#ffcf7e]">{format(value)}</span>
+      <span className="text-center text-[9px] leading-tight text-zinc-500">{range}</span>
+    </div>
   );
 }
 
@@ -943,8 +1192,8 @@ function PianoRow({
   if (scaleLock) {
     return (
       <div
-        className="grid h-[90px] w-full min-w-[480px] gap-0.5"
-        style={{ gridTemplateColumns: `repeat(${pitches.length}, minmax(0, 1fr))` }}
+        className="grid h-[90px] w-fit min-w-max gap-0.5"
+        style={{ gridTemplateColumns: `repeat(${pitches.length}, 30px)` }}
       >
         {pitches.map((pitch) => (
           <div key={pitch} className="min-w-0">

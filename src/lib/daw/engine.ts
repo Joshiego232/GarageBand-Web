@@ -24,6 +24,7 @@ import {
 import { applyMidiPlugins } from "./plugins";
 import { PedalboardProcessor } from "./pedalboard-engine";
 import { selectSamplerZone, shouldReleaseSamplerOnNoteOff } from "./sampler";
+import { normalizeReverbSend } from "./reverb-mix";
 import { useDAW } from "./store";
 import {
   tickToSec,
@@ -64,6 +65,7 @@ interface TrackNodes {
   panner: StereoPannerNode;
   spatialPanner: PannerNode;
   output: GainNode;
+  reverbDry: GainNode;
   routingTarget: AudioNode;
   analyser: AnalyserNode;
   pedalboard: PedalboardProcessor;
@@ -301,6 +303,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
   spatialPanner.rolloffFactor = 0;
   const analyser = ctx.createAnalyser();
   const output = ctx.createGain();
+  const reverbDry = ctx.createGain();
   const pedalboard = new PedalboardProcessor(ctx);
   analyser.fftSize = 512;
   const reverbSend = ctx.createGain();
@@ -350,7 +353,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
     .connect(pedalboard.input);
   pedalboard.output.connect(output);
 
-  output.connect(master.input);
+  output.connect(reverbDry).connect(master.input);
 
   panner.connect(reverbSend).connect(master.reverbConv);
   panner.connect(delaySend).connect(master.delay);
@@ -365,7 +368,7 @@ function buildTrack(ctx: BaseAudioContext, master: MasterNodes): TrackNodes {
 
   return {
     input, eqLow, eqMid, eqHigh, deEsser, presence, highPass, comp, saturation,
-    gain, groupGain, muteGain, panner, spatialPanner, analyser, output, routingTarget: master.input, pedalboard,
+    gain, groupGain, muteGain, panner, spatialPanner, analyser, output, reverbDry, routingTarget: master.input, pedalboard,
     reverbSend, delaySend, chorusDelay, chorusSend,
     chorusLfo, chorusDepth, flangerDelay, flangerSend, flangerFeedback,
     flangerLfo, flangerDepth,
@@ -481,9 +484,12 @@ function applyTrackAudioPlugins(tn: TrackNodes, track: Track) {
 
   const reverb = get("reverb");
   const delay = get("delay");
-  tn.reverbSend.gain.value = reverb
+  const reverbSend = reverb
     ? (reverb.enabled ? clamp(reverb.params.amount ?? 0.28, 0, 1) : 0)
     : clamp((track.params.reverb ?? 0) * 0.9, 0, 1);
+  const reverbGains = normalizeReverbSend(reverbSend);
+  tn.reverbSend.gain.value = reverbGains.send;
+  tn.reverbDry.gain.value = reverbGains.dry;
   tn.delaySend.gain.value = delay
     ? (delay.enabled ? clamp(delay.params.amount ?? 0.22, 0, 1) : 0)
     : clamp((track.params.delay ?? 0) * 0.9, 0, 1);
@@ -666,12 +672,22 @@ export class AudioEngine {
       automationEngine.bindParameter(track.id, "param:cutoff", tn.highPass.frequency);
       automationEngine.bindParameter(track.id, "param:resonance", tn.highPass.Q);
       automationEngine.bindParameter(track.id, "param:chorusDepth", tn.chorusDepth.gain);
-      automationEngine.bindParameter(track.id, "param:reverb", tn.reverbSend.gain);
+      automationEngine.bindParameter(track.id, "param:reverb", tn.reverbSend.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).send
+      );
+      automationEngine.bindParameter(track.id, "param:reverb", tn.reverbDry.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).dry
+      );
       automationEngine.bindParameter(track.id, "param:delay", tn.delaySend.gain);
       automationEngine.bindParameter(track.id, "eq:lowGain", tn.eqLow.gain);
       automationEngine.bindParameter(track.id, "eq:midGain", tn.eqMid.gain);
       automationEngine.bindParameter(track.id, "eq:highGain", tn.eqHigh.gain);
-      automationEngine.bindParameter(track.id, "send:reverb", tn.reverbSend.gain);
+      automationEngine.bindParameter(track.id, "send:reverb", tn.reverbSend.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).send
+      );
+      automationEngine.bindParameter(track.id, "send:reverb", tn.reverbDry.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).dry
+      );
       automationEngine.bindParameter(track.id, "send:delay", tn.delaySend.gain);
       const pedalboardSlot = activeAudioPlugin(track, "pedalboard");
       tn.pedalboard.sync(track.pedalboard ?? [], pedalboardSlot?.enabled === true);
@@ -723,8 +739,8 @@ export class AudioEngine {
       }
 
       if (nodes.routingTarget !== target) {
-        try { nodes.output.disconnect(); } catch { /* noop */ }
-        nodes.output.connect(target);
+        try { nodes.reverbDry.disconnect(); } catch { /* noop */ }
+        nodes.reverbDry.connect(target);
         nodes.routingTarget = target;
       }
     }
@@ -743,6 +759,7 @@ export class AudioEngine {
             tn.analyser.disconnect();
             tn.spatialPanner.disconnect();
             tn.output.disconnect();
+            tn.reverbDry.disconnect();
             tn.pedalboard.dispose();
             tn.reverbSend.disconnect();
             tn.delaySend.disconnect();
@@ -2469,12 +2486,22 @@ export class AudioEngine {
       offlineAutomation.bindParameter(trackId, "param:cutoff", tn.highPass.frequency);
       offlineAutomation.bindParameter(trackId, "param:resonance", tn.highPass.Q);
       offlineAutomation.bindParameter(trackId, "param:chorusDepth", tn.chorusDepth.gain);
-      offlineAutomation.bindParameter(trackId, "param:reverb", tn.reverbSend.gain);
+      offlineAutomation.bindParameter(trackId, "param:reverb", tn.reverbSend.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).send
+      );
+      offlineAutomation.bindParameter(trackId, "param:reverb", tn.reverbDry.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).dry
+      );
       offlineAutomation.bindParameter(trackId, "param:delay", tn.delaySend.gain);
       offlineAutomation.bindParameter(trackId, "eq:lowGain", tn.eqLow.gain);
       offlineAutomation.bindParameter(trackId, "eq:midGain", tn.eqMid.gain);
       offlineAutomation.bindParameter(trackId, "eq:highGain", tn.eqHigh.gain);
-      offlineAutomation.bindParameter(trackId, "send:reverb", tn.reverbSend.gain);
+      offlineAutomation.bindParameter(trackId, "send:reverb", tn.reverbSend.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).send
+      );
+      offlineAutomation.bindParameter(trackId, "send:reverb", tn.reverbDry.gain, (value) =>
+        normalizeReverbSend(clamp(value * 0.9, 0, 1)).dry
+      );
       offlineAutomation.bindParameter(trackId, "send:delay", tn.delaySend.gain);
       for (const binding of tn.pedalboard.getAutomationBindings(
         project.tracks.find((track) => track.id === trackId)?.pedalboard ?? [],
@@ -2522,8 +2549,8 @@ export class AudioEngine {
           if (busNodes && busNodes !== nodes) target = busNodes.input;
         }
       }
-      try { nodes.output.disconnect(); } catch { /* no previous route */ }
-      nodes.output.connect(target);
+      try { nodes.reverbDry.disconnect(); } catch { /* no previous route */ }
+      nodes.reverbDry.connect(target);
     }
 
     for (const track of project.tracks) {

@@ -86,6 +86,10 @@ export function snapTicks(mode: SnapMode, zoom: number, timeSig: [number, number
       return barTicks(timeSig);
     case "beat":
       return PPQ * (4 / timeSig[1]);
+    case "1/2":
+      return PPQ * 2;
+    case "1/4":
+      return PPQ;
     case "8th":
       return PPQ / 2;
     case "16th":

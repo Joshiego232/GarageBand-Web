@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { MousePointer2, Pencil, ZoomIn, ZoomOut, Maximize } from "lucide-react";
+import { LocateFixed, MousePointer2, Pencil, ZoomIn, ZoomOut, Maximize } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import {
@@ -44,10 +44,11 @@ import { importMidiFiles, isMidiFileForImport } from "@/lib/daw/midi-import";
 import { GlobalChordTrack, extractChordRegions } from "./GlobalChordTrack";
 import { AutomationLaneOverlay } from "./AutomationLaneOverlay";
 
-const HEADER_W = 212;
+const HEADER_W = 260;
 const RULER_H = 28;
-const SCROLL_PAD_X = 400;
 const SCROLL_PAD_Y = 90;
+const DEFAULT_TOTAL_BARS = 64;
+const BARS_PER_EXTENSION = 32;
 
 // waveform peaks cache: bufferId -> { peaks, duration }
 const peaksCache = new Map<string, { peaks: Float32Array; duration: number }>();
@@ -66,16 +67,47 @@ function getPeaks(bufferId?: string) {
 }
 
 interface DragState {
-  mode: "move" | "resize-l" | "resize-r" | "marquee" | "cycle";
+  mode: "move" | "resize-l" | "resize-r" | "loop" | "marquee" | "cycle";
   startX: number;
   startY: number;
   moved: boolean;
   altCopy: boolean;
+  freeSlide: boolean;
   regionIds: string[];
   orig: { id: string; trackId: string; start: number; length: number }[];
   deltaTick: number;
   toRow: number;
+  pointerX: number;
+  pointerY: number;
   marquee: { x0: number; y0: number; x1: number; y1: number } | null;
+}
+
+function formatMusicalPosition(tick: number, timeSig: [number, number]) {
+  const barLength = barTicks(timeSig);
+  const beatLength = PPQ * (4 / timeSig[1]);
+  const safeTick = Math.max(0, Math.round(tick));
+  const bar = Math.floor(safeTick / barLength) + 1;
+  const inBar = safeTick % barLength;
+  const beat = Math.floor(inBar / beatLength) + 1;
+  const inBeat = inBar % beatLength;
+  const divisionLength = beatLength / 4;
+  const division = Math.floor(inBeat / divisionLength) + 1;
+  const ticks = Math.floor(inBeat % divisionLength);
+  return `${bar} ${beat} ${division} ${ticks}`;
+}
+
+function formatMusicalLength(ticks: number, timeSig: [number, number]) {
+  const barLength = barTicks(timeSig);
+  const beatLength = PPQ * (4 / timeSig[1]);
+  const safeTicks = Math.max(0, Math.round(ticks));
+  const bars = Math.floor(safeTicks / barLength);
+  const inBar = safeTicks % barLength;
+  const beats = Math.floor(inBar / beatLength);
+  const inBeat = inBar % beatLength;
+  const divisionLength = beatLength / 4;
+  const divisions = Math.floor(inBeat / divisionLength);
+  const remainder = Math.floor(inBeat % divisionLength);
+  return `${bars} ${beats} ${divisions} ${remainder}`;
 }
 
 export function TimelineWorkspace() {
@@ -93,6 +125,15 @@ export function TimelineWorkspace() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; regionId: string } | null>(null);
   const [dropHint, setDropHint] = useState<string | null>(null);
   const [scrollX, setScrollX] = useState(0);
+  const [totalBars, setTotalBars] = useState(DEFAULT_TOTAL_BARS);
+  const [hoverRegionId, setHoverRegionId] = useState<string | null>(null);
+  const [dragHud, setDragHud] = useState<{
+    x: number;
+    y: number;
+    mode: DragState["mode"];
+    orig: DragState["orig"];
+    deltaTick: number;
+  } | null>(null);
 
   const project = useDAW((s) => s.project);
   const ui = useDAW((s) => s.ui);
@@ -101,7 +142,8 @@ export function TimelineWorkspace() {
   const automationView = useDAW((s) => s.ui.automationView);
   const showMasterTrack = useDAW((s) => s.ui.showMasterTrack);
 
-  const pxPerTick = ui.zoom / PPQ;
+  const pixelsPerBeat = ui.zoom;
+  const pxPerTick = pixelsPerBeat / PPQ;
   const snapGrid = snapTicks(ui.snap, ui.zoom, project.timeSig);
   const bt = barTicks(project.timeSig);
   const visibleTracks = useMemo(() => {
@@ -123,15 +165,10 @@ export function TimelineWorkspace() {
   for (const t of project.tracks) {
     for (const r of t.regions) contentEndTick = Math.max(contentEndTick, r.start + r.length);
   }
-  const minTicks = bt * 16;
   const projectEndTick = projectLengthTicks(project);
-  const contentTicks = Math.max(
-    projectEndTick + bt * 4,
-    contentEndTick + bt * 4,
-    minTicks,
-    engine.currentTick() + bt * 4,
-  );
-  const contentW = Math.max(contentTicks * pxPerTick + SCROLL_PAD_X, viewSize.w + HEADER_W);
+  const requiredBars = Math.ceil(Math.max(projectEndTick, contentEndTick) / bt) + 4;
+  const visibleTotalBars = Math.max(totalBars, DEFAULT_TOTAL_BARS, requiredBars);
+  const contentW = Math.max(visibleTotalBars * bt * pxPerTick, viewSize.w);
   const masterRowHeight = showMasterTrack ? (automationView ? 94 : 38) : 0;
   const tracksHeight = visibleTracks.reduce(
     (height, track) => height + trackRowHeight(track, ui.trackSize) + (automationView ? 56 : 0),
@@ -139,8 +176,10 @@ export function TimelineWorkspace() {
   );
   const contentH = tracksHeight + masterRowHeight + SCROLL_PAD_Y;
 
-  const tickToX = useCallback((tick: number) => tick * pxPerTick, [pxPerTick]);
-  const xToTick = useCallback((x: number) => x / pxPerTick, [pxPerTick]);
+  const beatToPx = useCallback((beat: number) => beat * pixelsPerBeat, [pixelsPerBeat]);
+  const pxToBeat = useCallback((px: number) => px / pixelsPerBeat, [pixelsPerBeat]);
+  const tickToX = useCallback((tick: number) => beatToPx(tick / PPQ), [beatToPx]);
+  const xToTick = useCallback((x: number) => pxToBeat(x) * PPQ, [pxToBeat]);
 
   const rowLayout = useCallback(() => {
     const rows: { track: Track; y: number; h: number }[] = [];
@@ -268,7 +307,30 @@ export function TimelineWorkspace() {
       for (const region of row.track.regions) {
         // dragged regions are drawn from ghost positions
         if (dragOffsets?.has(region.id)) continue;
-        drawRegion(ctx, region, row, y, sx, w, selected.has(region.id), project.tempo);
+        const editing = drag?.moved && drag.regionIds.includes(region.id) && drag.mode !== "move";
+        if (editing) {
+          let preview = region;
+          if (drag.mode === "resize-r") {
+            preview = { ...region, length: Math.max(PPQ / 8, region.length + drag.deltaTick) };
+          } else if (drag.mode === "resize-l") {
+            const start = clamp(region.start + drag.deltaTick, 0, region.start + region.length - PPQ / 8);
+            preview = { ...region, start, length: region.length - (start - region.start) };
+          } else if (drag.mode === "loop") {
+            preview = { ...region, length: Math.max(region.length, region.length + drag.deltaTick), looped: true, coreLength: region.coreLength ?? region.length };
+          }
+          drawRegion(ctx, preview, row, y, sx, w, true, project.tempo);
+        } else {
+          drawRegion(
+            ctx,
+            region,
+            row,
+            y,
+            sx,
+            w,
+            selected.has(region.id) || hoverRegionId === region.id,
+            project.tempo,
+          );
+        }
       }
       if (row.track.role === "folder" && row.track.collapsed) {
         const stack = project.stacks?.find((item) => item.folderTrackId === row.track.id);
@@ -396,7 +458,7 @@ export function TimelineWorkspace() {
         }
       }
     }
-  }, [project, ui, pxPerTick, bt, tickToX, recording, rowLayout, snapGrid, showMasterTrack, masterRowHeight]);
+  }, [project, ui, pxPerTick, bt, tickToX, recording, rowLayout, snapGrid, showMasterTrack, masterRowHeight, hoverRegionId]);
 
   // rAF loop
   useEffect(() => {
@@ -464,12 +526,16 @@ export function TimelineWorkspace() {
     if (!el) return;
     scrollRef.current = { x: el.scrollLeft, y: el.scrollTop };
     setScrollX(el.scrollLeft);
+    const pixelsPerBar = bt * pxPerTick;
+    if (pixelsPerBar > 0 && el.scrollLeft + el.clientWidth >= visibleTotalBars * pixelsPerBar - pixelsPerBar * 2) {
+      setTotalBars((current) => current + BARS_PER_EXTENSION);
+    }
     if (headersScrollRef.current) {
       headersScrollRef.current.scrollTop = el.scrollTop;
     }
     setHeaderScrollY(el.scrollTop);
     markDirty();
-  }, [markDirty]);
+  }, [bt, pxPerTick, visibleTotalBars, markDirty]);
 
   useEffect(() => {
     const el = contentRef.current;
@@ -497,12 +563,14 @@ export function TimelineWorkspace() {
         const x0 = tickToX(region.start);
         const x1 = tickToX(region.start + region.length);
         if (contentX >= x0 && contentX <= x1) {
-          const nearLeft = contentX - x0 < 7;
-          const nearRight = x1 - contentX < 7;
-          return { region, row, rowIndex, nearLeft, nearRight };
+          const localY = contentY - row.y;
+          const nearLoop = contentX >= x1 - 14 && localY <= 15;
+          const nearLeft = contentX - x0 < 9 && localY >= row.h - 14;
+          const nearRight = x1 - contentX < 9 && localY >= row.h - 14;
+          return { region, row, rowIndex, nearLeft, nearRight, nearLoop };
         }
       }
-      return { region: null, row, rowIndex, nearLeft: false, nearRight: false };
+      return { region: null, row, rowIndex, nearLeft: false, nearRight: false, nearLoop: false };
     },
     [rowLayout, tickToX]
   );
@@ -545,15 +613,18 @@ export function TimelineWorkspace() {
         .map((r) => ({ id: r.id, trackId: r.trackId, start: r.start, length: r.length }));
       const rowIndexById = new Map(visibleTracks.map((t, i) => [t.id, i] as const));
       dragRef.current = {
-        mode: hit.nearRight ? "resize-r" : hit.nearLeft ? "resize-l" : "move",
+        mode: hit.nearLoop ? "loop" : hit.nearRight ? "resize-r" : hit.nearLeft ? "resize-l" : "move",
         startX: pos.x,
         startY: pos.y,
         moved: false,
         altCopy: e.altKey,
+        freeSlide: e.metaKey || e.ctrlKey,
         regionIds: ids,
         orig,
         deltaTick: 0,
         toRow: rowIndexById.get(region.trackId) ?? 0,
+        pointerX: e.clientX,
+        pointerY: e.clientY,
         marquee: null,
       };
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -566,28 +637,70 @@ export function TimelineWorkspace() {
         startY: pos.y,
         moved: false,
         altCopy: false,
+        freeSlide: false,
         regionIds: [],
         orig: [],
         deltaTick: 0,
         toRow: 0,
+        pointerX: e.clientX,
+        pointerY: e.clientY,
         marquee: { x0: pos.x, y0: pos.y, x1: pos.x, y1: pos.y },
       };
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    }
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = hit?.region
+        ? hit.nearLoop
+          ? "alias"
+          : hit.nearLeft || hit.nearRight
+            ? "ew-resize"
+            : "grabbing"
+        : "default";
     }
     markDirty();
   };
 
   const onCanvasPointerMove = (e: React.PointerEvent) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag) {
+      const pos = contentPointerPos(e);
+      const hit = hitTest(pos.x, pos.y);
+      setHoverRegionId(hit?.region?.id ?? null);
+      if (canvasRef.current) {
+        canvasRef.current.style.cursor = hit?.nearLoop
+          ? "alias"
+          : hit?.nearLeft || hit?.nearRight
+            ? "ew-resize"
+            : hit?.region
+              ? "grab"
+              : "default";
+      }
+      return;
+    }
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    const scroller = contentRef.current;
+    if (canvasRect && scroller) {
+      const localX = e.clientX - canvasRect.left;
+      if (localX > canvasRect.width - 32) {
+        scroller.scrollLeft += Math.max(4, (localX - canvasRect.width + 32) / 3);
+        onScroll();
+      } else if (localX < 32 && scroller.scrollLeft > 0) {
+        scroller.scrollLeft -= Math.max(4, (32 - localX) / 3);
+        onScroll();
+      }
+    }
     const pos = contentPointerPos(e);
+    drag.pointerX = e.clientX;
+    drag.pointerY = e.clientY;
     if (Math.abs(pos.x - drag.startX) > 3 || Math.abs(pos.y - drag.startY) > 3) drag.moved = true;
     if (!drag.moved) return;
 
     if (drag.mode === "move") {
       const dTick = pos.x - drag.startX;
-      const snapped = snapTick(dTick, snapGrid) - (snapTick(drag.orig[0].start, snapGrid) - drag.orig[0].start);
-      drag.deltaTick = snapped;
+      drag.freeSlide = e.metaKey || e.ctrlKey;
+      drag.deltaTick = drag.freeSlide
+        ? Math.round(dTick)
+        : snapTick(drag.orig[0].start + dTick, snapGrid) - drag.orig[0].start;
       // vertical target row
       const rows = rowLayout();
       let row = 0;
@@ -596,12 +709,43 @@ export function TimelineWorkspace() {
       }
       drag.toRow = clamp(row, 0, rows.length - 1);
     } else if (drag.mode === "resize-r") {
-      drag.deltaTick = Math.max(PPQ / 8, snapTick(pos.x - drag.startX, snapGrid));
+      const origin = drag.orig[0].start + drag.orig[0].length;
+      drag.deltaTick = Math.max(
+        PPQ / 8 - drag.orig[0].length,
+        e.metaKey || e.ctrlKey
+          ? Math.round(pos.x - drag.startX)
+          : snapTick(origin + pos.x - drag.startX, snapGrid) - origin,
+      );
     } else if (drag.mode === "resize-l") {
-      drag.deltaTick = snapTick(pos.x - drag.startX, snapGrid);
+      drag.deltaTick = e.metaKey || e.ctrlKey
+        ? Math.round(pos.x - drag.startX)
+        : snapTick(drag.orig[0].start + pos.x - drag.startX, snapGrid) - drag.orig[0].start;
+    } else if (drag.mode === "loop") {
+      const original = drag.orig[0];
+      const source = project.tracks.flatMap((track) => track.regions).find((region) => region.id === original.id);
+      const coreLength = source?.looped && source.coreLength ? source.coreLength : original.length;
+      const desiredLength = original.length + (e.metaKey || e.ctrlKey
+        ? Math.round(pos.x - drag.startX)
+        : snapTick(pos.x - drag.startX, snapGrid));
+      const loopCount = Math.max(1, Math.ceil(desiredLength / coreLength));
+      drag.deltaTick = loopCount * coreLength - original.length;
     } else if (drag.mode === "marquee" && drag.marquee) {
       drag.marquee.x1 = pos.x;
       drag.marquee.y1 = pos.y;
+    }
+    if (drag.mode === "move" || drag.mode === "loop") {
+      const endTick = Math.max(...drag.orig.map((origin) => origin.start + origin.length + drag.deltaTick));
+      const neededBars = Math.ceil(endTick / bt) + 16;
+      setTotalBars((current) => Math.max(current, neededBars));
+    }
+    if (drag.mode !== "marquee" && drag.mode !== "cycle") {
+      setDragHud({
+        x: e.clientX,
+        y: e.clientY,
+        mode: drag.mode,
+        orig: drag.orig,
+        deltaTick: drag.deltaTick,
+      });
     }
     markDirty();
   };
@@ -609,6 +753,7 @@ export function TimelineWorkspace() {
   const onCanvasPointerUp = () => {
     const drag = dragRef.current;
     dragRef.current = null;
+    setDragHud(null);
     if (!drag || !drag.moved) {
       markDirty();
       return;
@@ -643,10 +788,38 @@ export function TimelineWorkspace() {
           targetTrack && targetTrack.role !== "folder" && targetTrack.role !== "vca" && targetTrack.role !== "aux" && (targetTrack.type === "audio") === anyAudio ? targetTrack.id : undefined;
         st.moveRegions(drag.regionIds, drag.deltaTick, toTrackId);
       }
+      const furthestTick = Math.max(
+        ...drag.orig.map((origin) => origin.start + drag.deltaTick + origin.length),
+      );
+      if (furthestTick > projectLengthTicks(st.project)) {
+        st.setProjectLengthBars(Math.ceil(furthestTick / bt));
+      }
     } else if (drag.mode === "resize-r") {
       st.commit();
       for (const o of drag.orig) {
         st.updateRegion(o.id, { length: Math.max(PPQ / 8, o.length + drag.deltaTick) }, false);
+      }
+      const furthestTick = Math.max(...drag.orig.map((origin) =>
+        origin.start + Math.max(PPQ / 8, origin.length + drag.deltaTick)
+      ));
+      if (furthestTick > projectLengthTicks(st.project)) {
+        st.setProjectLengthBars(Math.ceil(furthestTick / bt));
+      }
+    } else if (drag.mode === "loop") {
+      st.commit();
+      for (const o of drag.orig) {
+        const src = project.tracks.flatMap((track) => track.regions).find((region) => region.id === o.id);
+        const coreLength = src?.looped && src.coreLength ? src.coreLength : o.length;
+        const newLength = Math.max(o.length, o.length + drag.deltaTick);
+        st.updateRegion(o.id, {
+          length: newLength,
+          looped: newLength > coreLength,
+          coreLength,
+        }, false);
+      }
+      const furthestTick = Math.max(...drag.orig.map((origin) => origin.start + origin.length + drag.deltaTick));
+      if (furthestTick > projectLengthTicks(st.project)) {
+        st.setProjectLengthBars(Math.ceil(furthestTick / bt));
       }
     } else if (drag.mode === "resize-l") {
       st.commit();
@@ -744,11 +917,12 @@ export function TimelineWorkspace() {
     const rect = canvas.getBoundingClientRect();
     const startX = e.clientX - rect.left;
     let mode: "click" | "cycle" = "click";
+    const canSetCycle = e.clientY - rect.top <= RULER_H / 2;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
 
     const move = (ev: PointerEvent) => {
       const x = ev.clientX - rect.left;
-      if (mode === "click" && Math.abs(x - startX) > 5) mode = "cycle";
+      if (mode === "click" && canSetCycle && Math.abs(x - startX) > 5) mode = "cycle";
       if (mode === "cycle") {
         const t0 = snapTick(xToTick(Math.min(startX, x) + scrollRef.current.x), snapGrid);
         const t1 = snapTick(xToTick(Math.max(startX, x) + scrollRef.current.x), snapGrid);
@@ -772,10 +946,24 @@ export function TimelineWorkspace() {
   // ---------- wheel ----------
 
   const onWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      const el = contentRef.current;
+      if (el) {
+        el.scrollLeft += e.deltaY || e.deltaX;
+        onScroll();
+      }
+    } else if (e.altKey || e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const factor = Math.exp(-e.deltaY * 0.002);
-      useDAW.getState().setZoom(ui.zoom * factor);
+      const nextZoom = clamp(ui.zoom * factor, 8, 640);
+      const playheadX = engine.currentTick() * pxPerTick;
+      const viewportOffset = playheadX - (contentRef.current?.scrollLeft ?? 0);
+      useDAW.getState().setZoom(nextZoom);
+      if (contentRef.current) {
+        contentRef.current.scrollLeft = Math.max(0, engine.currentTick() * (nextZoom / PPQ) - viewportOffset);
+        onScroll();
+      }
       markDirty();
     }
   };
@@ -819,9 +1007,17 @@ export function TimelineWorkspace() {
 
     if (files.length) {
       e.preventDefault();
+      const hit = hitTest(pos.x, pos.y);
       for (const file of files) {
         if (isMidiFileForImport(file)) {
-          await importMidiFiles([file], dropTick);
+          const targetTrack = hit?.row.track;
+          const targetTrackId = targetTrack?.type === "midi" &&
+            targetTrack.role !== "folder" &&
+            targetTrack.role !== "vca" &&
+            targetTrack.role !== "aux"
+            ? targetTrack.id
+            : undefined;
+          await importMidiFiles([file], dropTick, targetTrackId);
           continue;
         }
         try {
@@ -829,9 +1025,14 @@ export function TimelineWorkspace() {
           const bufferId = uid();
           await engine.storeBuffer(bufferId, stored);
           const lengthTicks = Math.ceil(secToTick(stored.channels[0].length / stored.sampleRate, project.tempo));
-          const hit = hitTest(pos.x, pos.y);
           let trackId: string;
-          if (hit && hit.row.track.type === "audio") {
+          if (
+            hit &&
+            hit.row.track.type === "audio" &&
+            hit.row.track.role !== "folder" &&
+            hit.row.track.role !== "vca" &&
+            hit.row.track.role !== "aux"
+          ) {
             trackId = hit.row.track.id;
           } else {
             useDAW.getState().addTrack({
@@ -889,7 +1090,7 @@ export function TimelineWorkspace() {
         }, false);
         break;
       case "split":
-        st.splitRegionsAt(engine.currentTick());
+        st.splitRegionsAt(engine.currentTick(), region.trackId);
         break;
       case "loop":
         st.toggleRegionLoop([regionId]);
@@ -922,6 +1123,7 @@ export function TimelineWorkspace() {
           region.length,
           bt,
           { tonic: project.keyTonic, mode: project.keyMode },
+          project.timeSig[0],
         );
         if (!extracted.length) {
           toast.error("No chords could be identified in this region.");
@@ -937,11 +1139,56 @@ export function TimelineWorkspace() {
     markDirty();
   };
 
+  const activeHudDrag = dragHud;
+  const hudRegion = activeHudDrag?.orig[0];
+  const hudStart = hudRegion
+    ? hudRegion.start + (activeHudDrag.mode === "move" || activeHudDrag.mode === "resize-l" ? activeHudDrag.deltaTick : 0)
+    : 0;
+  const hudLength = hudRegion
+    ? activeHudDrag.mode === "resize-l"
+      ? hudRegion.length - activeHudDrag.deltaTick
+      : activeHudDrag.mode === "resize-r" || activeHudDrag.mode === "loop"
+        ? hudRegion.length + activeHudDrag.deltaTick
+        : hudRegion.length
+    : 0;
+  const zoomAroundPlayhead = (nextZoom: number) => {
+    const zoom = clamp(nextZoom, 8, 640);
+    const el = contentRef.current;
+    if (el) {
+      const viewportOffset = engine.currentTick() * pxPerTick - el.scrollLeft;
+      el.scrollLeft = Math.max(0, engine.currentTick() * (zoom / PPQ) - viewportOffset);
+      onScroll();
+    }
+    useDAW.getState().setZoom(zoom);
+  };
+
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 relative" data-testid="timeline">
+      {dragHud && activeHudDrag && hudRegion && (
+        <div
+          className="fixed z-50 pointer-events-none rounded-md border border-white/10 bg-[#17171b]/95 px-2.5 py-1.5 font-mono text-[10px] leading-4 text-zinc-100 shadow-[0_8px_24px_rgba(0,0,0,0.5)] backdrop-blur"
+          style={{ left: dragHud.x + 14, top: dragHud.y + 14 }}
+        >
+          {activeHudDrag.mode === "move" ? (
+            <>
+              Position: {formatMusicalPosition(hudStart, project.timeSig)}
+              <span className="ml-2 text-[#ffca72]">
+                (Δ {activeHudDrag.deltaTick >= 0 ? "+" : ""}{(activeHudDrag.deltaTick / bt).toFixed(2)} Bars)
+              </span>
+            </>
+          ) : (
+            <>
+              Length: {formatMusicalLength(hudLength, project.timeSig)}
+              <span className="ml-2 text-[#ffca72]">
+                (End: {formatMusicalPosition(hudStart + hudLength, project.timeSig)})
+              </span>
+            </>
+          )}
+        </div>
+      )}
       {/* top row: corner toolbar + ruler */}
       <div className="flex shrink-0 border-b border-black/60">
-        <div className="w-[212px] shrink-0 h-[28px] bg-[#232327] border-r border-black/60 flex items-center px-2 gap-1.5">
+        <div className="sticky left-0 z-30 w-[260px] shrink-0 h-[28px] bg-[#232327] border-r border-black/60 flex items-center px-2 gap-1.5 shadow-[4px_0_12px_rgba(0,0,0,0.45)]">
           <button
             title="Pointer tool"
             onClick={() => useDAW.getState().setTool("pointer")}
@@ -976,6 +1223,8 @@ export function TimelineWorkspace() {
             <option value="smart">Snap: Smart</option>
             <option value="bar">Snap: Bar</option>
             <option value="beat">Snap: Beat</option>
+            <option value="1/2">Snap: 1/2</option>
+            <option value="1/4">Snap: 1/4</option>
             <option value="8th">Snap: 1/8</option>
             <option value="16th">Snap: 1/16</option>
             <option value="off">Snap: Off</option>
@@ -984,7 +1233,7 @@ export function TimelineWorkspace() {
             <button
               title="Zoom out timeline (Ctrl/Cmd+-)"
               aria-label="Zoom out timeline"
-              onClick={() => useDAW.getState().setZoom(ui.zoom / 1.35)}
+              onClick={() => zoomAroundPlayhead(ui.zoom / 1.35)}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
             >
               <ZoomOut className="size-3.5" />
@@ -995,7 +1244,7 @@ export function TimelineWorkspace() {
             <button
               title="Zoom in timeline (Ctrl/Cmd+=)"
               aria-label="Zoom in timeline"
-              onClick={() => useDAW.getState().setZoom(ui.zoom * 1.35)}
+              onClick={() => zoomAroundPlayhead(ui.zoom * 1.35)}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
             >
               <ZoomIn className="size-3.5" />
@@ -1004,7 +1253,7 @@ export function TimelineWorkspace() {
               title="Zoom to fit (Ctrl/Cmd+0)"
               onClick={() => {
                 const len = Math.max(projectLengthTicks(project), contentEndTick, bt * 8);
-                useDAW.getState().setZoom((viewSize.w - 40) / (len / PPQ));
+                zoomAroundPlayhead((viewSize.w - 40) / (len / PPQ));
               }}
               className="size-[19px] rounded flex items-center justify-center text-zinc-500 hover:text-zinc-300 hover:bg-white/5"
             >
@@ -1062,6 +1311,39 @@ export function TimelineWorkspace() {
             >
               +
             </button>
+            <span className="mx-0.5 h-3.5 w-px bg-white/10" />
+            <input
+              aria-label="Timeline zoom"
+              title="Timeline zoom"
+              type="range"
+              min={8}
+              max={640}
+              value={ui.zoom}
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => zoomAroundPlayhead(Number(event.target.value))}
+              className="h-3 w-16 accent-[#ffb648]"
+            />
+            <button
+              type="button"
+              aria-label={ui.followPlayhead ? "Stop catching playhead" : "Scroll to playhead and catch"}
+              title={ui.followPlayhead ? "Stop catching playhead" : "Scroll to playhead / Catch Playhead"}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => {
+                const followPlayhead = !ui.followPlayhead;
+                useDAW.getState().setUI({ followPlayhead });
+                const el = contentRef.current;
+                if (el) {
+                  el.scrollLeft = Math.max(0, engine.currentTick() * pxPerTick - el.clientWidth * 0.25);
+                  onScroll();
+                }
+              }}
+              className={cn(
+                "flex size-[19px] items-center justify-center rounded",
+                ui.followPlayhead ? "bg-[#ffb648]/20 text-[#ffb648]" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+              )}
+            >
+              <LocateFixed className="size-3.5" />
+            </button>
           </div>
         </div>
       </div>
@@ -1074,8 +1356,8 @@ export function TimelineWorkspace() {
       />
 
       {/* main row: headers + content */}
-      <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "212px minmax(0, 1fr)" }}>
-        <div className="border-r border-black/60 bg-[#242429] flex flex-col min-w-0">
+      <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "260px minmax(0, 1fr)" }}>
+        <div className="sticky left-0 z-30 border-r border-black/60 bg-[#242429] flex flex-col min-w-0 shadow-[4px_0_12px_rgba(0,0,0,0.45)]">
           <div ref={headersScrollRef} className="flex-1 overflow-hidden">
             <TrackHeaders scrollTop={headerScrollY} width={HEADER_W} size={ui.trackSize} />
           </div>
@@ -1280,6 +1562,22 @@ function drawRegion(
     ctx.fillStyle = "rgba(255,255,255,0.55)";
     ctx.fillRect(clipX0 + 2, y + h - 5, 3, 3);
     ctx.fillRect(clipX0 + clipW - 5, y + h - 5, 3, 3);
+    if (clipW > 30) {
+      const handleX = clipX0 + clipW - 10;
+      const handleY = y + 7;
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.arc(handleX, handleY, 3.2, Math.PI * 0.18, Math.PI * 1.72);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath();
+      ctx.moveTo(handleX + 3.2, handleY - 1.4);
+      ctx.lineTo(handleX + 4.5, handleY + 1.1);
+      ctx.lineTo(handleX + 1.7, handleY + 0.7);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
   ctx.restore();
 }

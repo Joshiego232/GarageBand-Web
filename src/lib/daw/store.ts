@@ -103,7 +103,7 @@ interface DAWState {
   updateRegion: (id: string, patch: Partial<Region>, commit?: boolean) => void;
   updateRegions: (ids: string[], patch: Partial<Region>) => void;
   duplicateRegions: (ids: string[]) => void;
-  splitRegionsAt: (tick: number) => void;
+  splitRegionsAt: (tick: number, trackId?: string) => void;
   joinRegions: (ids: string[]) => void;
   toggleRegionLoop: (ids: string[]) => void;
   transposeRegions: (ids: string[], semitones: number) => void;
@@ -164,6 +164,7 @@ function findRegion(project: Project, id: string): { track: Track; region: Regio
 }
 
 const initialUI: UIState = {
+  projectsScreen: true,
   tool: "pointer",
   snap: "smart",
   zoom: 56,
@@ -278,6 +279,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       future: [],
       ui: {
         ...get().ui,
+        projectsScreen: false,
         selectedRegionIds: [],
         selectedNoteIds: [],
         selectedTrackId: normalized.tracks[0]?.id ?? null,
@@ -1244,11 +1246,18 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
   },
 
-  splitRegionsAt: (tick) => {
-    get().commit();
+  splitRegionsAt: (tick, trackId) => {
     const project = get().project;
+    const targetTrackId = trackId ?? get().ui.selectedTrackId;
+    const targetTrack = project.tracks.find((track) => track.id === targetTrackId);
+    if (!targetTrack || !targetTrack.regions.some(
+      (region) => tick > region.start + 8 && tick < region.start + region.length - 8,
+    )) return;
+
+    get().commit();
     const splitMap = new Map<string, { regionId: string; offset: number; trackId: string }>();
     const tracks = project.tracks.map((t) => {
+      if (t.id !== targetTrackId) return t;
       const out: Region[] = [];
       let changed = false;
       for (const r of t.regions) {

@@ -1,9 +1,13 @@
 import type { Project } from "./types";
+import { createProjectPreview } from "./project-preview";
 
 export interface SavedSong {
   id: string;
   name: string;
   updatedAt: string;
+  createdAt?: string;
+  lastOpenedAt?: string;
+  preview?: string;
   project: Project;
 }
 
@@ -56,7 +60,9 @@ export async function listSavedSongs(): Promise<SavedSong[]> {
   const songs = await runRequest<SavedSong[]>("readonly", (store) =>
     store.getAll() as IDBRequest<SavedSong[]>
   );
-  return songs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return songs.sort((a, b) =>
+    (b.lastOpenedAt ?? b.updatedAt).localeCompare(a.lastOpenedAt ?? a.updatedAt),
+  );
 }
 
 export function getSavedSong(id: string): Promise<SavedSong | undefined> {
@@ -67,14 +73,27 @@ export function getSavedSong(id: string): Promise<SavedSong | undefined> {
 
 export async function saveSong(project: Project): Promise<SavedSong> {
   const id = project.id ?? crypto.randomUUID();
+  const existing = await getSavedSong(id);
+  const now = new Date().toISOString();
   const savedSong: SavedSong = {
     id,
     name: project.name,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
+    createdAt: existing?.createdAt ?? existing?.updatedAt ?? now,
+    lastOpenedAt: existing?.lastOpenedAt,
+    preview: createProjectPreview(project),
     project: { ...project, id },
   };
   await runRequest("readwrite", (store) => store.put(savedSong));
   return savedSong;
+}
+
+export async function markSavedSongOpened(id: string): Promise<SavedSong | undefined> {
+  const song = await getSavedSong(id);
+  if (!song) return undefined;
+  const opened = { ...song, lastOpenedAt: new Date().toISOString() };
+  await runRequest("readwrite", (store) => store.put(opened));
+  return opened;
 }
 
 export function deleteSavedSong(id: string): Promise<undefined> {
