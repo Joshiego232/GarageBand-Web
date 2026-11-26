@@ -16,6 +16,7 @@ interface KnobProps {
   onCommitEnd?: () => void;
   label?: string;
   size?: number;
+  textSize?: number;
   unit?: string;
   format?: (v: number) => string;
   curve?: "lin" | "log";
@@ -32,6 +33,7 @@ export function Knob({
   onCommitEnd,
   label,
   size = 44,
+  textSize = 9,
   unit,
   format,
   curve = "lin",
@@ -129,8 +131,8 @@ export function Knob({
         />
         <circle cx={cx} cy={cy} r={4} fill={dragging ? color : "#5a5a62"} />
       </svg>
-      {label && <span className="text-[9px] text-zinc-400 leading-none">{label}</span>}
-      <span className="text-[9px] text-zinc-500 font-mono leading-none">{display}</span>
+      {label && <span className="text-[9px] text-zinc-400 leading-none" style={{ fontSize: textSize }}>{label}</span>}
+      <span className="text-[9px] text-zinc-500 font-mono leading-none" style={{ fontSize: textSize }}>{display}</span>
     </div>
   );
 }

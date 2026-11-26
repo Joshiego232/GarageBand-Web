@@ -33,12 +33,68 @@ export interface Region {
   notes?: Note[];
   // Audio payload
   bufferId?: string; // IndexedDB key for PCM data
+  originalAudioBufferId?: string;
+  denoisedAudioBufferId?: string;
+  denoiseEnabled?: boolean;
+  denoiseAmount?: number;
+  denoiseHighPass?: boolean;
+  denoiseCacheKey?: string;
+  noiseFingerprint?: number[][];
+  denoiseReductionDb?: number;
   sampleStart?: number; // seconds into the buffer
   sampleLength?: number; // seconds of audio content
   playbackRate?: number; // varispeed: 0.5..2, changes pitch and duration together
   gain?: number; // linear playback gain
   fadeIn?: number; // seconds
   fadeOut?: number; // seconds
+}
+
+export function getRegionSourceBufferId(region: Region): string | undefined {
+  return region.originalAudioBufferId ?? region.bufferId;
+}
+
+export function getRegionPlaybackBufferId(region: Region): string | undefined {
+  const sourceId = getRegionSourceBufferId(region);
+  return region.denoiseEnabled && region.denoisedAudioBufferId
+    ? region.denoisedAudioBufferId
+    : sourceId;
+}
+
+export type AutomationMode = "off" | "read" | "touch" | "latch" | "write";
+export type AutomationCurve = "linear" | "exponential" | "bezier";
+
+export interface AutomationPoint {
+  id: string;
+  tick: number;
+  value: number;
+  curve?: AutomationCurve;
+  tension?: number;
+}
+
+export interface AutomationLane {
+  id: string;
+  ownerId: string;
+  scope: "track" | "region";
+  regionId?: string;
+  parameterId: string;
+  name: string;
+  unit?: string;
+  min: number;
+  max: number;
+  color: string;
+  step?: boolean;
+  scale?: "linear" | "log";
+  points: AutomationPoint[];
+}
+
+export interface ChordRegion {
+  id: string;
+  sourceRegionId?: string;
+  start: number;
+  length: number;
+  name: string;
+  notes: number[];
+  color?: string;
 }
 
 export interface EqSettings {
@@ -52,6 +108,30 @@ export interface EqSettings {
 }
 
 export type TrackRole = "track" | "aux" | "vca" | "folder";
+export type PedalCategory =
+  | "Distortion"
+  | "Modulation"
+  | "Delay"
+  | "Reverb"
+  | "Filter"
+  | "Dynamics";
+
+export type PedalId =
+  | "squash-compressor"
+  | "vintage-drive"
+  | "retro-chorus"
+  | "phase-tripper"
+  | "blue-echo"
+  | "spring-box"
+  | "auto-funk"
+  | "total-tremolo";
+
+export interface PedalInstance {
+  id: string;
+  pedalId: PedalId;
+  enabled: boolean;
+  params: Record<string, number>;
+}
 
 export interface TrackStack {
   id: string;
@@ -60,6 +140,12 @@ export interface TrackStack {
   trackIds: string[];
   folderTrackId: string;
   busTrackId?: string;
+  color?: string;
+}
+
+export interface TrackNode {
+  trackId: string;
+  children: TrackNode[];
 }
 
 export interface ProjectAlternative {
@@ -105,6 +191,14 @@ export interface Track {
   instrument: string; // patch id for midi tracks
   /** IndexedDB sample key for a user-created Quick Sampler instrument. */
   sampleBufferId?: string;
+  /** Selected preset inside an imported SoundFont file. */
+  soundFontPreset?: {
+    fileId: string;
+    fileName: string;
+    presetName: string;
+    bank: number;
+    program: number;
+  };
   sampleRootPitch?: number;
   samplePlaybackMode?: "one-shot" | "loop";
   sampleName?: string;
@@ -127,6 +221,7 @@ export interface Track {
   params: Record<string, number>; // smart-control params (patch knobs + sends)
   midiPlugins?: TrackPluginInstance[];
   audioPlugins?: TrackPluginInstance[];
+  pedalboard?: PedalInstance[];
   regions: Region[];
 }
 
@@ -144,6 +239,7 @@ export interface MidiCCMapping {
 export interface Project {
   id?: string; // database id when saved
   name: string;
+  lengthBars?: number; // explicit arrangement end; omitted projects derive it from their regions
   tempo: number; // BPM
   timeSig: [number, number]; // e.g. [4, 4]
   keyTonic: number; // 0=C .. 11=B
@@ -154,9 +250,12 @@ export interface Project {
   countIn: boolean;
   metronome: boolean;
   masterVolume: number; // 0..1.25
+  automationLanes?: AutomationLane[];
+  automationModes?: Record<string, AutomationMode>;
   audioOutputDeviceId?: string | null;
   midiCCMappings?: MidiCCMapping[];
   tracks: Track[];
+  chordRegions?: ChordRegion[];
   stacks?: TrackStack[];
   alternatives?: ProjectAlternative[];
   screensets?: ScreenSet[];
@@ -165,7 +264,7 @@ export interface Project {
 // ---------- UI state ----------
 
 export type Tool = "pointer" | "pencil";
-export type SnapMode = "smart" | "bar" | "beat" | "8th" | "16th" | "off";
+export type SnapMode = "smart" | "bar" | "beat" | "1/2" | "1/4" | "8th" | "16th" | "off";
 export type TrackSize = "S" | "M" | "L";
 export type EditorMode = "piano" | "audio" | "steps" | "score" | "smart";
 export type PanelKey =
@@ -182,14 +281,17 @@ export type ModalKind =
   | "addTrack"
   | "export"
   | "mySongs"
-  | "composer";
+  | "composer"
+  | "pedalboard";
 
 export interface UIState {
+  projectsScreen: boolean;
   tool: Tool;
   snap: SnapMode;
   zoom: number; // pixels per beat
   trackSize: TrackSize;
   selectedTrackId: string | null;
+  selectedTrackIds: string[];
   selectedRegionIds: string[];
   selectedNoteIds: string[];
   panels: Record<PanelKey, boolean>;
@@ -200,6 +302,14 @@ export interface UIState {
   musicalTyping: boolean;
   octaveBase: number; // base octave for musical typing (C3 = 3)
   velocity: number; // musical typing velocity
+  keyboardScaleLock: boolean;
+  keyboardScaleRoot: number;
+  keyboardScaleMode: "major" | "minor" | "dorian" | "pentatonic" | "blues";
+  keyboardChordStrips: { name: string; notes: number[] }[];
+  automationView: boolean;
+  showMasterTrack: boolean;
+  automationSelections: Record<string, string>;
+  automationExpandedTracks: string[];
 }
 
 // ---------- Instruments ----------
@@ -219,6 +329,7 @@ export interface Patch {
   id: string;
   name: string;
   category: string;
+  subcategory?: string;
   icon: string;
   desc: string;
   knobs: KnobDef[];
@@ -226,13 +337,28 @@ export interface Patch {
   synthEngine?: "morph-additive";
   /** Sound source used by the sampled-instrument engine. */
   sampled?: {
-    engine: "soundfont" | "splendid-piano" | "electric-piano" | "drum-machine";
+    engine: "soundfont" | "soundfont-worklet" | "splendid-piano" | "electric-piano" | "drum-machine";
     instrument: string;
     kit?: "MusyngKite" | "FluidR3_GM";
     loop?: boolean;
+    layers?: { instrument: string; gain: number }[];
   };
+  soundfont?: SoundFontPresetRef;
   /** Drum patches map MIDI drum pitches to sampled kit pieces. */
   isDrum?: boolean;
+}
+
+export interface SoundFontPresetRef {
+  source: "marmooo" | "imported";
+  bank: number;
+  program: number;
+  name: string;
+  url?: string;
+  font?: string;
+  fileId?: string;
+  fileName?: string;
+  stereoWidth?: number;
+  highShelfDb?: number;
 }
 
 // ---------- Loops ----------
@@ -266,6 +392,17 @@ export const TRACK_SIZES: Record<TrackSize, number> = {
   M: 68,
   L: 96,
 };
+
+export const COLLAPSED_TRACK_HEIGHT = 20;
+
+export function trackRowHeight(
+  track: Pick<Track, "collapsed" | "role">,
+  size: TrackSize
+): number {
+  return track.collapsed && track.role !== "folder"
+    ? COLLAPSED_TRACK_HEIGHT
+    : TRACK_SIZES[size];
+}
 
 export function uid(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {

@@ -11,6 +11,7 @@ import {
   TRACK_SIZES,
   uid,
   type Project,
+  type ChordRegion,
   type Track,
   type Region,
   type Note,
@@ -26,7 +27,11 @@ import {
   type TrackStack,
   type ScreenSet,
   type ProjectAlternative,
+  type AutomationLane,
+  type AutomationMode,
+  type AutomationPoint,
 } from "./types";
+import { automationEngine, automationValueAt, type RecordedAutomationPoint } from "./AutomationEngine";
 import { emptyProject, makeTrack } from "./loops";
 import { PATCHES, defaultParams } from "./instruments";
 import { clamp, barTicks, snapTicks, snapTick } from "./utils";
@@ -46,15 +51,20 @@ interface DAWState {
   // project meta
   loadProject: (p: Project) => void;
   setProjectName: (name: string) => void;
+  setProjectLengthBars: (bars: number) => void;
   setTempo: (bpm: number) => void;
   setTimeSig: (n: number, d: number) => void;
   setKey: (tonic: number, mode: "major" | "minor") => void;
   setCycle: (on: boolean, start?: number, end?: number) => void;
   setMasterVolume: (v: number) => void;
+  setAutomationMode: (ownerId: string, mode: AutomationMode) => void;
+  saveAutomationLane: (lane: AutomationLane) => void;
+  appendAutomationPoints: (points: RecordedAutomationPoint[]) => void;
   setAudioOutputDevice: (deviceId: string | null) => void;
   setMidiCCMappings: (mappings: Project["midiCCMappings"]) => void;
   setCountIn: (on: boolean) => void;
   setMetronome: (on: boolean) => void;
+  setChordRegions: (regions: ChordRegion[]) => void;
 
   // transport mirror
   setTransport: (t: Partial<TransportState>) => void;
@@ -76,7 +86,9 @@ interface DAWState {
   loadAlternative: (id: string) => void;
   saveScreenset: (name: string) => string;
   loadScreenset: (id: string) => void;
-  selectTrack: (id: string | null) => void;
+  selectTrack: (id: string | null, additive?: boolean, rangeIds?: string[]) => void;
+  renameTrackStack: (id: string, name: string) => void;
+  setTrackStackColor: (id: string, color: string) => void;
   toggleTrackMute: (id: string) => void;
   toggleTrackSolo: (id: string) => void;
 
@@ -91,7 +103,7 @@ interface DAWState {
   updateRegion: (id: string, patch: Partial<Region>, commit?: boolean) => void;
   updateRegions: (ids: string[], patch: Partial<Region>) => void;
   duplicateRegions: (ids: string[]) => void;
-  splitRegionsAt: (tick: number) => void;
+  splitRegionsAt: (tick: number, trackId?: string) => void;
   joinRegions: (ids: string[]) => void;
   toggleRegionLoop: (ids: string[]) => void;
   transposeRegions: (ids: string[], semitones: number) => void;
@@ -121,6 +133,7 @@ interface DAWState {
 }
 
 function cloneProject(p: Project): Project {
+  if (typeof structuredClone === "function") return structuredClone(p);
   return JSON.parse(JSON.stringify(p)) as Project;
 }
 
@@ -151,11 +164,13 @@ function findRegion(project: Project, id: string): { track: Track; region: Regio
 }
 
 const initialUI: UIState = {
+  projectsScreen: true,
   tool: "pointer",
   snap: "smart",
   zoom: 56,
   trackSize: "M",
   selectedTrackId: null,
+  selectedTrackIds: [],
   selectedRegionIds: [],
   selectedNoteIds: [],
   panels: {
@@ -174,6 +189,14 @@ const initialUI: UIState = {
   musicalTyping: false,
   octaveBase: 3,
   velocity: 96,
+  keyboardScaleLock: false,
+  keyboardScaleRoot: 0,
+  keyboardScaleMode: "major",
+  keyboardChordStrips: [],
+  automationView: false,
+  showMasterTrack: false,
+  automationSelections: {},
+  automationExpandedTracks: [],
 };
 
 export const useDAW = create<DAWState>((set, get) => ({
@@ -215,11 +238,20 @@ export const useDAW = create<DAWState>((set, get) => ({
   loadProject: (p) => {
     const normalized: Project = {
       ...p,
+      lengthBars: p.lengthBars !== undefined && Number.isFinite(p.lengthBars)
+        ? clamp(Math.round(p.lengthBars), 1, 999)
+        : undefined,
       stacks: p.stacks ?? [],
       alternatives: p.alternatives ?? [],
       screensets: p.screensets ?? [],
       audioOutputDeviceId: p.audioOutputDeviceId ?? null,
       midiCCMappings: p.midiCCMappings ?? [],
+      automationLanes: (p.automationLanes ?? []).map((lane) => ({
+        ...lane,
+        points: [...lane.points].sort((a, b) => a.tick - b.tick),
+      })),
+      automationModes: p.automationModes ?? {},
+      chordRegions: p.chordRegions ?? [],
       tracks: p.tracks.map((track) => ({
         ...track,
         role: track.role ?? "track",
@@ -245,11 +277,30 @@ export const useDAW = create<DAWState>((set, get) => ({
       project: normalized,
       past: [],
       future: [],
-      ui: { ...get().ui, selectedRegionIds: [], selectedNoteIds: [], selectedTrackId: normalized.tracks[0]?.id ?? null, modal: "none", editorRegionId: null },
+      ui: {
+        ...get().ui,
+        projectsScreen: false,
+        selectedRegionIds: [],
+        selectedNoteIds: [],
+        selectedTrackId: normalized.tracks[0]?.id ?? null,
+        selectedTrackIds: normalized.tracks[0] ? [normalized.tracks[0].id] : [],
+        modal: "none",
+        editorRegionId: null,
+      },
     });
   },
 
   setProjectName: (name) => set({ project: { ...get().project, name } }),
+
+  setProjectLengthBars: (bars) => {
+    if (!Number.isFinite(bars)) return;
+    set({
+      project: {
+        ...get().project,
+        lengthBars: clamp(Math.round(bars), 1, 999),
+      },
+    });
+  },
 
   setTempo: (bpm) => {
     set({ project: { ...get().project, tempo: clamp(Math.round(bpm), 30, 260) } });
@@ -258,6 +309,14 @@ export const useDAW = create<DAWState>((set, get) => ({
   setTimeSig: (n, d) => set({ project: { ...get().project, timeSig: [clamp(n, 1, 12), d] } }),
 
   setKey: (tonic, mode) => set({ project: { ...get().project, keyTonic: ((tonic % 12) + 12) % 12, keyMode: mode } }),
+  setChordRegions: (regions) => {
+    const { project, past, future } = get();
+    set({
+      project: { ...project, chordRegions: regions },
+      past: [...past, cloneProject(project)],
+      future: [],
+    });
+  },
 
   setCycle: (on, start, end) => {
     const p = get().project;
@@ -277,7 +336,64 @@ export const useDAW = create<DAWState>((set, get) => ({
   setMidiCCMappings: (mappings) => set({
     project: { ...get().project, midiCCMappings: mappings ?? [] },
   }),
-    setMasterVolume: (v) => set({ project: { ...get().project, masterVolume: clamp(v, 0, 1.25) } }),
+    setMasterVolume: (v) => {
+      const project = get().project;
+      const masterVolume = clamp(v, 0, 1.25);
+      const lane = project.automationLanes?.find(
+        (item) => item.ownerId === "master" && item.parameterId === "volume"
+      );
+      const captured = automationEngine.recordControl(
+        lane,
+        project.automationModes?.master ?? "off",
+        masterVolume
+      );
+      const automationLanes = captured
+        ? (project.automationLanes ?? []).map((item) =>
+            item.id === captured.laneId
+              ? { ...item, points: captured.replacePoints ?? [...item.points, captured.point] }
+              : item
+          )
+        : project.automationLanes;
+      set({ project: { ...project, masterVolume, automationLanes } });
+    },
+    setAutomationMode: (ownerId, mode) => {
+      const project = get().project;
+      set({ project: { ...project, automationModes: { ...project.automationModes, [ownerId]: mode } } });
+    },
+    saveAutomationLane: (lane) => {
+      const project = get().project;
+      const lanes = project.automationLanes ?? [];
+      set({
+        project: {
+          ...project,
+          automationLanes: lanes.some((item) => item.id === lane.id)
+            ? lanes.map((item) => item.id === lane.id ? lane : item)
+            : [...lanes, lane],
+        },
+      });
+    },
+    appendAutomationPoints: (points) => {
+      if (!points.length) return;
+      const project = get().project;
+      const byLane = new Map<string, AutomationPoint[]>();
+      for (const item of points) {
+        const lane = (project.automationLanes ?? []).find((entry) => entry.id === item.laneId);
+        if (!lane) continue;
+        const current = byLane.get(item.laneId) ?? lane.points;
+        const replacement = item.replacePoints ?? [...current, item.point];
+        byLane.set(item.laneId, replacement);
+      }
+      if (!byLane.size) return;
+      set({
+        project: {
+          ...project,
+          automationLanes: (project.automationLanes ?? []).map((lane) => {
+            const pointsForLane = byLane.get(lane.id);
+            return pointsForLane ? { ...lane, points: pointsForLane } : lane;
+          }),
+        },
+      });
+    },
 
   setCountIn: (on) => set({ project: { ...get().project, countIn: on } }),
 
@@ -292,7 +408,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     const track = makeTrack(partial);
     set({
       project: { ...get().project, tracks: [...get().project.tracks, track] },
-      ui: { ...get().ui, selectedTrackId: track.id, selectedRegionIds: [] },
+      ui: { ...get().ui, selectedTrackId: track.id, selectedTrackIds: [track.id], selectedRegionIds: [] },
     });
   },
 
@@ -301,7 +417,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     const tracks = partials.map((p) => makeTrack(p));
     set({
       project: { ...get().project, tracks: [...get().project.tracks, ...tracks] },
-      ui: { ...get().ui, selectedTrackId: tracks[tracks.length - 1]?.id ?? get().ui.selectedTrackId },
+      ui: { ...get().ui, selectedTrackId: tracks[tracks.length - 1]?.id ?? get().ui.selectedTrackId, selectedTrackIds: tracks.length ? [tracks[tracks.length - 1].id] : get().ui.selectedTrackIds },
     });
   },
 
@@ -344,11 +460,26 @@ export const useDAW = create<DAWState>((set, get) => ({
         parentTrackId: removedStackIds.has(track.stackId ?? "") ? null : track.parentTrackId,
       }));
     const stacks = candidateStacks.filter((stack) => !removedStackIds.has(stack.id));
+    const deletedTrackIds = new Set([id, ...removedBusIds, ...removedFolderIds]);
+    const deletedRegionIds = new Set(
+      project.tracks
+        .filter((track) => deletedTrackIds.has(track.id))
+        .flatMap((track) => track.regions.map((region) => region.id))
+    );
     set({
-      project: { ...project, tracks, stacks },
+      project: {
+        ...project,
+        tracks,
+        stacks,
+        automationLanes: (project.automationLanes ?? []).filter(
+          (lane) => !deletedTrackIds.has(lane.ownerId) &&
+            (lane.scope !== "region" || !lane.regionId || !deletedRegionIds.has(lane.regionId))
+        ),
+      },
       ui: {
         ...get().ui,
         selectedTrackId: tracks[0]?.id ?? null,
+        selectedTrackIds: tracks[0] ? [tracks[0].id] : [],
         selectedRegionIds: get().ui.selectedRegionIds.filter((rid) =>
           tracks.some((track) => track.regions.some((region) => region.id === rid))
         ),
@@ -372,15 +503,80 @@ export const useDAW = create<DAWState>((set, get) => ({
     }
     const tracks = [...project.tracks];
     tracks.splice(idx + 1, 0, copy);
-    set({ project: { ...project, tracks }, ui: { ...get().ui, selectedTrackId: copy.id } });
+    const regionIdMap = new Map(src.regions.map((region, index) => [region.id, copy.regions[index].id]));
+    const copiedLanes = (project.automationLanes ?? [])
+      .filter((lane) => lane.ownerId === id)
+      .flatMap((lane) => {
+        const regionId = lane.regionId ? regionIdMap.get(lane.regionId) : undefined;
+        if (lane.scope === "region" && !regionId) return [];
+        return [{ ...JSON.parse(JSON.stringify(lane)), id: uid(), ownerId: copy.id, regionId }];
+      });
+    set({
+      project: { ...project, tracks, automationLanes: [...(project.automationLanes ?? []), ...copiedLanes] },
+      ui: { ...get().ui, selectedTrackId: copy.id, selectedTrackIds: [copy.id] },
+    });
   },
 
   updateTrack: (id, patch, doCommit = true) => {
     if (doCommit) get().commit();
     const project = get().project;
+    let automationLanes = project.automationLanes ?? [];
+    const track = project.tracks.find((item) => item.id === id);
+    const selectedRegionId = track?.regions.find((region) =>
+      get().ui.selectedRegionIds.includes(region.id)
+    )?.id;
+    const capture = (parameterId: string, value: number) => {
+      const lane = automationLanes.find((item) =>
+        item.ownerId === id && item.parameterId === parameterId && item.regionId === selectedRegionId
+      ) ?? automationLanes.find((item) =>
+        item.ownerId === id && item.parameterId === parameterId && item.scope === "track"
+      );
+      const tickOffset = lane?.scope === "region" && lane.regionId
+        ? track?.regions.find((region) => region.id === lane.regionId)?.start ?? 0
+        : 0;
+      const point = automationEngine.recordControl(
+        lane,
+        project.automationModes?.[id] ?? "off",
+        value,
+        tickOffset
+      );
+      if (!point) return;
+      automationLanes = automationLanes.map((item) =>
+        item.id === point.laneId
+          ? { ...item, points: point.replacePoints ?? [...item.points, point.point] }
+          : item
+      );
+    };
+    if (patch.volume !== undefined && patch.volume !== track?.volume) capture("volume", patch.volume);
+    if (patch.pan !== undefined && patch.pan !== track?.pan) capture("pan", patch.pan);
+    if (patch.mute !== undefined && patch.mute !== track?.mute) capture("mute", patch.mute ? 1 : 0);
+    if (patch.params && track) {
+      for (const [parameterId, value] of Object.entries(patch.params)) {
+        if (typeof value === "number" && value !== track.params[parameterId]) capture(`param:${parameterId}`, value);
+      }
+    }
+    if (patch.eq && track) {
+      for (const [parameterId, value] of Object.entries(patch.eq)) {
+        if (typeof value === "number" && value !== track.eq[parameterId as keyof Track["eq"]]) {
+          capture(`eq:${parameterId}`, value);
+        }
+      }
+    }
+    if (patch.pedalboard && track) {
+      for (const pedal of patch.pedalboard) {
+        const previousPedal = track.pedalboard?.find((item) => item.id === pedal.id);
+        if (!previousPedal) continue;
+        for (const [parameterId, value] of Object.entries(pedal.params)) {
+          if (value !== previousPedal.params[parameterId]) {
+            capture(`pedal:${pedal.id}:${parameterId}`, value);
+          }
+        }
+      }
+    }
     set({
       project: {
         ...project,
+        automationLanes,
         tracks: project.tracks.map((t) => (t.id === id ? { ...t, ...patch } : t)),
       },
     });
@@ -398,6 +594,7 @@ export const useDAW = create<DAWState>((set, get) => ({
             ? {
                 ...t,
                 instrument,
+                soundFontPreset: undefined,
                 params: { ...defaultParams(instrument) },
                 icon: patch?.icon ?? t.icon,
                 name: t.type === "midi" ? patch?.name ?? t.name : t.name,
@@ -423,7 +620,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
     set({
       project: { ...project, tracks: [...project.tracks, bus] },
-      ui: { ...get().ui, selectedTrackId: bus.id },
+      ui: { ...get().ui, selectedTrackId: bus.id, selectedTrackIds: [bus.id] },
     });
     return bus.id;
   },
@@ -443,7 +640,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
     set({
       project: { ...project, tracks: [...project.tracks, vca] },
-      ui: { ...get().ui, selectedTrackId: vca.id },
+      ui: { ...get().ui, selectedTrackId: vca.id, selectedTrackIds: [vca.id] },
     });
     return vca.id;
   },
@@ -497,13 +694,21 @@ export const useDAW = create<DAWState>((set, get) => ({
     get().commit();
     const stackId = uid();
     const stackName = name.trim() || (type === "folder" ? "Track Stack" : "Summing Stack");
+    const sharedOutputBusIds = [...new Set(
+      uniqueIds.map((id) =>
+        project.tracks.find((track) => track.id === id)?.outputBusId ?? null,
+      ),
+    )];
     const folder = makeTrack({
       type: "audio",
       role: "folder",
       name: stackName,
       icon: "folder",
       color: "#596d8b",
-      volume: 0,
+      volume: 1,
+      outputBusId: type === "folder" && sharedOutputBusIds.length === 1
+        ? sharedOutputBusIds[0]
+        : null,
       collapsed: false,
       regions: [],
     });
@@ -526,6 +731,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       type,
       trackIds: uniqueIds,
       folderTrackId: folder.id,
+      color: folder.color,
       ...(busTrack ? { busTrackId: busTrack.id } : {}),
     };
 
@@ -586,7 +792,7 @@ export const useDAW = create<DAWState>((set, get) => ({
 
     set({
       project: { ...project, tracks, stacks: [...stacks, stack] },
-      ui: { ...get().ui, selectedTrackId: folder.id },
+      ui: { ...get().ui, selectedTrackId: folder.id, selectedTrackIds: [folder.id] },
     });
     return stackId;
   },
@@ -631,6 +837,43 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
   },
 
+  renameTrackStack: (id, name) => {
+    const stack = get().project.stacks?.find((item) => item.id === id);
+    const cleanName = name.trim();
+    if (!stack || !cleanName) return;
+    get().commit();
+    set({
+      project: {
+        ...get().project,
+        stacks: get().project.stacks?.map((item) =>
+          item.id === id ? { ...item, name: cleanName } : item
+        ),
+        tracks: get().project.tracks.map((track) =>
+          track.id === stack.folderTrackId
+            ? { ...track, name: cleanName }
+            : track.id === stack.busTrackId
+              ? { ...track, name: `${cleanName} Bus` }
+              : track
+        ),
+      },
+    });
+  },
+
+  setTrackStackColor: (id, color) => {
+    const stack = get().project.stacks?.find((item) => item.id === id);
+    if (!stack) return;
+    get().commit();
+    set({
+      project: {
+        ...get().project,
+        stacks: get().project.stacks?.map((item) => item.id === id ? { ...item, color } : item),
+        tracks: get().project.tracks.map((track) =>
+          track.id === stack.folderTrackId ? { ...track, color } : track
+        ),
+      },
+    });
+  },
+
   saveAlternative: (name) => {
     const project = get().project;
     const snapshot = { ...project, alternatives: [] };
@@ -665,6 +908,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       ui: {
         ...get().ui,
         selectedTrackId: snapshot.tracks[0]?.id ?? null,
+        selectedTrackIds: snapshot.tracks[0] ? [snapshot.tracks[0].id] : [],
         selectedRegionIds: [],
         selectedNoteIds: [],
         editorRegionId: null,
@@ -701,16 +945,74 @@ export const useDAW = create<DAWState>((set, get) => ({
     });
   },
 
-  selectTrack: (id) => set({ ui: { ...get().ui, selectedTrackId: id, selectedNoteIds: [] } }),
+  selectTrack: (id, additive = false, rangeIds) => {
+    const ui = get().ui;
+    let selectedTrackIds: string[];
+    let selectedTrackId = id;
+    if (id === null) selectedTrackIds = [];
+    else if (rangeIds?.length) selectedTrackIds = [...new Set(rangeIds)];
+    else if (additive) {
+      selectedTrackIds = ui.selectedTrackIds.includes(id)
+        ? ui.selectedTrackIds.filter((trackId) => trackId !== id)
+        : [...ui.selectedTrackIds, id];
+      if (!selectedTrackIds.length) selectedTrackIds = [id];
+      else if (!selectedTrackIds.includes(id)) selectedTrackId = selectedTrackIds[selectedTrackIds.length - 1];
+    } else {
+      selectedTrackIds = [id];
+    }
+    set({
+      ui: {
+        ...ui,
+        selectedTrackId,
+        selectedTrackIds,
+        selectedNoteIds: [],
+      },
+    });
+  },
 
   toggleTrackMute: (id) => {
-    const t = get().project.tracks.find((x) => x.id === id);
-    if (t) get().updateTrack(id, { mute: !t.mute }, false);
+    const project = get().project;
+    const t = project.tracks.find((x) => x.id === id);
+    if (!t) return;
+    const childIds = get().project.stacks?.find((stack) => stack.folderTrackId === id)?.trackIds ?? [];
+    const memberIds = new Set([id, ...childIds]);
+    const mute = !t.mute;
+    const lanes = project.automationLanes ?? [];
+    const lane = lanes.find((item) => item.ownerId === id && item.parameterId === "mute" && item.scope === "track");
+    const point = automationEngine.recordControl(
+      lane,
+      project.automationModes?.[id] ?? "off",
+      mute ? 1 : 0
+    );
+    set({
+      project: {
+        ...project,
+        automationLanes: point
+          ? lanes.map((item) => item.id === point.laneId
+              ? { ...item, points: point.replacePoints ?? [...item.points, point.point] }
+              : item)
+          : project.automationLanes,
+        tracks: project.tracks.map((track) =>
+          memberIds.has(track.id) ? { ...track, mute } : track
+        ),
+      },
+    });
   },
 
   toggleTrackSolo: (id) => {
     const t = get().project.tracks.find((x) => x.id === id);
-    if (t) get().updateTrack(id, { solo: !t.solo }, false);
+    if (!t) return;
+    const childIds = get().project.stacks?.find((stack) => stack.folderTrackId === id)?.trackIds ?? [];
+    const memberIds = new Set([id, ...childIds]);
+    const solo = !t.solo;
+    set({
+      project: {
+        ...get().project,
+        tracks: get().project.tracks.map((track) =>
+          memberIds.has(track.id) ? { ...track, solo } : track
+        ),
+      },
+    });
   },
 
   // ---------------- regions ----------------
@@ -725,7 +1027,7 @@ export const useDAW = create<DAWState>((set, get) => ({
           t.id === region.trackId ? { ...t, regions: [...t.regions, region] } : t
         ),
       },
-      ui: { ...get().ui, selectedRegionIds: [region.id], selectedTrackId: region.trackId, selectedNoteIds: [] },
+      ui: { ...get().ui, selectedRegionIds: [region.id], selectedTrackId: region.trackId, selectedTrackIds: [region.trackId], selectedNoteIds: [] },
     });
   },
 
@@ -745,7 +1047,7 @@ export const useDAW = create<DAWState>((set, get) => ({
           trackMap.has(t.id) ? { ...t, regions: [...t.regions, ...(trackMap.get(t.id) ?? [])] } : t
         ),
       },
-      ui: { ...get().ui, selectedRegionIds: regions.map((r) => r.id), selectedTrackId: regions[regions.length - 1]?.trackId ?? get().ui.selectedTrackId },
+      ui: { ...get().ui, selectedRegionIds: regions.map((r) => r.id), selectedTrackId: regions[regions.length - 1]?.trackId ?? get().ui.selectedTrackId, selectedTrackIds: regions.length ? [regions[regions.length - 1].trackId] : get().ui.selectedTrackIds },
     });
   },
 
@@ -772,6 +1074,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       ui: {
         ...get().ui,
         selectedTrackId: found.track.id,
+        selectedTrackIds: [found.track.id],
         selectedRegionIds: segments.map((segment) => segment.id),
         selectedNoteIds: [],
         editorRegionId: segments[0]?.id ?? null,
@@ -806,6 +1109,7 @@ export const useDAW = create<DAWState>((set, get) => ({
       ui: {
         ...get().ui,
         selectedTrackId: trackId,
+        selectedTrackIds: [trackId],
         selectedRegionIds: segments.map((segment) => segment.id),
         selectedNoteIds: [],
         editorRegionId: segments[0]?.id ?? null,
@@ -816,7 +1120,15 @@ export const useDAW = create<DAWState>((set, get) => ({
   removeRegions: (ids) => {
     get().commit();
     const project = get().project;
-    set({ project: mapRegions(project, ids, () => null) });
+    const regionIds = new Set(ids);
+    set({
+      project: {
+        ...mapRegions(project, ids, () => null),
+        automationLanes: (project.automationLanes ?? []).filter(
+          (lane) => lane.scope !== "region" || !lane.regionId || !regionIds.has(lane.regionId)
+        ),
+      },
+    });
     set({ ui: { ...get().ui, selectedRegionIds: [], editorRegionId: null } });
   },
 
@@ -870,7 +1182,20 @@ export const useDAW = create<DAWState>((set, get) => ({
         }
       }
     }
-    set({ project: { ...project, tracks } });
+    const regionOwners = new Map(
+      tracks.flatMap((track) => track.regions.map((region) => [region.id, track.id] as const))
+    );
+    set({
+      project: {
+        ...project,
+        tracks,
+        automationLanes: (project.automationLanes ?? []).map((lane) => {
+          if (lane.scope !== "region" || !lane.regionId) return lane;
+          const ownerId = regionOwners.get(lane.regionId);
+          return ownerId ? { ...lane, ownerId } : lane;
+        }),
+      },
+    });
   },
 
   setRegionStart: (id, start, length) => {
@@ -894,6 +1219,7 @@ export const useDAW = create<DAWState>((set, get) => ({
     const project = get().project;
     const idSet = new Set(ids);
     const newIds: string[] = [];
+    const regionCopies = new Map<string, Region>();
     const tracks = project.tracks.map((t) => {
       const copies: Region[] = [];
       for (const r of t.regions) {
@@ -903,17 +1229,35 @@ export const useDAW = create<DAWState>((set, get) => ({
         copy.start = r.start + r.length;
         if (copy.notes) copy.notes = copy.notes.map((n) => ({ ...n, id: uid() }));
         newIds.push(copy.id);
+        regionCopies.set(r.id, copy);
         copies.push(copy);
       }
       return copies.length ? { ...t, regions: [...t.regions, ...copies] } : t;
     });
-    set({ project: { ...project, tracks }, ui: { ...get().ui, selectedRegionIds: newIds } });
+    const copiedLanes = (project.automationLanes ?? []).flatMap((lane) => {
+      if (lane.scope !== "region" || !lane.regionId || !idSet.has(lane.regionId)) return [];
+      const region = regionCopies.get(lane.regionId);
+      if (!region) return [];
+      return [{ ...JSON.parse(JSON.stringify(lane)), id: uid(), ownerId: region.trackId, regionId: region.id }];
+    });
+    set({
+      project: { ...project, tracks, automationLanes: [...(project.automationLanes ?? []), ...copiedLanes] },
+      ui: { ...get().ui, selectedRegionIds: newIds },
+    });
   },
 
-  splitRegionsAt: (tick) => {
-    get().commit();
+  splitRegionsAt: (tick, trackId) => {
     const project = get().project;
+    const targetTrackId = trackId ?? get().ui.selectedTrackId;
+    const targetTrack = project.tracks.find((track) => track.id === targetTrackId);
+    if (!targetTrack || !targetTrack.regions.some(
+      (region) => tick > region.start + 8 && tick < region.start + region.length - 8,
+    )) return;
+
+    get().commit();
+    const splitMap = new Map<string, { regionId: string; offset: number; trackId: string }>();
     const tracks = project.tracks.map((t) => {
+      if (t.id !== targetTrackId) return t;
       const out: Region[] = [];
       let changed = false;
       for (const r of t.regions) {
@@ -921,6 +1265,7 @@ export const useDAW = create<DAWState>((set, get) => ({
           changed = true;
           const left: Region = { ...r, length: tick - r.start };
           const right: Region = { ...r, id: uid(), start: tick, length: r.start + r.length - tick };
+          splitMap.set(r.id, { regionId: right.id, offset: tick - r.start, trackId: t.id });
           if (r.type === "midi" && r.notes) {
             left.notes = r.notes.filter((n) => n.start < tick - r.start).map((n) => ({ ...n, length: Math.min(n.length, tick - r.start - n.start) }));
             const shift = tick - r.start;
@@ -947,7 +1292,32 @@ export const useDAW = create<DAWState>((set, get) => ({
       }
       return changed ? { ...t, regions: out } : t;
     });
-    set({ project: { ...project, tracks } });
+    const splitLanes = (project.automationLanes ?? []).flatMap((lane) => {
+      if (lane.scope !== "region" || !lane.regionId) return [lane];
+      const split = splitMap.get(lane.regionId);
+      if (!split) return [lane];
+      const splitValue = automationValueAt(lane.points, split.offset, lane.scale);
+      const leftPoints = lane.points.filter((point) => point.tick < split.offset);
+      const leftBoundary = lane.points.find((point) => point.tick === split.offset);
+      const rightPoints = lane.points
+        .filter((point) => point.tick > split.offset)
+        .map((point) => ({ ...point, tick: point.tick - split.offset }));
+      const splitPoint = leftBoundary ?? { id: uid(), tick: split.offset, value: splitValue };
+      return [
+        { ...lane, points: [...leftPoints, splitPoint] },
+        {
+          ...lane,
+          id: uid(),
+          ownerId: split.trackId,
+          regionId: split.regionId,
+          points: [
+            { id: uid(), tick: 0, value: splitValue },
+            ...rightPoints,
+          ],
+        },
+      ];
+    });
+    set({ project: { ...project, tracks, automationLanes: splitLanes } });
   },
 
   joinRegions: (ids) => {
@@ -1127,6 +1497,7 @@ export const useDAW = create<DAWState>((set, get) => ({
           ...ui,
           selectedRegionIds: [id],
           selectedTrackId: region?.track.id ?? ui.selectedTrackId,
+          selectedTrackIds: region ? [region.track.id] : ui.selectedTrackIds,
           selectedNoteIds: [],
         },
       });
@@ -1177,6 +1548,7 @@ export const useDAW = create<DAWState>((set, get) => ({
         editorRegionId: regionId,
         selectedRegionIds: [regionId],
         selectedTrackId: found.track.id,
+        selectedTrackIds: [found.track.id],
         panels: { ...get().ui.panels, editor: true },
         editorMode: found.region.type === "midi" ? "piano" : "audio",
       },

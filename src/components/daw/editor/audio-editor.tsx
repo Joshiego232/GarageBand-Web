@@ -26,6 +26,7 @@ import {
 } from "@/lib/daw/pitch-correction";
 import { toast } from "sonner";
 import { findActiveRegion } from "./piano-roll";
+import { DenoisePanel } from "./DenoisePanel";
 
 const HANDLE_R = 4.5;
 const HANDLE_HIT = 9;
@@ -34,6 +35,13 @@ const BTN =
   "h-6 px-2 text-[11px] justify-start gap-1 bg-[#2a2a2f] hover:bg-[#34343b] text-zinc-300 border border-black/40 shadow-none";
 const BTN_ACTIVE =
   "h-6 px-2 text-[11px] justify-start gap-1 bg-[#ffb648]/20 hover:bg-[#ffb648]/30 text-[#ffb648] border border-[#ffb648]/40 shadow-none";
+const RESET_DENOISE = {
+  denoisedAudioBufferId: undefined,
+  denoiseEnabled: false,
+  denoiseCacheKey: undefined,
+  noiseFingerprint: undefined,
+  denoiseReductionDb: undefined,
+};
 
 interface FadeDrag {
   which: "in" | "out";
@@ -507,9 +515,11 @@ export function AudioEditor() {
         r.id,
         {
           bufferId: newId,
+          originalAudioBufferId: newId,
           sampleStart: 0,
           sampleLength: (s1 - s0) / sr,
           gain: 1,
+          ...RESET_DENOISE,
         },
         false
       );
@@ -543,7 +553,12 @@ export function AudioEditor() {
       await engine.storeBuffer(newId, { sampleRate: sr, channels, name: stored.name });
       const store = useDAW.getState();
       store.commit();
-      store.updateRegion(r.id, { bufferId: newId, sampleStart: 0 }, false);
+      store.updateRegion(r.id, {
+        bufferId: newId,
+        originalAudioBufferId: newId,
+        sampleStart: 0,
+        ...RESET_DENOISE,
+      }, false);
     } finally {
       setBusy(false);
     }
@@ -593,12 +608,14 @@ export function AudioEditor() {
         r.id,
         {
           bufferId: newId,
+          originalAudioBufferId: newId,
           sampleStart: 0,
           sampleLength: durationSec,
           length: Math.max(1, Math.round(r.length * flexTimeFactor)),
           playbackRate: 1,
           looped: false,
           coreLength: undefined,
+          ...RESET_DENOISE,
         },
         false
       );
@@ -835,9 +852,11 @@ export function AudioEditor() {
         r.id,
         {
           bufferId: newId,
+          originalAudioBufferId: newId,
           sampleStart: 0,
           sampleLength: duration,
           playbackRate: 1,
+          ...RESET_DENOISE,
         },
         false
       );
@@ -887,6 +906,7 @@ export function AudioEditor() {
         className="w-52 shrink-0 border-r border-black/50 bg-[#1d1d20] flex flex-col gap-2 p-2 text-[11px] overflow-y-auto [scrollbar-width:thin] [scrollbar-color:#3a3a41_transparent] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-sm [&::-webkit-scrollbar-thumb]:bg-[#3a3a41] [&::-webkit-scrollbar-track]:bg-transparent"
         aria-label="Audio region controls"
       >
+        <DenoisePanel region={region} />
         <div className="flex items-baseline justify-between gap-2">
           <span className="font-medium text-zinc-300 truncate" title={region.name}>
             {region.name}

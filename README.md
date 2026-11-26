@@ -9,8 +9,8 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - **Multitrack DAW workspace:** timeline, MIDI and audio regions, transport, loop/cycle, piano roll, mixer, EQ, sends, recording, library, and song management.
 - **Soundstage workflow additions:** 16-step drum sequencer for MIDI drum tracks, plus import and export of Soundstage `.soundstage.json` project files.
 - **Shared MIDI model:** step-sequencer hits are stored as MIDI notes, so they remain editable in the piano roll and work with playback and WAV rendering.
-- **Sampled instruments:** velocity-layered Splendid Grand Piano samples for Grand Piano/Bright Piano, and a FluidR3 GM orchestral String Ensemble soundfont. The original Web Audio patches remain as a fallback while samples load or when offline/network loading is unavailable.
-- **Full-stack song storage:** Next.js API routes backed by Prisma and SQLite for saving and retrieving project JSON.
+- **Sampled instruments:** 120 SoundFont and sample-backed patches, including 20 stage-keyboard-inspired presets and layered piano/pad/string combinations, plus 10 original additive synth presets. The stage sounds use the credited MusyngKite General MIDI bank; they are not Nord or Yamaha factory recordings.
+- **Project storage:** projects and their audio media can be saved locally or synced to a user account across devices.
 - **Audio output:** Web Audio playback, microphone recording where the browser permits it, WAV bounce, MIDI export, and audio-file import.
 
 ## Technology
@@ -18,28 +18,25 @@ An original browser-based digital audio workstation for Windows, macOS and Chrom
 - Next.js App Router, React, TypeScript
 - Web Audio API and `smplr` sample playback
 - Zustand project state
-- Prisma + SQLite saved-song API
+- IndexedDB for local project and audio storage
 - Tailwind CSS and shadcn-style UI components
 
 ## Run locally
 
 1. Install Node.js 22 or newer.
-2. Copy `.env.example` to `.env` and leave the SQLite URL as-is for a local database.
-3. Install dependencies and generate the Prisma client:
+2. Install dependencies:
 
    ```bash
    npm install
-   npx prisma generate
-   npx prisma db push
    ```
 
-4. Start the development server:
+3. Start the development server:
 
    ```bash
    npm run dev
    ```
 
-5. Open `http://localhost:3000`.
+4. Open `http://localhost:3000`.
 
 Production build:
 
@@ -58,11 +55,28 @@ Use **File → Import Soundstage Project JSON…** or **File → Export Soundsta
 
 Soundstage JSON files do not contain their IndexedDB audio blobs. Audio clips therefore cannot be transferred through the JSON bridge; import the original audio files again after moving a session. Native audio assets stay in the browser's local storage and are not uploaded to GitHub.
 
-## Backend and account security status
+## Accounts and cloud project storage
 
-The current full-stack backend is a **single-instance Prisma/SQLite saved-song API**. It is suitable for local development or a controlled personal deployment, but it does **not** yet include user authentication, per-user ownership, cloud object storage, multi-device sync, or row-level security. Do not expose the saved-song API as a multi-user public service until authentication and authorization are added. Those account/cloud features remain future work rather than being represented as complete.
+The app keeps browser-local saves and adds optional Supabase accounts. Use the account button in the top menu or **File → My Songs** to create an account, sign in, reset a password, or open saved projects. **File → Save** and **My Songs → Save Current Song** save locally and, when signed in, sync the project to the account. Existing local songs can be synced by opening one, signing in, and saving it again.
 
-The app is local-first for audio media. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
+Cloud saves include imported/recorded audio, custom sampler audio, and any imported SoundFont used by the project. Audio and project data are private to the signed-in user through Supabase Row Level Security and a private Storage bucket. Built-in and remote sample libraries continue to load from their existing sources. Cloud audio uploads require adequate Supabase Storage limits and may take time for large projects.
+
+To enable cloud accounts:
+
+1. Create a Supabase project and enable email/password authentication. Configure the project's Site URL and allowed redirect URLs for both local development and your deployed app. Set up email delivery for confirmations and password resets.
+2. In the Supabase SQL Editor, run [`supabase/schema.sql`](./supabase/schema.sql). It creates the project table, private audio bucket, and owner-only access policies.
+3. Set these public client environment variables in `.env.local` for development and in your deployment environment:
+
+   ```dotenv
+   NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-anon-key
+   ```
+
+   The anon key is intended for browser use and is restricted by the SQL Row Level Security policies. Never expose a Supabase `service_role` key in a `NEXT_PUBLIC_` variable or in client code.
+
+Without those environment variables, browser-local project saving continues to work; cloud account controls remain unavailable. Local projects are not automatically uploaded: open and save each project while signed in to sync it.
+
+The app stores user recordings and imported audio in the user's private Supabase project storage. GitHub stores application source and documentation only; it should never receive private recordings or project audio.
 
 ## Sample credits and licenses
 
@@ -70,14 +84,13 @@ The app is local-first for audio media. GitHub stores application source and doc
 - **Orchestral strings:** FluidR3 GM soundfont, credited to Frank Wen and contributors and distributed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/). The sample-loading code requests the `string_ensemble_1` General MIDI program from the FluidR3 GM set.
 - **Sampler engine:** [`smplr`](https://github.com/danigb/smplr), used as a Web Audio sample playback library. See its repository for its own license and notices.
 
-See [`docs/SAMPLE_ATTRIBUTION.md`](docs/SAMPLE_ATTRIBUTION.md) for the asset-level notes.
+The instrument library supports text search, categories, favorites and recently auditioned patches. See [`docs/SAMPLE_ATTRIBUTION.md`](docs/SAMPLE_ATTRIBUTION.md) for the asset-level notes.
 
 ## Repository layout
 
-- `src/app` — Next.js application and saved-song API routes
+- `src/app` — Next.js application and remaining API routes
 - `src/components/daw` — timeline, editor, sequencer, mixer and studio UI
 - `src/lib/daw` — project model, state, audio engine, sample-backed instruments, MIDI and Soundstage bridge
-- `prisma` — SQLite schema
 - `docs` — architecture, data interchange and audio attribution
 
 ## Feature status

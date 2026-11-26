@@ -56,4 +56,3 @@ server.log
 /db/*.db
 /db/*.sqlite
 /db/*.sqlite3
-/prisma/*.db

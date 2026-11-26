@@ -11,6 +11,10 @@ import {
 } from "smplr";
 import type { Patch } from "./types";
 import type { VoiceHandle } from "./instruments";
+import {
+  playSoundFontNote,
+  prepareSoundFontPatch,
+} from "./soundfont-engine";
 
 type SampleStartOptions = {
   note: string | number;
@@ -29,11 +33,11 @@ type SampledPlayer = {
 };
 
 type SampleEntry = {
-  player: SampledPlayer;
+  players: SampledPlayer[];
   ready: boolean;
   failed: boolean;
   readyPromise: Promise<void>;
-  tone?: BiquadFilterNode;
+  tones: BiquadFilterNode[];
 };
 
 const loaders = new WeakMap<BaseAudioContext, SampleLoader>();
@@ -98,23 +102,45 @@ export function warmSampledPatch(
   dest: AudioNode,
   patch: Patch,
   offline = false,
+  trackId = patch.id,
 ): Promise<void> {
   const source = patch.sampled;
   if (!source) return Promise.resolve();
 
   const byPatch = instrumentMapFor(ctx, dest);
   const existing = byPatch.get(patch.id);
-  if (existing) {
+  if (existing && source.engine !== "soundfont-worklet") {
     return existing.readyPromise;
+  }
+
+  if (source.engine === "soundfont-worklet") {
+    const entry: SampleEntry = existing ?? {
+      players: [],
+      ready: false,
+      failed: false,
+      readyPromise: Promise.resolve(),
+      tones: [],
+    };
+    entry.ready = false;
+    entry.failed = false;
+    byPatch.set(patch.id, entry);
+    entry.readyPromise = prepareSoundFontPatch(ctx, dest, trackId, patch)
+      .then(() => {
+        entry.ready = true;
+      })
+      .catch(() => {
+        entry.ready = true;
+      });
+    return entry.readyPromise;
   }
 
   const loader = loaderFor(ctx);
   const scheduler = schedulerFor(ctx, offline);
-  let player: SampledPlayer;
+  const playersForPatch: SampledPlayer[] = [];
 
   switch (source.engine) {
     case "splendid-piano":
-      player = SplendidGrandPiano(ctx, {
+      playersForPatch.push(SplendidGrandPiano(ctx, {
         destination: dest,
         loader,
         scheduler,
@@ -123,56 +149,65 @@ export function warmSampledPatch(
           notes: PIANO_SAMPLE_NOTES,
           velocityRange: [1, 127],
         },
-      }) as unknown as SampledPlayer;
+      }) as unknown as SampledPlayer);
       break;
     case "electric-piano":
-      player = ElectricPiano(ctx, {
+      playersForPatch.push(ElectricPiano(ctx, {
         instrument: source.instrument,
+        formats: source.instrument === "TX81Z" ? ["wav"] : ["m4a"],
         destination: dest,
         loader,
         scheduler,
         volume: 96,
-      }) as unknown as SampledPlayer;
+      }) as unknown as SampledPlayer);
       break;
     case "drum-machine":
-      player = DrumMachine(ctx, {
+      playersForPatch.push(DrumMachine(ctx, {
         instrument: source.instrument,
         destination: dest,
         loader,
         scheduler,
         volume: 96,
-      }) as unknown as SampledPlayer;
+      }) as unknown as SampledPlayer);
       break;
     case "soundfont":
     default:
-      player = Soundfont(ctx, {
-        instrument: source.instrument,
-        kit: source.kit ?? "MusyngKite",
-        loadLoopData: source.loop ?? false,
-        destination: dest,
-        loader,
-        scheduler,
-        volume: 96,
-      }) as unknown as SampledPlayer;
+      for (const [index, layer] of [
+        { instrument: source.instrument, gain: 1 },
+        ...(source.layers ?? []),
+      ].entries()) {
+        playersForPatch.push(Soundfont(ctx, {
+          instrument: layer.instrument,
+          kit: source.kit ?? "MusyngKite",
+          loadLoopData: source.loop ?? true,
+          destination: dest,
+          loader,
+          scheduler,
+          volume: Math.round(96 * (index === 0 ? 1 : layer.gain)),
+        }) as unknown as SampledPlayer);
+      }
       break;
   }
 
   const entry: SampleEntry = {
-    player,
+    players: playersForPatch,
     ready: false,
     failed: false,
     readyPromise: Promise.resolve(),
+    tones: [],
   };
   byPatch.set(patch.id, entry);
 
-  entry.readyPromise = player.ready
+  entry.readyPromise = Promise.all(playersForPatch.map((player) => player.ready))
     .then(() => {
-      const tone = ctx.createBiquadFilter();
-      tone.type = "lowpass";
-      tone.frequency.value = 16500;
-      tone.Q.value = 0.35;
-      player.output.addInsert(tone);
-      entry.tone = tone;
+      for (const player of playersForPatch) {
+        const tone = ctx.createBiquadFilter();
+        tone.type = "lowpass";
+        tone.frequency.value = 16500;
+        tone.Q.value = 0.35;
+        player.output.addInsert(tone);
+        entry.tones.push(tone);
+      }
       entry.ready = true;
     })
     .catch((error: unknown) => {
@@ -271,45 +306,48 @@ export function playSampledNote(
 ): VoiceHandle | null {
   const source = patch.sampled;
   if (!source) return null;
+  if (source.engine === "soundfont-worklet") {
+    return playSoundFontNote(ctx, dest, patch, pitch, velocity, when, params);
+  }
 
   const entry = entryFor(ctx, dest, patch.id);
   if (!entry?.ready || entry.failed) return null;
 
   const isDrumMachine = source.engine === "drum-machine";
   const note = isDrumMachine
-    ? drumSampleName(entry.player, pitch)
+    ? drumSampleName(entry.players[0], pitch)
     : pitch;
 
-  if (entry.tone) {
+  if (entry.tones.length) {
     const brightness = Math.min(
       1,
       Math.max(0, params.brightness ?? params.tone ?? 0.68),
     );
-    entry.tone.frequency.setTargetAtTime(
-      3500 + brightness * 12500,
-      when,
-      0.025,
-    );
+    for (const tone of entry.tones) {
+      tone.frequency.setTargetAtTime(3500 + brightness * 12500, when, 0.025);
+    }
   }
 
-  const stop = entry.player.start({
-    note,
-    velocity: Math.round(Math.min(1, Math.max(0.02, velocity)) * 127),
-    time: when,
-    duration: isDrumMachine || noteOffControlled ? null : dur,
-    ampRelease: Math.max(0.04, Math.min(2.5, params.release ?? 0.28)),
-  });
+  const stops = entry.players.map((player) => player.start({
+      note,
+      velocity: Math.round(Math.min(1, Math.max(0.02, velocity)) * 127),
+      time: when,
+      duration: isDrumMachine || noteOffControlled ? null : dur,
+      ampRelease: Math.max(0.04, Math.min(2.5, params.release ?? 0.28)),
+    }));
 
   return {
     scheduleStop(at: number) {
       // Timeline notes are stopped by Smplr's duration parameter so scheduled
       // future events are not cancelled. Live input notes instead wait for an
       // actual key-up and must call the returned stop function.
-      if (noteOffControlled && !isDrumMachine) stop(at);
+      if (noteOffControlled && !isDrumMachine) {
+        for (const stop of stops) stop(at);
+      }
       // Drum-machine samples are one-shots and decay naturally.
     },
     kill() {
-      stop(ctx.currentTime);
+      for (const stop of stops) stop(ctx.currentTime);
     },
   };
 }

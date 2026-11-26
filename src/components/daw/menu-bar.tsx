@@ -6,8 +6,9 @@
 // the command registry, project name and the help toggle.
 // ============================================================
 
-import { useMemo } from "react";
-import { Music } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Apple, FolderOpen, UserRound } from "lucide-react";
+import { toast } from "sonner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,12 +18,53 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { COMMANDS, MENU_ORDER, type Command } from "@/lib/daw/commands";
 import { useDAW } from "@/lib/daw/store";
+import { useCloudAuth } from "@/hooks/use-cloud-auth";
+import { saveSong } from "@/lib/daw/saved-songs";
+import { saveCloudProjectIfSignedIn } from "@/lib/daw/cloud-projects";
 import { cn } from "@/lib/utils";
 
 export function MenuBar() {
   const projectName = useDAW((s) => s.project.name);
+  const project = useDAW((s) => s.project);
+  const projectsScreen = useDAW((s) => s.ui.projectsScreen);
   const helpOpen = useDAW((s) => s.ui.panels.help);
   const togglePanel = useDAW((s) => s.togglePanel);
+  const setModal = useDAW((s) => s.setModal);
+  const { user, passwordRecovery } = useCloudAuth();
+  const [closing, setClosing] = useState(false);
+
+  const closeProject = async () => {
+    if (closing) return;
+    setClosing(true);
+    try {
+      const saved = await saveSong(project);
+      useDAW.setState((state) => ({ project: { ...state.project, id: saved.id } }));
+    } catch (error) {
+      toast.error(
+        `Could not close the project because saving failed: ${
+          error instanceof Error ? error.message : "Browser storage unavailable"
+        }`,
+      );
+      setClosing(false);
+      return;
+    }
+
+    try {
+      await saveCloudProjectIfSignedIn(useDAW.getState().project);
+    } catch (error) {
+      toast.error(
+        `Saved on this device, but cloud sync failed: ${
+          error instanceof Error ? error.message : "Cloud storage unavailable"
+        }`,
+      );
+    }
+    useDAW.getState().setUI({ projectsScreen: true, modal: "none" });
+    setClosing(false);
+  };
+
+  useEffect(() => {
+    if (passwordRecovery) setModal("mySongs");
+  }, [passwordRecovery, setModal]);
 
   // Group the command registry by menu, keeping MENU_ORDER order.
   // Commands whose menu is not listed (e.g. "Transport") stay out of
@@ -38,14 +80,14 @@ export function MenuBar() {
   }, []);
 
   return (
-    <header className="h-9 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/60 bg-[#232327] select-none">
+    <header className="studio-metal h-9 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/80 select-none shadow-[inset_0_-1px_rgba(255,255,255,.035)]">
       {/* app identity */}
       <div className="flex items-center gap-2 pr-1 shrink-0">
         <div
           className="h-5 w-5 rounded-[5px] bg-gradient-to-br from-[#ffb648] to-[#d98b1f] flex items-center justify-center shadow-sm"
           aria-hidden
         >
-          <Music className="h-3 w-3 text-[#19191b]" strokeWidth={2.5} />
+          <Apple className="h-3 w-3 text-white fill-white" strokeWidth={2} />
         </div>
         <span className="text-[12px] font-semibold text-zinc-200">GarageBand Web</span>
         <span className="hidden sm:inline text-[9px] leading-none px-1.5 py-[3px] rounded bg-[#ffb648]/15 text-[#ffb648] border border-[#ffb648]/30 tracking-wide uppercase">
@@ -90,8 +132,30 @@ export function MenuBar() {
         ))}
       </nav>
 
-      {/* right side: project name + help */}
+      {/* right side: account, project name + help */}
       <div className="ml-auto flex items-center gap-2 min-w-0 shrink-0">
+        {!projectsScreen && (
+          <button
+            type="button"
+            onClick={() => void closeProject()}
+            disabled={closing}
+            aria-label="Close project and return to all projects"
+            title="Save and close this project"
+            className="flex h-6 items-center gap-1.5 rounded border border-black/40 bg-[#2f2f34] px-2 text-[10px] text-zinc-300 transition-colors hover:bg-[#3a3a41] hover:text-zinc-100"
+          >
+            {closing ? "Saving…" : <><FolderOpen size={12} aria-hidden /><span className="hidden sm:inline">All Projects</span></>}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setModal("mySongs")}
+          aria-label={user ? `Account: ${user.email}` : "Sign in or create an account"}
+          title={user?.email ?? "Sign in or create an account"}
+          className="flex h-6 max-w-[150px] items-center gap-1.5 rounded border border-black/40 bg-[#2f2f34] px-2 text-[10px] text-zinc-300 transition-colors hover:bg-[#3a3a41] hover:text-zinc-100"
+        >
+          <UserRound size={12} aria-hidden />
+          <span className="truncate">{user?.email ?? "Sign in"}</span>
+        </button>
         <span
           className="hidden md:block text-[11px] text-zinc-500 truncate max-w-[220px]"
           title={projectName}

@@ -86,6 +86,10 @@ export function snapTicks(mode: SnapMode, zoom: number, timeSig: [number, number
       return barTicks(timeSig);
     case "beat":
       return PPQ * (4 / timeSig[1]);
+    case "1/2":
+      return PPQ * 2;
+    case "1/4":
+      return PPQ;
     case "8th":
       return PPQ / 2;
     case "16th":
@@ -210,12 +214,20 @@ export function sliderToVolume(s: number): number {
 }
 
 export function projectLengthTicks(project: Project): number {
+  const bt = barTicks(project.timeSig);
+  if (
+    project.lengthBars !== undefined &&
+    Number.isFinite(project.lengthBars) &&
+    project.lengthBars > 0
+  ) {
+    return Math.max(1, Math.round(project.lengthBars)) * bt;
+  }
+
   let end = 0;
   for (const t of project.tracks) {
     for (const r of t.regions) {
       end = Math.max(end, r.start + r.length);
     }
   }
-  const bt = barTicks(project.timeSig);
   return Math.ceil((end + bt) / bt) * bt; // round up to bar
 }

@@ -10,6 +10,7 @@
 // ============================================================
 
 import { useCallback } from "react";
+import { AudioLines } from "lucide-react";
 import { Knob } from "@/components/daw/controls/knob";
 import { Fader } from "@/components/daw/controls/fader";
 import { Meter } from "@/components/daw/controls/meter";
@@ -19,6 +20,7 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import type { Track } from "@/lib/daw/types";
 import { cn } from "@/lib/utils";
+import { AUDIO_PLUGIN_DEFS, createPluginInstance } from "@/lib/daw/plugins";
 
 const PAN_FORMAT = (v: number) =>
   Math.abs(v) < 0.02 ? "C" : `${v < 0 ? "L" : "R"}${Math.round(Math.abs(v) * 50)}`;
@@ -67,6 +69,21 @@ export function ChannelStrip({ track, selected }: { track: Track; selected: bool
     if (t) useDAW.getState().updateTrack(track.id, { armed: !t.armed });
   }, [track.id]);
 
+  const openPedalboard = () => {
+    const state = useDAW.getState();
+    const current = state.project.tracks.find((item) => item.id === track.id);
+    if (!current) return;
+    state.selectTrack(current.id);
+    if (!(current.audioPlugins ?? []).some((plugin) => plugin.pluginId === "pedalboard")) {
+      const instance = createPluginInstance("pedalboard", AUDIO_PLUGIN_DEFS);
+      if (!instance) return;
+      state.updateTrack(current.id, {
+        audioPlugins: [...(current.audioPlugins ?? []), instance],
+      });
+    }
+    state.setModal("pedalboard");
+  };
+
   const reverb = track.params.reverb ?? 0;
   const delay = track.params.delay ?? 0;
 
@@ -82,22 +99,33 @@ export function ChannelStrip({ track, selected }: { track: Track; selected: bool
       <div className="h-2 w-full rounded-[2px]" style={{ backgroundColor: track.color }} />
 
       {/* icon + name (click selects the track) */}
-      <button
-        type="button"
-        onClick={() => selectTrack(track.id)}
-        title={track.name}
-        className="w-full h-3 flex items-center justify-center gap-1 px-0.5 rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffb648]/60"
-      >
-        <TrackIcon icon={track.icon} size={10} className="shrink-0" style={{ color: track.color }} />
-        <span
+      <div className="w-full h-3 flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => selectTrack(track.id)}
+          title={track.name}
+          className="min-w-0 flex-1 h-3 flex items-center justify-center gap-1 px-0.5 rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-[#ffb648]/60"
+        >
+          <TrackIcon icon={track.icon} size={10} className="shrink-0" style={{ color: track.color }} />
+          <span className={cn("text-[10px] leading-none truncate", selected ? "text-zinc-100" : "text-zinc-300")}>
+            {track.name}
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={openPedalboard}
+          aria-label={`Open ${track.name} Pedalboard`}
+          title="Pedalboard Audio FX insert"
           className={cn(
-            "text-[10px] leading-none truncate",
-            selected ? "text-zinc-100" : "text-zinc-300"
+            "size-4 shrink-0 rounded flex items-center justify-center",
+            track.audioPlugins?.some((plugin) => plugin.pluginId === "pedalboard" && plugin.enabled)
+              ? "text-[#7ed7c8]"
+              : "text-zinc-600 hover:text-zinc-300"
           )}
         >
-          {track.name}
-        </span>
-      </button>
+          <AudioLines size={11} />
+        </button>
+      </div>
 
       {/* EQ mini display -> opens the visual EQ popover */}
       <VisualEQ trackId={track.id}>

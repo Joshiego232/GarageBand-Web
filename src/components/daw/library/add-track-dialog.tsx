@@ -60,6 +60,8 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Brass & Winds": "#d29a52",
   "Drums & Percussion": "#d9b13b",
   "Alchemy Synth": "#65a9d5",
+  "Stage Keys": "#d2a24c",
+  "Layered Keys": "#d2769c",
 };
 const FALLBACK_COLOR = "#3f9d8b";
 
@@ -76,6 +78,10 @@ const QUICK_PICKS = [
   "celesta",
   "808-kit",
   "alchemy-glass-orbit",
+  "stage-upright-piano",
+  "stage-rhodes",
+  "layer-piano-pad",
+  "layer-piano-strings",
 ] as const;
 
 export function AddTrackDialog() {

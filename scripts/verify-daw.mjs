@@ -19,18 +19,30 @@ try {
 
   const modules = [
     "src/lib/daw/types.ts",
+    "src/lib/daw/cloud-audio.ts",
+    "src/lib/daw/reverb-mix.ts",
+    "src/lib/daw/DenoiseEngine.ts",
+    "src/lib/daw/ChordDetector.ts",
+    "src/lib/daw/pedalboard.ts",
+    "src/lib/daw/user-patches.ts",
+    "src/lib/daw/colors.ts",
     "src/lib/daw/utils.ts",
     "src/lib/daw/plugins.ts",
     "src/lib/daw/midi-scripter.ts",
     "src/lib/daw/routing.ts",
     "src/lib/daw/sampler.ts",
     "src/lib/daw/morph-synth.ts",
+    "src/lib/daw/synthCatalog.ts",
     "src/lib/daw/pitch-correction.ts",
     "src/lib/daw/audio-slicing.ts",
     "src/lib/daw/audio-time-stretch.ts",
     "src/lib/daw/midi-control.ts",
     "src/lib/daw/loops.ts",
+    "src/lib/daw/AutomationEngine.ts",
     "src/lib/daw/store.ts",
+    "src/lib/daw/soundfont-catalog.ts",
+    "src/lib/daw/soundfont-cache.ts",
+    "src/lib/daw/soundfont-engine.ts",
     "src/lib/daw/sampled-instruments.ts",
     "src/lib/daw/instruments.ts",
   ];
@@ -71,6 +83,27 @@ try {
   const { PATCHES } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/instruments.js")).href
   );
+  const { getRegionPlaybackBufferId, getRegionSourceBufferId } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/types.js")).href
+  );
+  const { decodeStoredBuffer, encodeStoredBuffer } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/cloud-audio.js")).href
+  );
+  const { normalizeReverbSend } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/reverb-mix.js")).href
+  );
+  const { getDenoiseCacheKey } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/DenoiseEngine.js")).href
+  );
+  const { SYNTH_PATCHES, SYNTH_PREVIEW_IMAGES, getSynthPreviewImageUrl } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/synthCatalog.js")).href
+  );
+  const { SOUNDFONT_PATCHES } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/soundfont-catalog.js")).href
+  );
+  const chords = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/ChordDetector.js")).href
+  );
   const routing = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/routing.js")).href
   );
@@ -95,19 +128,306 @@ try {
   const { useDAW } = await import(
     pathToFileURL(path.join(temp, "src/lib/daw/store.js")).href
   );
+  const { AutomationEngine } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/AutomationEngine.js")).href
+  );
+  const userPatches = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/user-patches.js")).href
+  );
+  const pedalboard = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/pedalboard.js")).href
+  );
+  const { makeTrack } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/loops.js")).href
+  );
+  const { projectLengthTicks } = await import(
+    pathToFileURL(path.join(temp, "src/lib/daw/utils.js")).href
+  );
   const smplr = await import("smplr");
+
+  const audioRegion = { type: "audio", bufferId: "source-audio" };
+  expect(getRegionSourceBufferId(audioRegion) === "source-audio", "Legacy audio regions should retain their source buffer");
+  expect(getRegionPlaybackBufferId(audioRegion) === "source-audio", "Denoise bypass should play the untouched source");
+  expect(
+    getRegionPlaybackBufferId({
+      ...audioRegion,
+      originalAudioBufferId: "source-audio",
+      denoisedAudioBufferId: "clean-audio",
+      denoiseEnabled: true,
+    }) === "clean-audio",
+    "Enabled denoise should route playback to the cached processed buffer",
+  );
+  const audioForSync = {
+    sampleRate: 48000,
+    name: "stereo recording",
+    channels: [
+      new Float32Array([0.25, -0.5, 1]),
+      new Float32Array([-1, 0.125, 0.75]),
+    ],
+  };
+  const restoredAudio = await decodeStoredBuffer(encodeStoredBuffer(audioForSync));
+  expect(
+    restoredAudio.sampleRate === audioForSync.sampleRate &&
+      restoredAudio.name === audioForSync.name &&
+      restoredAudio.channels.length === 2 &&
+      restoredAudio.channels[0][1] === -0.5 &&
+      restoredAudio.channels[1][2] === 0.75,
+    "Cloud audio serialization should preserve names, sample rates, and every channel",
+  );
+  await assert.rejects(
+    () => decodeStoredBuffer(new Blob(["invalid audio"])),
+    /invalid header/,
+    "Cloud audio deserialization should reject malformed files",
+  );
+  let previousWet = -1;
+  for (let send = 0; send <= 1; send += 0.1) {
+    const gains = normalizeReverbSend(send);
+    const wet = gains.send * 0.8;
+    expect(
+      Math.abs(gains.dry ** 2 + wet ** 2 - 1) < 1e-12,
+      "Reverb gain compensation should keep dry/wet power constant",
+    );
+    expect(wet >= previousWet, "Increasing the reverb send should not reduce the wet signal");
+    previousWet = wet;
+  }
+  const denoiseKey = getDenoiseCacheKey("source-audio", { amount: 50, highPass: true });
+  expect(
+    denoiseKey === getDenoiseCacheKey("source-audio", { amount: 50, highPass: true }) &&
+      denoiseKey !== getDenoiseCacheKey("source-audio", { amount: 75, highPass: true }),
+    "Denoise cache keys should be stable and settings-specific",
+  );
+
+  expect(Object.keys(SYNTH_PATCHES).length >= 40, "Synth catalog should contain at least 40 patches");
+  expect(SYNTH_PREVIEW_IMAGES.length === 8, "Synth artwork should define exactly eight images");
+  expect(
+    new Set(Object.values(SYNTH_PATCHES).map(getSynthPreviewImageUrl)).size === 8,
+    "Synth artwork assignment should use all eight images",
+  );
+  expect(
+    getSynthPreviewImageUrl(SYNTH_PATCHES["alchemy-analog-saw-lead"]) ===
+      getSynthPreviewImageUrl(SYNTH_PATCHES["alchemy-analog-saw-lead"]),
+    "Synth artwork assignment should remain stable for a preset ID",
+  );
+  expect(getSynthPreviewImageUrl(PATCHES["grand-piano"]) === undefined, "Synth artwork must not be assigned to pianos");
+  expect(getSynthPreviewImageUrl(PATCHES["drum-kit"]) === undefined, "Synth artwork must not be assigned to drums");
+  expect(getSynthPreviewImageUrl(PATCHES["nylon-guitar"]) === undefined, "Synth artwork must not be assigned to guitars");
+  expect(getSynthPreviewImageUrl(PATCHES["sf-trap-square-lead"]) !== undefined, "Synth artwork should cover synth patches in genre categories");
+  expect(getSynthPreviewImageUrl(PATCHES["sf-trap-rhodes"]) === undefined, "Synth artwork must not be assigned to acoustic-key patches in genre categories");
+
+  const automation = new AutomationEngine();
+  const automationLane = {
+    id: "write-lane",
+    ownerId: "automation-track",
+    scope: "track",
+    parameterId: "volume",
+    name: "Volume",
+    min: 0,
+    max: 1,
+    color: "#fff",
+    points: [{ id: "start", tick: 0, value: 0.2 }],
+  };
+  automation.setClock(10, true);
+  const firstWrite = automation.recordContinuous(
+    [automationLane],
+    { "automation-track": "write" },
+    () => 0.4,
+    () => 0,
+  )[0];
+  automation.setClock(30, true);
+  const secondWrite = automation.recordContinuous(
+    [automationLane],
+    { "automation-track": "write" },
+    () => 0.7,
+    () => 0,
+  )[0];
+  expect(
+    firstWrite?.replacePoints?.length === 1 &&
+      secondWrite?.replacePoints?.some((point) => point.id === firstWrite.point.id),
+    "Continuous Write recording dropped points captured between persistence batches",
+  );
+  const latch = new AutomationEngine();
+  latch.setClock(20, true);
+  const latchPoint = latch.recordControl(automationLane, "latch", 0.8);
+  const latched = latch.finishTouches(
+    [{ ...automationLane, points: [...automationLane.points, latchPoint.point] }],
+    { "automation-track": "latch" },
+  )[0];
+  expect(
+    latched?.replacePoints?.filter((point) => point.tick === 20).length === 1,
+    "Latch release created duplicate points at the release tick",
+  );
+
+  expect(chords.detectChord([60, 64, 67, 71])?.name === "Cmaj7", "Chord detector misidentified a major seventh");
+  expect(chords.detectChord([64, 67, 71, 72])?.name === "Cmaj7/E", "Chord detector did not identify a slash inversion");
+  expect(chords.detectChord([60, 62, 64, 67])?.name === "Cadd9", "Chord detector misidentified an add9 voicing");
+  expect(chords.detectChord([60, 63, 67, 70])?.name === "Cm7", "Chord detector misidentified a minor seventh");
+  expect(chords.detectChord([60, 63, 66])?.name === "Cdim", "Chord detector misidentified a diminished triad");
+  expect(chords.detectChord([60, 64, 68])?.name === "Caug", "Chord detector misidentified an augmented triad");
+  expect(chords.detectChord([60, 65, 67])?.name === "Csus4", "Chord detector misidentified a suspended chord");
+  expect(chords.detectChord([60, 63, 66, 70])?.name === "Cm7b5", "Chord detector misidentified a half-diminished seventh");
+  expect(chords.detectChord([60, 64, 67, 70, 74])?.name === "C9", "Chord detector misidentified a dominant ninth");
+  expect(chords.detectChord([70, 74, 77], { tonic: 5, mode: "major" })?.name === "Bb", "Chord spelling ignored a flat key signature");
+  expect(chords.detectChord([66, 70, 73], { tonic: 2, mode: "major" })?.name === "F#", "Chord spelling ignored a sharp key signature");
+  expect(chords.detectChord([60]) === null, "A single pitch should not be reported as a chord");
+  const keySuggestions = chords.suggestKeys([
+    [57, 60, 64, 67].map((pitch) => chords.detectChord([pitch, pitch + 3, pitch + 7, pitch + 10])).find(Boolean),
+  ].filter(Boolean));
+  expect(keySuggestions.length === 2, "Key suggester should return two candidate scales");
+  const extractedChords = chords.analyzeMidiNotesByTiming([
+    { pitch: 60, start: 0, length: 1200 },
+    { pitch: 64, start: 137, length: 720 },
+    { pitch: 67, start: 137, length: 720 },
+    { pitch: 71, start: 137, length: 720 },
+  ], 0, 2400);
+  expect(
+    extractedChords.length === 1 &&
+      extractedChords[0].name === "C" &&
+      extractedChords[0].start === 137 &&
+      extractedChords[0].length === 720 &&
+      extractedChords[0].notes.join(",") === "60,64,67",
+    "MIDI chord analysis should use simple chord names and exact note timing",
+  );
+  const arrangementChords = chords.analyzeMidiRegionsByTiming([
+    {
+      start: 100,
+      length: 1200,
+      notes: [
+        { pitch: 60, start: 0, length: 1200 },
+        { pitch: 64, start: 137, length: 720 },
+        { pitch: 67, start: 137, length: 720 },
+      ],
+      trackId: "piano",
+    },
+  ]);
+  expect(
+    arrangementChords[0]?.start === 237 && arrangementChords[0]?.length === 720,
+    "Arrangement chord timing should match simultaneous MIDI note timing",
+  );
+  const progressionChords = chords.analyzeMidiNotesByTiming([
+    { pitch: 60, start: 137, length: 480 },
+    { pitch: 64, start: 137, length: 480 },
+    { pitch: 67, start: 137, length: 480 },
+    { pitch: 57, start: 617, length: 480 },
+    { pitch: 60, start: 617, length: 480 },
+    { pitch: 64, start: 617, length: 480 },
+  ], 0, 1200);
+  expect(
+    progressionChords.length === 2 &&
+      progressionChords[0].name === "C" &&
+      progressionChords[0].start === 137 &&
+      progressionChords[0].length === 480 &&
+      progressionChords[1].name === "Am" &&
+      progressionChords[1].start === 617 &&
+      progressionChords[1].length === 480,
+    "Chord changes should begin and end at their exact MIDI note boundaries",
+  );
+  const loopedChords = chords.analyzeMidiRegionsByTiming([{
+    start: 0,
+    length: 2000,
+    looped: true,
+    coreLength: 1000,
+    notes: [
+      { pitch: 60, start: 0, length: 400 },
+      { pitch: 64, start: 0, length: 400 },
+      { pitch: 67, start: 0, length: 400 },
+    ],
+    trackId: "looped-piano",
+  }]);
+  expect(
+    loopedChords.length === 2 &&
+      loopedChords[0].start === 0 &&
+      loopedChords[0].length === 400 &&
+      loopedChords[1].start === 1000 &&
+      loopedChords[1].length === 400,
+    "Looped MIDI chord timing should not spill notes across loop boundaries",
+  );
+  const analysisStart = performance.now();
+  for (let iteration = 0; iteration < 1000; iteration += 1) {
+    chords.detectChord([48, 55, 60, 64, 67, 71, 74]);
+  }
+  expect(
+    performance.now() - analysisStart < 1000,
+    "Chord recognition should average below one millisecond per analysis",
+  );
+
+  expect(makeTrack({ type: "audio" }).color === "#2B7DE9", "Audio tracks should use the blue default");
+  expect(makeTrack({ type: "midi" }).color === "#28B463", "Instrument tracks should use the green default");
+  expect(makeTrack({ type: "midi", instrument: "drum-kit" }).color === "#D4AC0D", "Drummer tracks should use the amber default");
+  const lengthProject = {
+    lengthBars: 12,
+    timeSig: [4, 4],
+    tracks: [],
+  };
+  expect(projectLengthTicks(lengthProject) === 12 * 4 * 960, "Explicit project bar length should set the song end");
+  useDAW.getState().setProjectLengthBars(1200);
+  expect(useDAW.getState().project.lengthBars === 999, "Project bar length should be capped at 999");
+  useDAW.getState().setProjectLengthBars(16);
+  const patchStorage = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => patchStorage.get(key) ?? null,
+    setItem: (key, value) => patchStorage.set(key, value),
+  };
+  const patchTrack = {
+    id: "patch-track",
+    type: "midi",
+    role: "track",
+    name: "Patch Piano",
+    color: "#28B463",
+    instrument: "grand-piano",
+    icon: "piano",
+    volume: 0.72,
+    pan: -0.2,
+    mute: false,
+    solo: false,
+    armed: false,
+    inputMonitor: false,
+    inputDeviceId: null,
+    compressor: false,
+    eq: { lowGain: 2, lowFreq: 90, midGain: -1, midFreq: 1000, midQ: 1, highGain: 1, highFreq: 8000 },
+    params: { reverb: 0.3 },
+    regions: [],
+  };
+  const serializedPatch = userPatches.makeUserPatch("Warm Piano", "My Instruments", patchTrack);
+  userPatches.writeUserPatches([serializedPatch]);
+  const restoredPatches = userPatches.readUserPatches();
+  expect(restoredPatches[0]?.track?.params.reverb === 0.3, "User patch did not preserve instrument control settings");
+  expect(restoredPatches[0]?.track?.eq.midGain === -1, "User patch did not preserve EQ settings");
+  const defaultPedals = pedalboard.PEDAL_DEFINITIONS.map((definition) =>
+    pedalboard.createPedalInstance(definition.id),
+  );
+  expect(defaultPedals.length === 8, "Pedalboard must expose eight distinct stompboxes");
+  const pedalPatch = userPatches.makePedalboardPatch("Studio Chain", defaultPedals, "#3673D0");
+  userPatches.writeUserPatches([...restoredPatches, pedalPatch]);
+  const restoredPedalPatch = userPatches.readUserPatches().find((patch) => patch.kind === "pedalboard");
+  expect(restoredPedalPatch?.pedalboard?.length === 8, "User patch library did not preserve the full pedalboard chain");
 
   // Catalog counts, verified upstream sample IDs, and our original synth engine.
   const categories = new Map();
   let sampledCount = 0;
   const morphSynthPatches = [];
+  expect(
+    Object.keys(SOUNDFONT_PATCHES).length === 24,
+    `Expected 24 curated SoundFont patches, found ${Object.keys(SOUNDFONT_PATCHES).length}`,
+  );
   for (const patch of Object.values(PATCHES)) {
+    if (patch.sampled?.engine === "soundfont-worklet") {
+      expect(patch.soundfont, `SoundFont patch has no source metadata: ${patch.id}`);
+      expect(
+        Number.isInteger(patch.soundfont.bank) &&
+          patch.soundfont.bank >= 0 &&
+          Number.isInteger(patch.soundfont.program) &&
+          patch.soundfont.program >= 0 &&
+          patch.soundfont.program < 128,
+        `Invalid SoundFont bank/program mapping: ${patch.id}`,
+      );
+      continue;
+    }
     categories.set(patch.category, (categories.get(patch.category) ?? 0) + 1);
 
     if (patch.synthEngine === "morph-additive") {
       expect(!patch.sampled, `Morph Synth preset should not pretend to use samples: ${patch.id}`);
       const knobIds = new Set(patch.knobs.map((knob) => knob.id));
-      for (const id of ["morph", "harmonics", "cutoff", "resonance", "attack", "decay", "sustain", "release", "detune", "sub", "lfoRate", "lfoDepth", "noise"]) {
+      for (const id of ["morph", "harmonics", "cutoff", "resonance", "attack", "decay", "sustain", "release", "waveform", "detune", "chorus", "glide", "sub", "lfoRate", "lfoDepth", "noise"]) {
         expect(knobIds.has(id), `Morph Synth preset ${patch.id} is missing control ${id}`);
       }
       morphSynthPatches.push(patch);
@@ -120,9 +440,25 @@ try {
 
     if (source.engine === "soundfont") {
       expect(
-        smplr.getSoundfontNames().includes(source.instrument),
-        `Unknown SoundFont instrument ID "${source.instrument}" used by ${patch.id}`,
+        source.loop === true,
+        `SoundFont instrument ${patch.id} should load sustained sample loop data`,
       );
+      const soundfontNames = smplr.getSoundfontNames();
+      for (const instrument of [
+        source.instrument,
+        ...(source.layers ?? []).map((layer) => layer.instrument),
+      ]) {
+        expect(
+          soundfontNames.includes(instrument),
+          `Unknown SoundFont instrument ID "${instrument}" used by ${patch.id}`,
+        );
+      }
+      for (const layer of source.layers ?? []) {
+        expect(
+          Number.isFinite(layer.gain) && layer.gain > 0 && layer.gain <= 1,
+          `Invalid SoundFont layer gain used by ${patch.id}`,
+        );
+      }
       expect(
         smplr.getSoundfontKits().includes(source.kit ?? "MusyngKite"),
         `Unknown SoundFont bank used by ${patch.id}`,
@@ -148,12 +484,20 @@ try {
   }
 
   for (const [category, count] of categories) {
-    expect(count === 10, `Expected 10 instruments in "${category}", found ${count}`);
+    const expectedCount = category === "Alchemy Synth" || category === "Synthesizer" ? 30 : 10;
+    expect(count === expectedCount, `Expected ${expectedCount} instruments in "${category}", found ${count}`);
   }
   expect(categories.size >= 9, `Expected at least 9 instrument families, found ${categories.size}`);
-  expect(sampledCount === 100, `Expected 100 sampled instruments, found ${sampledCount}`);
-  expect(morphSynthPatches.length === 10, `Expected 10 original Morph Synth presets, found ${morphSynthPatches.length}`);
-  expect(categories.get("Alchemy Synth") === 10, "Alchemy Synth family must contain exactly 10 presets");
+  expect(sampledCount === 120, `Expected 120 sampled instruments, found ${sampledCount}`);
+  expect(categories.get("Stage Keys") === 10, "Stage Keys family must contain exactly 10 presets");
+  expect(categories.get("Layered Keys") === 10, "Layered Keys family must contain exactly 10 presets");
+  const layeredKeys = Object.values(PATCHES).filter((patch) => patch.category === "Layered Keys");
+  expect(
+    layeredKeys.length === 10 && layeredKeys.every((patch) => (patch.sampled?.layers?.length ?? 0) === 1),
+    "Layered Keys presets must each combine two sampled SoundFont instruments",
+  );
+  expect(morphSynthPatches.length === 50, `Expected 50 Morph Synth presets, found ${morphSynthPatches.length}`);
+  expect(categories.get("Alchemy Synth") === 30, "Alchemy Synth family must contain exactly 30 presets");
 
   // Verify stored folder/summing stacks, VCA assignments, alternatives and screensets.
   const daw = useDAW.getState();
@@ -162,6 +506,9 @@ try {
   let project = useDAW.getState().project;
   const members = project.tracks.filter((track) => track.role === "track");
   const memberIds = members.slice(0, 2).map((track) => track.id);
+  useDAW.getState().selectTrack(memberIds[0]);
+  useDAW.getState().selectTrack(memberIds[1], true);
+  expect(useDAW.getState().ui.selectedTrackIds.length === 2, "Cmd/Ctrl-style track selection did not preserve multiple selected tracks");
   const stackId = useDAW.getState().createTrackStack("Worship Keys", "summing", memberIds);
   expect(!!stackId, "Could not create a summing stack");
   project = useDAW.getState().project;
@@ -171,12 +518,36 @@ try {
   const bus = project.tracks.find((track) => track.id === stack.busTrackId);
   expect(folder?.role === "folder", "Track stack did not create a folder parent row");
   expect(bus?.role === "aux", "Summing stack did not create an Aux bus channel");
+  const savedStackPatch = userPatches.makeUserPatch(
+    "Layered Preset",
+    "My Instruments",
+    folder,
+    stack,
+    project.tracks.filter((track) => memberIds.includes(track.id)),
+    bus,
+  );
+  expect(savedStackPatch.stack?.tracks.length === 2, "User patch did not serialize every stack member");
+  expect(savedStackPatch.stack?.definition.type === "summing", "User patch did not preserve the stack type");
+  expect(!!savedStackPatch.stack?.bus, "User patch did not preserve summing bus settings");
   expect(
     project.tracks.filter((track) => memberIds.includes(track.id)).every(
       (track) => track.parentTrackId === folder.id && track.outputBusId === bus.id
     ),
     "Summing stack members were not grouped and routed through the Aux bus",
   );
+  useDAW.getState().renameTrackStack(stackId, "Layered Keys");
+  useDAW.getState().setTrackStackColor(stackId, "#2B7DE9");
+  useDAW.getState().updateTrack(folder.id, { volume: 0.5 }, false);
+  const groupedMember = useDAW.getState().project.tracks.find((track) => track.id === memberIds[0]);
+  expect(useDAW.getState().project.stacks?.find((item) => item.id === stackId)?.name === "Layered Keys", "Stack rename was not persisted");
+  expect(useDAW.getState().project.tracks.find((track) => track.id === folder.id)?.color === "#2B7DE9", "Stack color was not applied to its header");
+  expect(Math.abs(routing.getEffectiveTrackGain(groupedMember, useDAW.getState().project.tracks) - groupedMember.volume * 0.5) < 1e-8, "Folder stack group fader did not affect child output gain");
+  useDAW.getState().toggleTrackMute(folder.id);
+  expect(!routing.isTrackAudible(groupedMember, useDAW.getState().project.tracks), "Folder stack mute did not mute its child tracks");
+  useDAW.getState().toggleTrackMute(folder.id);
+  useDAW.getState().toggleTrackSolo(folder.id);
+  expect(routing.isTrackAudible(groupedMember, useDAW.getState().project.tracks), "Folder stack solo did not include its members");
+  useDAW.getState().toggleTrackSolo(folder.id);
   useDAW.getState().toggleTrackStack(stackId);
   expect(
     useDAW.getState().project.tracks.find((track) => track.id === folder.id)?.collapsed,
@@ -230,6 +601,52 @@ try {
       useDAW.getState().ui.trackSize === "L" &&
       useDAW.getState().ui.zoom === 88,
     "Screenset did not restore the saved workspace layout",
+  );
+
+  // Splitting at the playhead affects only the selected track.
+  useDAW.getState().addTrack({ type: "midi", name: "Split Selected Track" });
+  useDAW.getState().addTrack({ type: "midi", name: "Split Other Track" });
+  const splitSelectedTrack = useDAW.getState().project.tracks.find(
+    (track) => track.name === "Split Selected Track",
+  );
+  const splitOtherTrack = useDAW.getState().project.tracks.find(
+    (track) => track.name === "Split Other Track",
+  );
+  expect(!!splitSelectedTrack && !!splitOtherTrack, "Could not create split test tracks");
+  useDAW.getState().addRegion({
+    id: "split-selected-region",
+    trackId: splitSelectedTrack.id,
+    type: "midi",
+    name: "Selected Region",
+    start: 0,
+    length: 3840,
+  });
+  useDAW.getState().addRegion({
+    id: "split-other-region",
+    trackId: splitOtherTrack.id,
+    type: "midi",
+    name: "Other Region",
+    start: 0,
+    length: 3840,
+  });
+  useDAW.getState().selectTrack(splitSelectedTrack.id);
+  useDAW.getState().splitRegionsAt(1920);
+  project = useDAW.getState().project;
+  const splitSelectedRegions = project.tracks.find(
+    (track) => track.id === splitSelectedTrack.id,
+  )?.regions ?? [];
+  const splitOtherRegions = project.tracks.find(
+    (track) => track.id === splitOtherTrack.id,
+  )?.regions ?? [];
+  expect(
+    splitSelectedRegions.length === 2 &&
+      splitSelectedRegions[0].length === 1920 &&
+      splitSelectedRegions[1].start === 1920,
+    "Split at the playhead did not split the selected track's region",
+  );
+  expect(
+    splitOtherRegions.length === 1 && splitOtherRegions[0].length === 3840,
+    "Split at the playhead changed an unselected track",
   );
 
   // Verify Quick Swipe comping replaces aligned audio takes atomically.
@@ -549,14 +966,15 @@ try {
     "A missing Aux destination was not rejected",
   );
 
-  // Both effect racks must contain ten unique, configured processors.
+  // Effect racks must contain unique, configured processors.
   for (const [name, definitions] of [
     ["MIDI", dawPlugins.MIDI_PLUGIN_DEFS],
     ["Audio", dawPlugins.AUDIO_PLUGIN_DEFS],
   ]) {
-    expect(definitions.length === 10, `${name} effects rack must contain exactly 10 plugins`);
+    const expectedCount = name === "Audio" ? 11 : 10;
+    expect(definitions.length === expectedCount, `${name} effects rack must contain exactly ${expectedCount} plugins`);
     expect(
-      new Set(definitions.map((definition) => definition.id)).size === 10,
+      new Set(definitions.map((definition) => definition.id)).size === expectedCount,
       `${name} effect IDs must be unique`,
     );
     for (const definition of definitions) {
@@ -573,7 +991,10 @@ try {
   const engineSource = await readFile(path.join(root, "src/lib/daw/engine.ts"), "utf8");
   for (const definition of dawPlugins.AUDIO_PLUGIN_DEFS) {
     expect(
-      engineSource.includes(`get("${definition.id}")`),
+      definition.id === "pedalboard"
+        ? engineSource.includes('activeAudioPlugin(track, "pedalboard")') &&
+          engineSource.includes("tn.pedalboard.sync")
+        : engineSource.includes(`get("${definition.id}")`),
       `Audio plugin has no engine implementation: ${definition.id}`,
     );
   }
@@ -722,7 +1143,7 @@ try {
   expect(bypassed[0].pitch === 60, "Bypassed MIDI plugin still changed the notes");
 
   console.log(
-    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} original Morph Synth presets across ${categories.size} families; 10 MIDI plugins (including Scripter) and 10 audio plugins; MIDI processor behavior checks passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, WSOLA and phase-vocoder Flex Time, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
+    `DAW verification passed: ${sampledCount} sampled instruments and ${morphSynthPatches.length} Web Audio synth presets across ${categories.size} families; 10 MIDI plugins (including Scripter) and 11 audio plugins; MIDI processor behavior checks passed; Aux routing, VCA, track stacks, project alternatives, screensets, audio take comping, sample-zone velocity layers, additive spectral synthesis, monophonic pitch detection/correction, transient audio slicing, WSOLA and phase-vocoder Flex Time, one-shot note-off behavior, MIDI CC mapping and solo checks passed.`,
   );
 } finally {
   await rm(temp, { recursive: true, force: true });

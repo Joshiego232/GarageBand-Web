@@ -22,9 +22,20 @@ export function Meter({ getLevel, vertical = false, className, width = 8, height
 
   useEffect(() => {
     let raf = 0;
+    let visible = true;
+    let lastDraw = 0;
+    const observer = typeof IntersectionObserver === "undefined"
+      ? null
+      : new IntersectionObserver(([entry]) => {
+          visible = entry?.isIntersecting ?? true;
+        });
+    if (observer) observer.observe(canvasRef.current as HTMLCanvasElement);
     const draw = () => {
+      const now = performance.now();
+      const shouldDraw = visible && !document.hidden && now - lastDraw >= 33;
+      if (shouldDraw) lastDraw = now;
       const canvas = canvasRef.current;
-      if (canvas) {
+      if (canvas && shouldDraw) {
         const ctx = canvas.getContext("2d");
         if (ctx) {
           const dpr = window.devicePixelRatio || 1;
@@ -73,7 +84,10 @@ export function Meter({ getLevel, vertical = false, className, width = 8, height
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer?.disconnect();
+    };
   }, [getLevel, vertical, width, height]);
 
   return (

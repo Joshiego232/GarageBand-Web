@@ -14,6 +14,8 @@ import { useDAW } from "@/lib/daw/store";
 import { engine } from "@/lib/daw/engine";
 import { PPQ, type Note, type Project, type Region, type Track } from "@/lib/daw/types";
 import { barTicks, clamp, isBlackKey, noteName, snapTick, snapTicks } from "@/lib/daw/utils";
+import { mixHex } from "@/lib/daw/colors";
+import { detectChord } from "@/lib/daw/ChordDetector";
 
 // ---------- constants ----------
 
@@ -155,6 +157,8 @@ export function PianoRoll() {
   const zoom = useDAW((s) => s.ui.zoom);
   const snap = useDAW((s) => s.ui.snap);
   const timeSig = useDAW((s) => s.project.timeSig);
+  const keyTonic = useDAW((s) => s.project.keyTonic);
+  const keyMode = useDAW((s) => s.project.keyMode);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -170,6 +174,21 @@ export function PianoRoll() {
   const contentW = region
     ? Math.max(160, Math.min(MAX_CANVAS_W, Math.ceil(region.length * pxPerTick) + 40))
     : 160;
+  const chordBars = useMemo(() => {
+    if (!region || region.type !== "midi") return [];
+    const ticksPerBar = barTicks(timeSig);
+    const count = Math.ceil(region.length / ticksPerBar);
+    return Array.from({ length: count }, (_, bar) => {
+      const start = bar * ticksPerBar;
+      const notesInBar = notes.filter(
+        (note) => note.start < start + ticksPerBar && note.start + note.length > start,
+      );
+      return {
+        bar,
+        chord: detectChord(notesInBar.map((note) => note.pitch), { tonic: keyTonic, mode: keyMode }),
+      };
+    });
+  }, [keyMode, keyTonic, notes, region, timeSig]);
 
   // Latest-state ref read by the draw loop and pointer handlers.
   const stateRef = useRef<RollState>({
@@ -291,9 +310,10 @@ export function PianoRoll() {
       const y = pitchToY(clamp(pitch, PITCH_MIN, PITCH_MAX)) + 1;
       const h = ROW_H - 2;
       const selected = sel.has(n.id);
+      const noteColor = st.track?.color ?? "#28B463";
       ctx.fillStyle = selected
-        ? "#8fd06a"
-        : `rgba(101,167,66,${(0.55 + (n.velocity / 127) * 0.45).toFixed(3)})`;
+        ? mixHex(noteColor, "#ffffff", 0.4)
+        : mixHex(noteColor, "#ffffff", 0.16 + (n.velocity / 127) * 0.28);
       roundRectPath(ctx, x, y, w, h, 2.5);
       ctx.fill();
       if (selected) {
@@ -320,7 +340,7 @@ export function PianoRoll() {
       const x = drag.start * st.pxPerTick;
       const w = Math.max(3, drag.length * st.pxPerTick);
       const y = pitchToY(drag.pitch) + 1;
-      ctx.fillStyle = "rgba(143,208,106,0.75)";
+      ctx.fillStyle = mixHex(st.track?.color ?? "#28B463", "#ffffff", 0.36);
       roundRectPath(ctx, x, y, w, ROW_H - 2, 2.5);
       ctx.fill();
       ctx.setLineDash([3, 2]);
@@ -812,6 +832,19 @@ export function PianoRoll() {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex h-7 shrink-0 items-center gap-1 overflow-x-auto border-b border-black/50 bg-[#191a1e] px-2">
+        <span className="mr-1 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">Chord Banner</span>
+        {chordBars.map(({ bar, chord }) => (
+          <span
+            key={bar}
+            title={`Bar ${bar + 1}`}
+            className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] ${chord ? "border-cyan-300/15 bg-cyan-300/[.07] text-cyan-100" : "border-white/[.04] text-zinc-700"}`}
+          >
+            {bar + 1}: {chord?.name ?? "—"}
+          </span>
+        ))}
+        <span className="ml-auto shrink-0 text-[8px] text-zinc-600">Updates with MIDI edits</span>
+      </div>
       {/* toolbar */}
       <div className="h-8 shrink-0 flex items-center gap-2 px-2 bg-[#202024] border-b border-black/40">
         <Button

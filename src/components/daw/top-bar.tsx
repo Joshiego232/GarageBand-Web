@@ -23,15 +23,19 @@ import {
   AudioLines,
   Cable,
   Circle,
+  CircleHelp,
   Clock,
   Library,
   List,
   Music4,
+  Piano,
   PanelBottom,
   Play,
   Repeat,
   Repeat2,
+  Share2,
   SkipBack,
+  SkipForward,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -60,6 +64,7 @@ import {
 } from "@/lib/daw/utils";
 import { cn } from "@/lib/utils";
 import { MidiControlSurface } from "@/components/daw/panels/midi-control-surface";
+import { LCDChordDisplay } from "@/components/daw/LCDChordDisplay";
 
 const MONO: CSSProperties = {
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -87,7 +92,7 @@ function IconButton({ label, active, onClick, className, children }: IconButtonP
       title={label}
       onClick={onClick}
       className={cn(
-        "h-8 w-8 shrink-0 rounded-md bg-[#2f2f34] hover:bg-[#3a3a41] border border-black/40 flex items-center justify-center text-zinc-300 transition-colors",
+        "h-8 w-8 shrink-0 rounded-md bg-gradient-to-b from-[#3a3a3a] to-[#292929] hover:from-[#454545] hover:to-[#303030] border border-black/70 shadow-[inset_0_1px_rgba(255,255,255,.08),0_1px_1px_rgba(0,0,0,.4)] flex items-center justify-center text-zinc-300 transition-colors",
         active && "text-[#ffb648] bg-[#ffb648]/15 border-[#ffb648]/40",
         className
       )}
@@ -227,7 +232,7 @@ function LCD() {
 
   return (
     <div
-      className="w-full max-w-md h-11 rounded-md bg-[#101013] border border-black/70 shadow-[inset_0_2px_8px_rgba(0,0,0,0.8)] px-3 py-1.5 flex items-center gap-3 min-w-0"
+      className="w-full max-w-2xl h-11 rounded-md bg-[#101013] border border-black/70 shadow-[inset_0_2px_8px_rgba(0,0,0,0.8)] px-3 py-1.5 flex items-center gap-3 min-w-0"
       style={{ ...MONO, color: "#ffb648" }}
     >
       {/* position display */}
@@ -462,6 +467,8 @@ function LCD() {
           </PopoverContent>
         </Popover>
       </div>
+      <div className="w-px self-stretch bg-cyan-300/10" />
+      <LCDChordDisplay keySignature={{ tonic: project.keyTonic, mode: project.keyMode }} />
     </div>
   );
 }
@@ -476,6 +483,7 @@ export function TopBar() {
   const transport = useDAW((s) => s.transport);
   const panels = useDAW((s) => s.ui.panels);
   const editorMode = useDAW((s) => s.ui.editorMode);
+  const automationView = useDAW((s) => s.ui.automationView);
   const setMetronome = useDAW((s) => s.setMetronome);
   const setCountIn = useDAW((s) => s.setCountIn);
   const setMasterVolume = useDAW((s) => s.setMasterVolume);
@@ -490,7 +498,7 @@ export function TopBar() {
   };
 
   return (
-    <div className="h-14 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/60 bg-[#232327]">
+    <div className="studio-metal h-14 shrink-0 flex items-center gap-2 px-2 sm:px-3 border-b border-black/80 shadow-[inset_0_-1px_rgba(255,255,255,.04)]">
       {/* transport cluster */}
       <div className="flex items-center gap-1 rounded-md bg-[#1a1a1d] border border-black/50 p-1 shrink-0">
         <IconButton
@@ -502,6 +510,16 @@ export function TopBar() {
           }
         >
           <SkipBack className="h-4 w-4" />
+        </IconButton>
+        <IconButton
+          label="Fast-forward one bar"
+          onClick={() =>
+            engine.setPlayhead(
+              engine.currentTick() + barTicks(project.timeSig)
+            )
+          }
+        >
+          <SkipForward className="h-4 w-4" />
         </IconButton>
         <IconButton label="Stop" onClick={() => engine.stop()}>
           <Square className="h-3.5 w-3.5 fill-current" />
@@ -563,6 +581,25 @@ export function TopBar() {
 
       {/* right cluster: panel toggles, project name, master */}
       <div className="flex items-center gap-1 shrink-0">
+        <IconButton
+          label="Automation View (A)"
+          active={automationView}
+          onClick={() => setUI({ automationView: !automationView })}
+        >
+          <svg aria-hidden="true" viewBox="0 0 18 18" className="h-4 w-4" fill="none">
+            <path d="M2 13.5 6.5 9l4 2.5L16 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <circle cx="2" cy="13.5" r="1.5" fill="currentColor" />
+            <circle cx="6.5" cy="9" r="1.5" fill="currentColor" />
+            <circle cx="10.5" cy="11.5" r="1.5" fill="currentColor" />
+            <circle cx="16" cy="4.5" r="1.5" fill="currentColor" />
+          </svg>
+        </IconButton>
+        <IconButton
+          label="Bounce Project or Section (⌘/Ctrl+B)"
+          onClick={() => runCommandById("file.bounce")}
+        >
+          <Share2 className="h-4 w-4" />
+        </IconButton>
         <button
           title="Smart Composer - describe a song, AI arranges it"
           onClick={() => useDAW.getState().setModal("composer")}
@@ -577,6 +614,22 @@ export function TopBar() {
           onClick={() => togglePanel("library")}
         >
           <Library className="h-4 w-4" />
+        </IconButton>
+        <IconButton
+          label="Quick Help"
+          active={panels.help}
+          onClick={() => togglePanel("help")}
+          className="hidden lg:flex"
+        >
+          <CircleHelp className="h-4 w-4" />
+        </IconButton>
+        <IconButton
+          label="On-Screen Keyboard"
+          active={panels.keyboard}
+          onClick={() => togglePanel("keyboard")}
+          className="hidden sm:flex"
+        >
+          <Piano className="h-4 w-4" />
         </IconButton>
         <IconButton
           label="Loop Browser"

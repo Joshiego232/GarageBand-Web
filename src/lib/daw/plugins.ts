@@ -51,6 +51,7 @@ export const MIDI_PLUGIN_DEFS: PluginDefinition[] = [
 ];
 
 export const AUDIO_PLUGIN_DEFS: PluginDefinition[] = [
+  { id: "pedalboard", name: "Pedalboard", description: "Serial stompbox inserts with tactile controls and true bypass.", controls: [] },
   { id: "eq", name: "Channel EQ", description: "Three-band low, mid and high equalizer.", controls: [control("mix", "Amount", 0, 1, 1, 0.05)] },
   { id: "compressor", name: "Compressor", description: "Controls vocal and instrument dynamics.", controls: [control("threshold", "Threshold", -36, 0, -18), control("ratio", "Ratio", 1, 12, 3, 0.5)] },
   { id: "high-pass", name: "High-Pass Filter", description: "Removes low-frequency rumble from vocals and recordings.", controls: [control("frequency", "Cutoff", 20, 320, 80, 5)] },

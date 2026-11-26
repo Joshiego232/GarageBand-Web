@@ -36,7 +36,11 @@ export function DrumStepSequencer() {
   const setBarIndex = (index: number) =>
     setBarSelection({ regionId: region?.id ?? null, index });
 
-  const isDrumTrack = !!track && (!!track.sampleDrumKit || !!PATCHES[track.instrument]?.isDrum);
+  const isDrumTrack = !!track && (
+    !!track.sampleDrumKit ||
+    !!PATCHES[track.instrument]?.isDrum ||
+    track.soundFontPreset?.bank === 128
+  );
   const keyTonic = useDAW((s) => s.project.keyTonic);
   const keyMode = useDAW((s) => s.project.keyMode);
   const ticksPerBar = barTicks(timeSig);

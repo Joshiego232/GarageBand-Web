@@ -3,6 +3,7 @@
 // All loops are green-style MIDI loops: they follow project tempo & key
 // ============================================================
 import { PPQ, type LoopDef, type Note, type Project, type Track, uid } from "./types";
+import { DEFAULT_TRACK_COLORS } from "./colors";
 import {
   makeRng,
   scalePitch,
@@ -293,7 +294,11 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
     name: partial.name ?? patch?.name ?? "Audio",
     type: partial.type,
     icon: partial.icon ?? (partial.type === "audio" ? "mic" : patch?.icon ?? "piano"),
-    color: partial.color ?? (partial.type === "midi" ? "#8fb44a" : "#4a90d9"),
+    color: partial.color ?? (
+      partial.type === "midi" && patch?.isDrum
+        ? DEFAULT_TRACK_COLORS.drummer
+        : DEFAULT_TRACK_COLORS[partial.type]
+    ),
     instrument,
     sampleBufferId: partial.sampleBufferId,
     sampleRootPitch: partial.sampleRootPitch,
@@ -319,6 +324,7 @@ export function makeTrack(partial: Partial<Track> & { type: "midi" | "audio" }):
 export function emptyProject(name = "My Song"): Project {
   return {
     name,
+    lengthBars: 16,
     tempo: 100,
     timeSig: [4, 4],
     keyTonic: 0,
@@ -332,6 +338,7 @@ export function emptyProject(name = "My Song"): Project {
     audioOutputDeviceId: null,
     midiCCMappings: [],
     tracks: [],
+    chordRegions: [],
     stacks: [],
     alternatives: [],
     screensets: [],
@@ -344,6 +351,7 @@ export function emptyProject(name = "My Song"): Project {
 
 export function demoProject(): Project {
   const project = emptyProject("Neon Horizon");
+  project.lengthBars = 24;
   project.tempo = 100;
   project.keyTonic = 9; // A
   project.keyMode = "minor";

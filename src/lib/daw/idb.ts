@@ -1,6 +1,6 @@
 // ============================================================
 // IndexedDB storage for PCM audio (recordings + imports)
-// Project JSON lives in SQLite via Prisma; audio stays local.
+// Audio buffers stay local; project JSON is stored separately in IndexedDB.
 // ============================================================
 
 export interface StoredBuffer {

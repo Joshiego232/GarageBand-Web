@@ -17,9 +17,13 @@ export function StatusBar() {
   // user gesture, so keep checking until it exists).
   useEffect(() => {
     const id = window.setInterval(() => {
-      setVoices(engine.getVoiceCount());
-      if (engine.ctx) setSampleRate(engine.ctx.sampleRate);
-    }, 500);
+      const nextVoices = engine.getVoiceCount();
+      setVoices((current) => current === nextVoices ? current : nextVoices);
+      if (engine.ctx) {
+        const nextSampleRate = engine.ctx.sampleRate;
+        setSampleRate((current) => current === nextSampleRate ? current : nextSampleRate);
+      }
+    }, 1000);
     return () => window.clearInterval(id);
   }, []);
 

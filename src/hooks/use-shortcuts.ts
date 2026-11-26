@@ -8,7 +8,7 @@
 
 import { useEffect } from "react";
 import { COMMANDS } from "@/lib/daw/commands";
-import { handleTypingKeyDown, handleTypingKeyUp } from "@/lib/daw/input";
+import { handleTypingKeyDown, handleTypingKeyUp, KEY_TO_SEMITONE } from "@/lib/daw/input";
 import { useDAW } from "@/lib/daw/store";
 
 function isTypingTarget(e: KeyboardEvent): boolean {
@@ -21,7 +21,12 @@ function isTypingTarget(e: KeyboardEvent): boolean {
 export function useShortcuts() {
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      if (isTypingTarget(e)) return;
+      const opensCommandPalette =
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.key.toLowerCase() === "k";
+      if (isTypingTarget(e) && !opensCommandPalette) return;
       const st = useDAW.getState();
       const hasMods = e.metaKey || e.ctrlKey || e.altKey || e.shiftKey;
       const track = st.project.tracks.find((t) => t.id === st.ui.selectedTrackId);
@@ -29,6 +34,9 @@ export function useShortcuts() {
       // normalize: e.key for space is " "
       const rawKey = e.key === " " ? "Space" : e.key;
       const keyLower = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
+      const musicalTypingKey =
+        keyLower.length === 1 &&
+        (KEY_TO_SEMITONE[keyLower] !== undefined || ["z", "x", "c", "v"].includes(keyLower));
 
       if (hasMods) {
         // command matches with modifiers
@@ -50,12 +58,17 @@ export function useShortcuts() {
         return;
       }
 
-      // musical typing first when active (single printable chars)
-      if (typingActive && keyLower.length === 1) {
-        if (handleTypingKeyDown(keyLower)) {
-          e.preventDefault();
-          return;
-        }
+      if (st.ui.musicalTyping && musicalTypingKey) {
+        if (typingActive) handleTypingKeyDown(keyLower);
+        e.preventDefault();
+        return;
+      }
+
+      if (keyLower === "a") {
+        if (e.repeat) return;
+        e.preventDefault();
+        st.setUI({ automationView: !st.ui.automationView });
+        return;
       }
 
       // no-modifier command match
