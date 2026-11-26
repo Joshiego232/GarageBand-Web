@@ -106,11 +106,7 @@ export default function Home() {
             )}
             <div aria-hidden className="studio-wood z-20" style={{ gridColumn: 6 }} />
           </div>
-          {panels.keyboard && (
-            <div className="shrink-0 max-h-[50vh] overflow-y-auto border-t border-black/80 bg-[#1c1c1e]">
-              <OnscreenKeyboard />
-            </div>
-          )}
+          {panels.keyboard && <OnscreenKeyboard />}
           {panels.help && <ShortcutsOverlay />}
           <StatusBar />
           <CommandPalette />

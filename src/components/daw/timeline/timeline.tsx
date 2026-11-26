@@ -39,7 +39,7 @@ import { TrackHeaders } from "./track-headers";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { mixHex, hexToRgba } from "@/lib/daw/colors";
-import { analyzeMidiNotesByBar } from "@/lib/daw/ChordDetector";
+import { analyzeMidiNotesByTiming } from "@/lib/daw/ChordDetector";
 import { importMidiFiles, isMidiFileForImport } from "@/lib/daw/midi-import";
 import { GlobalChordTrack, extractChordRegions } from "./GlobalChordTrack";
 import { AutomationLaneOverlay } from "./AutomationLaneOverlay";
@@ -1117,13 +1117,11 @@ export function TimelineWorkspace() {
           toast.error("This MIDI region has no notes to analyze.");
           break;
         }
-        const extracted = analyzeMidiNotesByBar(
+        const extracted = analyzeMidiNotesByTiming(
           region.notes,
           region.start,
           region.length,
-          bt,
           { tonic: project.keyTonic, mode: project.keyMode },
-          project.timeSig[0],
         );
         if (!extracted.length) {
           toast.error("No chords could be identified in this region.");

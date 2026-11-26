@@ -14,6 +14,7 @@ import { motion } from "framer-motion";
 import {
   AudioLines,
   Minus,
+  Move,
   MoveHorizontal,
   Music2,
   Plus,
@@ -21,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { MidiControlSurface } from "@/components/daw/panels/midi-control-surface";
+import { ResizeHandle } from "@/components/daw/panels/resize-handle";
 import { engine } from "@/lib/daw/engine";
 import { useDAW } from "@/lib/daw/store";
 import { isBlackKey, noteName } from "@/lib/daw/utils";
@@ -60,6 +62,7 @@ type PointerState = {
 };
 type KeyBinding = { pitch?: number; chord?: number; octave?: number };
 type CustomChordStrip = { name: string; notes: number[] };
+type WindowRect = { left: number; top: number; width: number; height: number };
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -114,7 +117,17 @@ export function OnscreenKeyboard() {
   const [arpRate, setArpRate] = useState<"1/4" | "1/8" | "1/16">("1/8");
   const [arpPattern, setArpPattern] = useState<ArpPattern>("up");
   const [midiOpen, setMidiOpen] = useState(false);
+  const [floating, setFloating] = useState(false);
+  const [dockedHeight, setDockedHeight] = useState(360);
+  const [windowRect, setWindowRect] = useState<WindowRect>({
+    left: 32,
+    top: 72,
+    width: 720,
+    height: 340,
+  });
   const keyScrollRef = useRef<HTMLDivElement>(null);
+  const dragStart = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const resizeStart = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   const pointers = useRef(new Map<number, PointerState>());
   const sources = useRef(new Map<string, number[]>());
   const pitchCounts = useRef(new Map<number, number>());
@@ -382,6 +395,25 @@ export function OnscreenKeyboard() {
     };
   }, [buildChord, customChordStrips, keyBindings, musicalTyping, open, startSource, stopSource]);
 
+  useEffect(() => {
+    if (!floating) return;
+    const constrainWindow = () => {
+      setWindowRect((rect) => {
+        const width = Math.min(rect.width, window.innerWidth);
+        const height = Math.min(rect.height, window.innerHeight);
+        return {
+          left: Math.max(0, Math.min(rect.left, window.innerWidth - width)),
+          top: Math.max(0, Math.min(rect.top, window.innerHeight - Math.min(height, 72))),
+          width,
+          height,
+        };
+      });
+    };
+    constrainWindow();
+    window.addEventListener("resize", constrainWindow);
+    return () => window.removeEventListener("resize", constrainWindow);
+  }, [floating]);
+
   const velocityFromPointer = (event: ReactPointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const amount = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
@@ -518,19 +550,106 @@ export function OnscreenKeyboard() {
   const pitchIsInScale = (pitch: number) =>
     scale.notes.includes((pitch - root + 120) % 12);
 
+  const beginWindowDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    if (!floating || (event.target as HTMLElement).closest("button, select, input")) return;
+    event.preventDefault();
+    dragStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      left: windowRect.left,
+      top: windowRect.top,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveWindow = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!dragStart.current) return;
+    const start = dragStart.current;
+    setWindowRect((rect) => ({
+      ...rect,
+      left: Math.max(0, Math.min(window.innerWidth - rect.width, start.left + event.clientX - start.x)),
+      top: Math.max(0, Math.min(window.innerHeight - 72, start.top + event.clientY - start.y)),
+    }));
+  };
+
+  const endWindowDrag = () => {
+    dragStart.current = null;
+  };
+
+  const setFloatingWindowSize = (width: number, height: number) => {
+    setWindowRect((rect) => {
+      const availableWidth = Math.max(1, window.innerWidth - rect.left);
+      const availableHeight = Math.max(1, window.innerHeight - rect.top);
+      return {
+        ...rect,
+        width: Math.max(Math.min(480, availableWidth), Math.min(availableWidth, width)),
+        height: Math.max(Math.min(240, availableHeight), Math.min(availableHeight, height)),
+      };
+    });
+  };
+
+  const beginWindowResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    resizeStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      width: windowRect.width,
+      height: windowRect.height,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const resizeWindow = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!resizeStart.current) return;
+    const start = resizeStart.current;
+    setFloatingWindowSize(
+      start.width + event.clientX - start.x,
+      start.height + event.clientY - start.y,
+    );
+  };
+
+  const endWindowResize = () => {
+    resizeStart.current = null;
+  };
+
   if (!open) return null;
 
   const isMidi = selectedTrack?.type === "midi";
 
   return (
     <>
-      <div className="w-full flex justify-center px-2 py-1">
+      <div
+        className={floating
+          ? "fixed z-[80] max-w-[calc(100vw-16px)]"
+          : "relative shrink-0 border-t border-black/80 bg-[#1c1c1e] px-2 py-1"}
+        style={floating
+          ? {
+              left: windowRect.left,
+              top: windowRect.top,
+              width: windowRect.width,
+              height: windowRect.height,
+            }
+          : { height: dockedHeight, maxHeight: "60vh" }}
+      >
+        {!floating && (
+          <ResizeHandle
+            axis="horizontal"
+            value={dockedHeight}
+            min={250}
+            max={800}
+            label="Resize performance keyboard height"
+            onChange={setDockedHeight}
+            className="absolute -top-1 left-0 z-20 bg-[#1c1c1e]"
+          />
+        )}
         <motion.section
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: "easeOut" }}
           aria-label="On-screen performance keyboard"
-          className="pointer-events-auto relative flex max-h-[70vh] min-h-[250px] w-full flex-col overflow-hidden rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
+          className="pointer-events-auto relative flex h-full min-h-0 w-full flex-col overflow-auto rounded-md border border-[#55535a] bg-gradient-to-b from-[#34343a] via-[#242428] to-[#19191c] p-3 text-zinc-200 shadow-[0_-8px_24px_rgba(0,0,0,.32),inset_0_1px_0_rgba(255,255,255,.1)]"
           onPointerDown={beginScrollPointer}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -539,7 +658,16 @@ export function OnscreenKeyboard() {
           <div className="pointer-events-none absolute inset-y-0 left-0 w-2.5 opacity-70" style={KEYBOARD_STYLE} />
           <div className="pointer-events-none absolute inset-y-0 right-0 w-2.5 opacity-70" style={KEYBOARD_STYLE} />
 
-          <header className="relative mb-2 flex flex-wrap items-center gap-2 border-b border-black/40 pb-2">
+          <header
+            className={cn(
+              "relative mb-2 flex flex-wrap items-center gap-2 border-b border-black/40 pb-2",
+              floating && "touch-none cursor-grab active:cursor-grabbing",
+            )}
+            onPointerDown={beginWindowDrag}
+            onPointerMove={moveWindow}
+            onPointerUp={endWindowDrag}
+            onPointerCancel={endWindowDrag}
+          >
             <div className="flex items-center gap-2">
               <span className="flex size-7 items-center justify-center rounded-md border border-[#ffb648]/25 bg-[#ffb648]/10 text-[#ffca78]">
                 <Music2 size={15} />
@@ -595,6 +723,14 @@ export function OnscreenKeyboard() {
                 onClick={() => setTypingLayout((value) => value === "garageband" ? "two-row" : "garageband")}
               >
                 <span>{typingLayout === "garageband" ? "GB Keys" : "Z/Q Keys"}</span>
+              </ControlButton>
+              <ControlButton
+                active={floating}
+                label={floating ? "Dock performance keyboard" : "Float performance keyboard"}
+                onClick={() => setFloating((value) => !value)}
+              >
+                <Move size={12} />
+                <span>{floating ? "Dock" : "Float"}</span>
               </ControlButton>
               <ControlButton active={glissando} label="Toggle glissando mode" onClick={() => setGlissando((value) => !value)}>
                 {glissando ? <Waves size={12} /> : <MoveHorizontal size={12} />}
@@ -800,6 +936,27 @@ export function OnscreenKeyboard() {
             </span>
             <span>{musicalTyping ? "QWERTY overlay active · key-up, blur and tab-switch release notes" : "Enable Typing for QWERTY hints"}</span>
           </footer>
+            {floating && (
+              <button
+                type="button"
+                aria-label="Resize performance keyboard window"
+                title="Drag to resize"
+                className="absolute bottom-0 right-0 z-20 size-5 cursor-nwse-resize touch-none rounded-tl-md border-l border-t border-white/15 bg-[#34343a]/90"
+                onPointerDown={beginWindowResize}
+                onPointerMove={resizeWindow}
+                onPointerUp={endWindowResize}
+                onPointerCancel={endWindowResize}
+                onKeyDown={(event) => {
+                  const amount = event.shiftKey ? 40 : 10;
+                  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+                  event.preventDefault();
+                  setFloatingWindowSize(
+                    windowRect.width + (event.key === "ArrowRight" ? amount : event.key === "ArrowLeft" ? -amount : 0),
+                    windowRect.height + (event.key === "ArrowDown" ? amount : event.key === "ArrowUp" ? -amount : 0),
+                  );
+                }}
+              />
+            )}
         </motion.section>
       </div>
       {midiOpen && <MidiControlSurface onClose={() => setMidiOpen(false)} />}

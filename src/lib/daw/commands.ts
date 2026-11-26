@@ -10,7 +10,7 @@ import { PPQ, uid } from "./types";
 import { snapTicks, barTicks, projectLengthTicks, clamp } from "./utils";
 import { toast } from "sonner";
 import { exportSoundstageProject, importSoundstageProject } from "./soundstage-bridge";
-import { analyzeMidiNotesByBar } from "./ChordDetector";
+import { analyzeMidiNotesByTiming } from "./ChordDetector";
 import { importMidiFiles } from "./midi-import";
 import { saveSong } from "./saved-songs";
 import { saveCloudProjectIfSignedIn } from "./cloud-projects";
@@ -623,18 +623,16 @@ function handleStopRecording() {
   }
   if (notesByTrack.size) {
     const project = useDAW.getState().project;
-    const ticksPerBar = barTicks(project.timeSig);
     const extracted = [...recordedRegions.values()].flatMap((region) => {
       const regionNotes = region.notes.map((note) => ({
         pitch: note.pitch,
         start: note.start - result.startTick,
         length: note.length,
       }));
-      return analyzeMidiNotesByBar(
+      return analyzeMidiNotesByTiming(
         regionNotes,
         region.start,
         region.length,
-        ticksPerBar,
         { tonic: project.keyTonic, mode: project.keyMode },
       ).map((chord) => ({ ...chord, id: uid(), sourceRegionId: region.id }));
     });

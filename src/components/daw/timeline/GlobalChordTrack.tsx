@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Layers2, Music2, Plus } from "lucide-react";
 import { useDAW } from "@/lib/daw/store";
-import { analyzeMidiRegionsByBeat, detectChord, suggestKeys } from "@/lib/daw/ChordDetector";
+import { analyzeMidiRegionsByTiming, detectChord, suggestKeys } from "@/lib/daw/ChordDetector";
 import { engine } from "@/lib/daw/engine";
 import { uid, type ChordRegion } from "@/lib/daw/types";
 import { toast } from "sonner";
@@ -92,12 +92,7 @@ export function GlobalChordTrack({
       return;
     }
 
-    const extracted = analyzeMidiRegionsByBeat(
-      regions,
-      ticksPerBar,
-      project.timeSig[0],
-      key,
-    );
+    const extracted = analyzeMidiRegionsByTiming(regions, key);
     if (!extracted.length) {
       toast.error("No chords could be identified across the MIDI regions.");
       return;
@@ -162,7 +157,7 @@ export function GlobalChordTrack({
         <div className="ml-auto flex gap-1">
           <button
             type="button"
-            title="Analyze audible MIDI regions and auto-quantize chord timing to 16th notes"
+            title="Analyze audible MIDI regions and align basic chords to MIDI note timing"
             onClick={analyzeArrangement}
             className="flex items-center gap-0.5 rounded border border-white/10 px-1 py-0.5 text-[8px] text-zinc-400 hover:text-violet-100"
           >

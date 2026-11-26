@@ -273,12 +273,74 @@ try {
     [57, 60, 64, 67].map((pitch) => chords.detectChord([pitch, pitch + 3, pitch + 7, pitch + 10])).find(Boolean),
   ].filter(Boolean));
   expect(keySuggestions.length === 2, "Key suggester should return two candidate scales");
-  const extractedChords = chords.analyzeMidiNotesByBar([
-    { pitch: 60, start: 0, length: 3000 },
-    { pitch: 64, start: 0, length: 800 },
-    { pitch: 67, start: 0, length: 800 },
-  ], 0, 3840, 3840);
-  expect(extractedChords[0]?.name === "C", "MIDI bar analysis did not extract a triad");
+  const extractedChords = chords.analyzeMidiNotesByTiming([
+    { pitch: 60, start: 0, length: 1200 },
+    { pitch: 64, start: 137, length: 720 },
+    { pitch: 67, start: 137, length: 720 },
+    { pitch: 71, start: 137, length: 720 },
+  ], 0, 2400);
+  expect(
+    extractedChords.length === 1 &&
+      extractedChords[0].name === "C" &&
+      extractedChords[0].start === 137 &&
+      extractedChords[0].length === 720 &&
+      extractedChords[0].notes.join(",") === "60,64,67",
+    "MIDI chord analysis should use simple chord names and exact note timing",
+  );
+  const arrangementChords = chords.analyzeMidiRegionsByTiming([
+    {
+      start: 100,
+      length: 1200,
+      notes: [
+        { pitch: 60, start: 0, length: 1200 },
+        { pitch: 64, start: 137, length: 720 },
+        { pitch: 67, start: 137, length: 720 },
+      ],
+      trackId: "piano",
+    },
+  ]);
+  expect(
+    arrangementChords[0]?.start === 237 && arrangementChords[0]?.length === 720,
+    "Arrangement chord timing should match simultaneous MIDI note timing",
+  );
+  const progressionChords = chords.analyzeMidiNotesByTiming([
+    { pitch: 60, start: 137, length: 480 },
+    { pitch: 64, start: 137, length: 480 },
+    { pitch: 67, start: 137, length: 480 },
+    { pitch: 57, start: 617, length: 480 },
+    { pitch: 60, start: 617, length: 480 },
+    { pitch: 64, start: 617, length: 480 },
+  ], 0, 1200);
+  expect(
+    progressionChords.length === 2 &&
+      progressionChords[0].name === "C" &&
+      progressionChords[0].start === 137 &&
+      progressionChords[0].length === 480 &&
+      progressionChords[1].name === "Am" &&
+      progressionChords[1].start === 617 &&
+      progressionChords[1].length === 480,
+    "Chord changes should begin and end at their exact MIDI note boundaries",
+  );
+  const loopedChords = chords.analyzeMidiRegionsByTiming([{
+    start: 0,
+    length: 2000,
+    looped: true,
+    coreLength: 1000,
+    notes: [
+      { pitch: 60, start: 0, length: 400 },
+      { pitch: 64, start: 0, length: 400 },
+      { pitch: 67, start: 0, length: 400 },
+    ],
+    trackId: "looped-piano",
+  }]);
+  expect(
+    loopedChords.length === 2 &&
+      loopedChords[0].start === 0 &&
+      loopedChords[0].length === 400 &&
+      loopedChords[1].start === 1000 &&
+      loopedChords[1].length === 400,
+    "Looped MIDI chord timing should not spill notes across loop boundaries",
+  );
   const analysisStart = performance.now();
   for (let iteration = 0; iteration < 1000; iteration += 1) {
     chords.detectChord([48, 55, 60, 64, 67, 71, 74]);

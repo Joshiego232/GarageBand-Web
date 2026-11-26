@@ -286,23 +286,103 @@ export interface ExtractedChord {
   color: string;
 }
 
-function autoQuantizeChords(chords: ExtractedChord[], ticksPerBeat: number): ExtractedChord[] {
-  if (!Number.isFinite(ticksPerBeat) || ticksPerBeat <= 0) return chords;
-  const grid = Math.max(1, ticksPerBeat / 4);
-  const quantized: ExtractedChord[] = [];
-  for (const chord of chords) {
-    const previousEnd = quantized.length
-      ? quantized[quantized.length - 1].start + quantized[quantized.length - 1].length
-      : Number.NEGATIVE_INFINITY;
-    const start = Math.max(previousEnd, Math.round(chord.start / grid) * grid);
-    const end = Math.round((chord.start + chord.length) / grid) * grid;
-    quantized.push({
-      ...chord,
-      start,
-      length: Math.max(grid, end - start),
-    });
+const BASIC_CHORDS = [
+  { suffix: "", intervals: [0, 4, 7] },
+  { suffix: "m", intervals: [0, 3, 7] },
+  { suffix: "dim", intervals: [0, 3, 6] },
+  { suffix: "aug", intervals: [0, 4, 8] },
+  { suffix: "sus2", intervals: [0, 2, 7] },
+  { suffix: "sus4", intervals: [0, 5, 7] },
+  { suffix: "5", intervals: [0, 7] },
+] as const;
+
+const CHORD_COLORS = [
+  "#E57373", "#FF8A65", "#FFB74D", "#FFD54F", "#DCE775", "#AED581",
+  "#81C784", "#4DB6AC", "#4DD0E1", "#64B5F6", "#7986CB", "#BA68C8",
+];
+
+function detectBasicChord(notes: number[], key?: ChordKey) {
+  const valid = notes
+    .filter((note) => Number.isFinite(note) && note >= 0 && note <= 127)
+    .map((note) => Math.round(note));
+  const pitchClasses = [...new Set(valid.map(mod12))];
+  if (pitchClasses.length < 2) return null;
+
+  let best: { root: number; suffix: string; intervals: readonly number[]; score: number } | null = null;
+  for (const root of pitchClasses) {
+    for (const chord of BASIC_CHORDS) {
+      const chordPitchClasses = chord.intervals.map((interval) => mod12(root + interval));
+      const matched = chordPitchClasses.filter((pitch) => pitchClasses.includes(pitch)).length;
+      if (matched !== chord.intervals.length) continue;
+      const extras = pitchClasses.length - matched;
+      const bassBonus = mod12(Math.min(...valid)) === root ? 0.55 : 0;
+      const rootInKey = key && (key.mode === "major" ? MAJOR_SCALE : MINOR_SCALE)
+        .some((degree) => mod12(key.tonic + degree) === root);
+      const score = matched * 5 - extras * 4.5 + bassBonus + (rootInKey ? 0.2 : 0);
+      if (!best || score > best.score) {
+        best = { root, suffix: chord.suffix, intervals: chord.intervals, score };
+      }
+    }
   }
-  return quantized;
+  if (!best) return null;
+
+  const chordPitchClasses = new Set(best.intervals.map((interval) => mod12(best!.root + interval)));
+  const chordNotes = [...new Set(valid.filter((note) => chordPitchClasses.has(mod12(note))))].sort((a, b) => a - b);
+  const bassNote = chordNotes[0];
+  const rootName = formatPitchClass(best.root, key);
+  const name = `${rootName}${best.suffix}${
+    mod12(bassNote) !== best.root ? `/${formatPitchClass(bassNote, key)}` : ""
+  }`;
+  return { name, notes: chordNotes, color: CHORD_COLORS[best.root] };
+}
+
+interface ChordTimelineEvent {
+  starts: { id: number; pitch: number }[];
+  ends: number[];
+}
+
+function addChordEvent(events: Map<number, ChordTimelineEvent>, tick: number) {
+  let event = events.get(tick);
+  if (!event) {
+    event = { starts: [], ends: [] };
+    events.set(tick, event);
+  }
+  return event;
+}
+
+function extractTimedChordSegments(
+  events: Map<number, ChordTimelineEvent>,
+  key?: ChordKey,
+): ExtractedChord[] {
+  const ticks = [...events.keys()].sort((a, b) => a - b);
+  const active = new Map<number, number>();
+  const result: ExtractedChord[] = [];
+  for (let index = 0; index < ticks.length - 1; index += 1) {
+    const start = ticks[index];
+    const event = events.get(start)!;
+    for (const id of event.ends) active.delete(id);
+    for (const note of event.starts) active.set(note.id, note.pitch);
+
+    const end = ticks[index + 1];
+    if (end <= start) continue;
+    const chord = detectBasicChord([...active.values()], key);
+    if (!chord) continue;
+
+    const previous = result[result.length - 1];
+    const sameNotes = previous?.notes.length === chord.notes.length &&
+      previous.notes.every((pitch, index) => pitch === chord.notes[index]);
+    if (
+      previous &&
+      previous.start + previous.length === start &&
+      previous.name === chord.name &&
+      sameNotes
+    ) {
+      previous.length += end - start;
+    } else {
+      result.push({ start, length: end - start, ...chord });
+    }
+  }
+  return result;
 }
 
 export interface MidiChordAnalysisRegion {
@@ -315,33 +395,12 @@ export interface MidiChordAnalysisRegion {
   trackId: string;
 }
 
-export function analyzeMidiRegionsByBeat(
+export function analyzeMidiRegionsByTiming(
   regions: MidiChordAnalysisRegion[],
-  ticksPerBar: number,
-  beatsPerBar: number,
   key?: ChordKey,
 ): ExtractedChord[] {
-  const ticksPerBeat = ticksPerBar / beatsPerBar;
-  if (!Number.isFinite(ticksPerBeat) || ticksPerBeat <= 0) return [];
-
-  const beats = new Map<number, {
-    pitches: Set<number>;
-    trackIds: Set<string>;
-    start: number;
-    end: number;
-  }>();
-  const addNoteToBeat = (beatStart: number, pitch: number, trackId: string, start: number, end: number) => {
-    let beat = beats.get(beatStart);
-    if (!beat) {
-      beat = { pitches: new Set(), trackIds: new Set(), start, end };
-      beats.set(beatStart, beat);
-    }
-    beat.pitches.add(pitch);
-    beat.trackIds.add(trackId);
-    beat.start = Math.min(beat.start, start);
-    beat.end = Math.max(beat.end, end);
-  };
-
+  const events = new Map<number, ChordTimelineEvent>();
+  let noteId = 0;
   for (const region of regions) {
     if (region.muted || !region.notes?.length ||
       !Number.isFinite(region.start) || !Number.isFinite(region.length) || region.length <= 0) continue;
@@ -356,110 +415,42 @@ export function analyzeMidiRegionsByBeat(
           !Number.isFinite(note.length) || note.length <= 0 || note.start >= loopLength) continue;
         const noteStart = Math.max(0, note.start);
         const start = region.start + offset + noteStart;
-        const end = Math.min(regionEnd, region.start + offset + note.start + note.length);
+        const end = Math.min(
+          regionEnd,
+          region.start + offset + loopLength,
+          region.start + offset + note.start + note.length,
+        );
         if (end <= start) continue;
         const pitch = Math.round(note.pitch);
         if (pitch < 0 || pitch > 127) continue;
-
-        const firstBeat = Math.floor(start / ticksPerBeat) * ticksPerBeat;
-        for (let beatStart = firstBeat; beatStart < end; beatStart += ticksPerBeat) {
-          addNoteToBeat(
-            beatStart,
-            pitch,
-            region.trackId,
-            Math.max(start, beatStart),
-            Math.min(end, beatStart + ticksPerBeat),
-          );
-        }
+        addChordEvent(events, start).starts.push({ id: noteId, pitch });
+        addChordEvent(events, end).ends.push(noteId);
+        noteId += 1;
       }
     }
   }
 
-  const result: ExtractedChord[] = [];
-  for (const [beatStart, beat] of [...beats.entries()].sort(([a], [b]) => a - b)) {
-    const pitches = [...beat.pitches].sort((a, b) => a - b);
-    if (pitches.length < 2 || (pitches.length < 3 && beat.trackIds.size < 2)) continue;
-    const chord = detectChord(pitches, key);
-    if (!chord) continue;
-
-    const start = Math.max(beatStart, beat.start);
-    const end = Math.min(beatStart + ticksPerBeat, beat.end);
-    if (end <= start) continue;
-    const previous = result[result.length - 1];
-    if (previous && previous.start + previous.length === start && previous.name === chord.name) {
-      previous.length += end - start;
-      previous.notes = [...new Set([...previous.notes, ...pitches])].sort((a, b) => a - b);
-    } else {
-      result.push({
-        start,
-        length: end - start,
-        name: chord.name,
-        notes: pitches,
-        color: chord.color,
-      });
-    }
-  }
-  return autoQuantizeChords(result, ticksPerBeat);
+  return extractTimedChordSegments(events, key);
 }
 
-export function analyzeMidiNotesByBar(
+export function analyzeMidiNotesByTiming(
   notes: { pitch: number; start: number; length: number }[],
   regionStart: number,
   regionLength: number,
-  ticksPerBar: number,
   key?: ChordKey,
-  beatsPerBar = 4,
 ): ExtractedChord[] {
   if (!Number.isFinite(regionStart) || !Number.isFinite(regionLength) || regionLength <= 0) return [];
 
-  const events = new Map<number, { starts: { id: number; pitch: number }[]; ends: number[] }>();
-  const addEvent = (tick: number) => {
-    let event = events.get(tick);
-    if (!event) {
-      event = { starts: [], ends: [] };
-      events.set(tick, event);
-    }
-    return event;
-  };
+  const events = new Map<number, ChordTimelineEvent>();
   notes.forEach((note, id) => {
     if (!Number.isFinite(note.pitch) || !Number.isFinite(note.start) ||
       !Number.isFinite(note.length) || note.length <= 0) return;
     const start = Math.max(0, note.start);
     const end = Math.min(regionLength, note.start + note.length);
     if (end <= start) return;
-    addEvent(start).starts.push({ id, pitch: Math.round(note.pitch) });
-    addEvent(end).ends.push(id);
+    addChordEvent(events, regionStart + start).starts.push({ id, pitch: Math.round(note.pitch) });
+    addChordEvent(events, regionStart + end).ends.push(id);
   });
 
-  const ticks = [...events.keys()].sort((a, b) => a - b);
-  const active = new Map<number, number>();
-  const result: ExtractedChord[] = [];
-  for (let index = 0; index < ticks.length - 1; index += 1) {
-    const start = ticks[index];
-    const event = events.get(start)!;
-    for (const id of event.ends) active.delete(id);
-    for (const note of event.starts) active.set(note.id, note.pitch);
-
-    const end = ticks[index + 1];
-    if (end <= start) continue;
-    const activeNotes = [...active.values()];
-    const chord = detectChord(activeNotes, key);
-    if (!chord) continue;
-
-    const previous = result[result.length - 1];
-    if (previous && previous.start + previous.length === regionStart + start &&
-      previous.name === chord.name) {
-      previous.length += end - start;
-      previous.notes = [...new Set([...previous.notes, ...activeNotes])].sort((a, b) => a - b);
-    } else {
-      result.push({
-        start: regionStart + start,
-        length: end - start,
-        name: chord.name,
-        notes: [...new Set(activeNotes)].sort((a, b) => a - b),
-        color: chord.color,
-      });
-    }
-  }
-  return autoQuantizeChords(result, ticksPerBar / beatsPerBar);
+  return extractTimedChordSegments(events, key);
 }
